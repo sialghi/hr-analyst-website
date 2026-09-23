@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+venv/
+.venv/
+backend/venv/
+backend/.venv/
+
+# Environment variables & Secrets (JANGAN DI-COMMIT)
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env.local
+frontend/.env*.local
+
+# Database local (SQLite)
+*.db
+*.sqlite
+*.sqlite3
+backend/hr_app.db
+
+# Next.js build cache & outputs
+.next/
+frontend/.next/
+frontend/out/
+frontend/build/
+*.tsbuildinfo
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+backend/**/__pycache__/
+
+# Antigravity IDE / Agent artifacts
+.agents/
+skills-lock.json
+.system_scan.txt
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# File data internal
+data-uangmakan-posisi.xlsx

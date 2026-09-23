@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+hr_app.db
+venv/
+.venv/

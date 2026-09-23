@@ -1,0 +1,101 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&display=swap');
+@import "tailwindcss";
+
+:root {
+  /* =========================================================================
+     Modern Clean SaaS Color Tokens (Slate & Indigo Palette)
+     ========================================================================= */
+
+  /* Canvas / Surface */
+  --bg-canvas: #f8fafc;        /* Slate 50 — sejuk, bersih, standar enterprise modern */
+  --paper: #f8fafc;            /* Background layout */
+  --paper-raised: #ffffff;     /* Surface Card murni putih */
+  --paper-subtle: #f1f5f9;     /* Slate 100 — latar kontrol/badge */
+  --paper-hover: #f8fafc;      /* Hover row table */
+
+  /* Borders / Dividers */
+  --line: #e2e8f0;             /* Slate 200 — garis batas sangat presisi */
+  --line-subtle: #f1f5f9;      /* Slate 100 — pemisah halus internal */
+
+  /* Typography / Text */
+  --ink: #0f172a;              /* Slate 900 — judul & header utama kontras tinggi */
+  --ink-soft: #1e293b;         /* Slate 800 */
+  --text: #334155;             /* Slate 700 — isi teks nyaman dibaca */
+  --text-muted: #64748b;       /* Slate 500 — label dan hint sekunder */
+  --text-subtle: #94a3b8;      /* Slate 400 */
+
+  /* Brand / Primary Accent (Electric Indigo) */
+  --accent: #4f46e5;           /* Indigo 600 — tombol dan aksen fokus */
+  --accent-hover: #4338ca;     /* Indigo 700 */
+  --accent-light: #6366f1;     /* Indigo 500 */
+  --accent-wash: #eef2ff;      /* Indigo 50 — tint seleksi & badge aktif */
+  --accent-border: #c7d2fe;    /* Indigo 200 */
+
+  /* Status Colors */
+  --moss: #059669;             /* Emerald 600 — Kehadiran valid, sukses */
+  --moss-bg: #ecfdf5;          /* Emerald 50 */
+  --moss-border: #a7f3d0;      /* Emerald 200 */
+
+  --clay: #e11d48;             /* Rose 600 — Telat, perlu dicek, anomali */
+  --clay-bg: #fff1f2;          /* Rose 50 */
+  --clay-border: #fecdd3;      /* Rose 200 */
+
+  --bronze: #d97706;           /* Amber 600 — Pulang duluan, perhatian */
+  --bronze-bg: #fffbeb;        /* Amber 50 */
+  --bronze-border: #fde68a;    /* Amber 200 */
+
+  /* Shadows */
+  --shadow-card: 0 1px 3px 0 rgba(15, 23, 42, 0.04), 0 1px 2px -1px rgba(15, 23, 42, 0.04);
+  --shadow-dropdown: 0 10px 15px -3px rgba(15, 23, 42, 0.08), 0 4px 6px -4px rgba(15, 23, 42, 0.04);
+
+  /* Compatibility aliases */
+  --graphite-silver: #cbd5e1;
+  --graphite-canvas: #f8fafc;
+  --graphite-bronze: #d97706;
+  --graphite-steel: #6366f1;
+  --graphite-blush: #fecdd3;
+  --gold: #4f46e5;
+}
+
+html, body {
+  background: var(--bg-canvas);
+  color: var(--text);
+  font-family: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.011em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: #c7d2fe;
+  color: #1e1b4b;
+}
+
+input, select, textarea {
+  font-family: inherit;
+}
+
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Custom Sleek Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
