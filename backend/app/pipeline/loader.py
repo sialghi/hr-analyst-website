@@ -244,6 +244,43 @@ def build_tanggal_merah_from_db(holidays):
     return {h.tanggal: (h.keterangan or "") for h in holidays}
 
 
+def build_approved_leaves_from_db(leaves):
+    """
+    BARU: Bangun dict lookup cuti & izin yang disetujui (APPROVED).
+    Format return:
+    {
+       normalisasi_nama(nama): [
+           {
+               "kategori": leave.kategori,
+               "tanggal_mulai": leave.tanggal_mulai,
+               "tanggal_selesai": leave.tanggal_selesai,
+               "jam_izin": leave.jam_izin,
+               "alasan": leave.alasan,
+           },
+           ...
+       ]
+    }
+    """
+    lookup = {}
+    for lv in leaves:
+        if lv.status != "APPROVED":
+            continue
+        norm_name = config.normalisasi_nama(lv.nama)
+        if not norm_name:
+            continue
+        if norm_name not in lookup:
+            lookup[norm_name] = []
+        lookup[norm_name].append({
+            "kategori": lv.kategori,
+            "tanggal_mulai": lv.tanggal_mulai,
+            "tanggal_selesai": lv.tanggal_selesai,
+            "jam_izin": lv.jam_izin,
+            "alasan": lv.alasan,
+        })
+    return lookup
+
+
+
 def load_tanggal_merah(path):
     """
     Baca daftar tanggal merah nasional dari file Excel/CSV.

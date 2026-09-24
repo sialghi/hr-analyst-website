@@ -36,7 +36,38 @@ def _format_durasi_teks(jam_desimal):
     else:
         return f"{menit} menit"
 
-def hitung_telat(df_lengkap):
+
+def _find_approved_leave(nama, tgl, approved_leaves_dict, kategori_filter=None):
+    """
+    Cek apakah karyawan punya permohonan cuti / izin yang APPROVED pada tanggal tgl.
+    kategori_filter: bisa berupa set/tuple/list string kategori (misal {'CUTI_TAHUNAN', 'SAKIT'}) atau string tunggal.
+    """
+    if not approved_leaves_dict:
+        return None
+    norm_name = config.normalisasi_nama(nama)
+    daftar = approved_leaves_dict.get(norm_name, [])
+    if not daftar:
+        return None
+
+    tgl_eval = tgl.date() if isinstance(tgl, datetime.datetime) else tgl
+
+    for item in daftar:
+        t_mulai = item["tanggal_mulai"]
+        t_selesai = item["tanggal_selesai"]
+        if t_mulai <= tgl_eval <= t_selesai:
+            kat = item["kategori"]
+            if kategori_filter:
+                if isinstance(kategori_filter, (set, list, tuple)):
+                    if kat in kategori_filter:
+                        return item
+                elif kat == kategori_filter:
+                    return item
+            else:
+                return item
+    return None
+
+
+def hitung_telat(df_lengkap, approved_leaves=None):
     """
     Aturan #6 & #3.3.3 — REVISI v2: patokan jam masuk per profil.
     Hanya proses karyawan yang profilnya ikut_telat=True.
@@ -45,6 +76,10 @@ def hitung_telat(df_lengkap):
     Kejadian telat pertama (ke-1) dengan durasi <= config.TOLERANSI_TELAT_MAX_MENIT (10 menit)
     diberikan toleransi (bebas denda).
     Jika telat ke-1 > 10 menit atau telat ke-2 dst -> langsung kena denda normal.
+
+    REVISI v4 (Fitur Cuti & Izin):
+    Jika karyawan memiliki pengajuan 'IZIN_TELAT' yang berstatus APPROVED untuk tanggal ini,
+    maka keterlambatan DIEXEMPT (Ditoleransi dengan Izin Resmi - Bebas Denda Potongan Rp 0).
     """
     df = df_lengkap.copy()
 
@@ -71,35 +106,44 @@ def hitung_telat(df_lengkap):
 
         if row["Jam_Masuk"] > jam_masuk_std:
             nama_karyawan = row["Nama"]
+            tanggal = row["Tanggal"]
+
+            # Cek apakah ada izin telat resmi yang APPROVED
+            izin_resmi = _find_approved_leave(nama_karyawan, tanggal, approved_leaves, kategori_filter="IZIN_TELAT")
+
             telat_ke_per_nama[nama_karyawan] = telat_ke_per_nama.get(nama_karyawan, 0) + 1
             ke = telat_ke_per_nama[nama_karyawan]
 
-            jam_masuk_dt = datetime.datetime.combine(row["Tanggal"], row["Jam_Masuk"])
-            batas_dt = datetime.datetime.combine(row["Tanggal"], jam_masuk_std)
+            jam_masuk_dt = datetime.datetime.combine(tanggal, row["Jam_Masuk"])
+            batas_dt = datetime.datetime.combine(tanggal, jam_masuk_std)
             durasi_sec = (jam_masuk_dt - batas_dt).total_seconds()
             durasi = _durasi_ke_jam_desimal(jam_masuk_dt - batas_dt)
             menit_telat = durasi_sec / 60
 
-            is_toleransi = (ke == config.TOLERANSI_TELAT_HARI_KE and menit_telat <= config.TOLERANSI_TELAT_MAX_MENIT)
-            if is_toleransi:
-                status_toleransi = f"Ditoleransi (Telat ke-1 <= {config.TOLERANSI_TELAT_MAX_MENIT} m - Bebas Denda)"
+            if izin_resmi:
+                status_toleransi = f"Izin Resmi Disetujui ({izin_resmi.get('alasan') or 'Izin Datang Terlambat'}) - Bebas Denda"
                 potongan = 0
             else:
-                if ke == 1:
-                    status_toleransi = f"Telat ke-1 > {config.TOLERANSI_TELAT_MAX_MENIT} m (Kena Denda)"
+                is_toleransi = (ke == config.TOLERANSI_TELAT_HARI_KE and menit_telat <= config.TOLERANSI_TELAT_MAX_MENIT)
+                if is_toleransi:
+                    status_toleransi = f"Ditoleransi (Telat ke-1 <= {config.TOLERANSI_TELAT_MAX_MENIT} m - Bebas Denda)"
+                    potongan = 0
                 else:
-                    status_toleransi = f"Telat ke-{ke} (Kena Denda)"
+                    if ke == 1:
+                        status_toleransi = f"Telat ke-1 > {config.TOLERANSI_TELAT_MAX_MENIT} m (Kena Denda)"
+                    else:
+                        status_toleransi = f"Telat ke-{ke} (Kena Denda)"
 
-                if row["Jam_Masuk"] <= config.BATAS_TELAT_RINGAN:
-                    potongan = config.POTONGAN_TELAT_SEDIKIT
-                else:
-                    potongan = config.POTONGAN_TELAT_SEDIKIT
+                    if row["Jam_Masuk"] <= config.BATAS_TELAT_RINGAN:
+                        potongan = config.POTONGAN_TELAT_SEDIKIT
+                    else:
+                        potongan = config.POTONGAN_TELAT_SEDIKIT
 
             hasil_rows.append({
                 "Cabang": row["Cabang"],
                 "Nama": row["Nama"],
                 "Profil": row["Profil"],
-                "Tanggal": row["Tanggal"],
+                "Tanggal": tanggal,
                 "Hari": nama_hari,
                 "Jam_Masuk": row["Jam_Masuk"],
                 "Jam_Masuk_Standar": jam_masuk_std,
@@ -112,6 +156,7 @@ def hitung_telat(df_lengkap):
 
     return pd.DataFrame(hasil_rows).reset_index(drop=True) if hasil_rows else pd.DataFrame(columns=[
         "Cabang", "Nama", "Profil", "Tanggal", "Hari", "Jam_Masuk", "Jam_Masuk_Standar",
+
         "Durasi_Telat_Jam", "Durasi_Telat_Format", "Kejadian_Ke", "Status_Toleransi", "Potongan_Telat_Rp"
     ])
 
@@ -240,11 +285,15 @@ def hitung_lembur(df_lengkap, tanggal_merah=None):
     ])
 
 
-def hitung_pulang_duluan(df_lengkap):
+def hitung_pulang_duluan(df_lengkap, approved_leaves=None):
     """
     Aturan #5 & #3.3.2 — REVISI v2: patokan jam keluar per profil.
     Hanya proses karyawan yang profilnya ikut_telat=True (profil dengan
     jam kerja baku).
+
+    REVISI v3 (Fitur Cuti & Izin):
+    Jika karyawan memiliki pengajuan 'IZIN_PULANG_CEPAT' yang APPROVED untuk tanggal ini,
+    maka kepulangan lebih awal tidak dicatat sebagai anomali pelanggaran (dianulir).
     """
     df = df_lengkap.copy()
     # Pakai ikut_telat sebagai proxy: kalau profil punya jam baku, ikut perhitungan pulang duluan
@@ -264,14 +313,22 @@ def hitung_pulang_duluan(df_lengkap):
             continue
 
         if row["Jam_Keluar"] < jam_keluar_std:
-            dt_keluar = datetime.datetime.combine(row["Tanggal"], row["Jam_Keluar"])
-            dt_batas = datetime.datetime.combine(row["Tanggal"], jam_keluar_std)
+            nama_karyawan = row["Nama"]
+            tanggal = row["Tanggal"]
+
+            # Cek apakah ada izin pulang cepat resmi yang APPROVED
+            izin_resmi = _find_approved_leave(nama_karyawan, tanggal, approved_leaves, kategori_filter="IZIN_PULANG_CEPAT")
+            if izin_resmi:
+                continue  # Dilewati / dianulir dari rekap pelanggaran pulang duluan
+
+            dt_keluar = datetime.datetime.combine(tanggal, row["Jam_Keluar"])
+            dt_batas = datetime.datetime.combine(tanggal, jam_keluar_std)
             durasi = _durasi_ke_jam_desimal(dt_batas - dt_keluar)
             hasil_rows.append({
                 "Cabang": row["Cabang"],
-                "Nama": row["Nama"],
+                "Nama": nama_karyawan,
                 "Profil": row["Profil"],
-                "Tanggal": row["Tanggal"],
+                "Tanggal": tanggal,
                 "Hari": nama_hari,
                 "Jam_Keluar": row["Jam_Keluar"],
                 "Jam_Keluar_Standar": jam_keluar_std,
@@ -284,7 +341,8 @@ def hitung_pulang_duluan(df_lengkap):
     ])
 
 
-def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None):
+
+def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None, approved_leaves=None):
     """
     BARU v2: Hitung uang makan per karyawan per hari.
 
@@ -299,6 +357,9 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None):
     - Tanggal merah (profil ikut_bonus_tanggal_merah, scan lengkap):
       * Karyawan yang MASUK hanya dapat bonus Rp100.000 (tidak dapat base uang makan
         karena tanggal merah bukan hari kerja biasa)
+    - Fitur Cuti & Izin (REVISI v3):
+      * Jika ada IZIN_TELAT (APPROVED), potongan telat = 0.
+      * Jika ada IZIN_PULANG_CEPAT (APPROVED), potongan pulang duluan = 0.
 
     Return DataFrame: Nama, Profil, Tanggal, Hari, Uang_Makan_Base,
                        Potongan_Telat, Potongan_Pulang_Duluan, Bonus_Tanggal_Merah, Total_Uang_Makan
@@ -349,6 +410,10 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None):
             uang_base = uang_makan_nominal
             bonus_merah = 0
 
+            # Cek izin resmi approved untuk tanggal ini
+            izin_telat_resmi = _find_approved_leave(row["Nama"], tgl, approved_leaves, kategori_filter="IZIN_TELAT")
+            izin_pulang_resmi = _find_approved_leave(row["Nama"], tgl, approved_leaves, kategori_filter="IZIN_PULANG_CEPAT")
+
             # --- Potongan telat (hanya di hari kerja biasa) ---
             potongan = 0
             if profil["ikut_telat"]:
@@ -358,35 +423,43 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None):
                     telat_count_per_nama[nama_karyawan] = telat_count_per_nama.get(nama_karyawan, 0) + 1
                     ke = telat_count_per_nama[nama_karyawan]
 
-                    # Hitung durasi menit keterlambatan
-                    jam_masuk_dt = datetime.datetime.combine(tgl, row["Jam_Masuk"])
-                    batas_dt = datetime.datetime.combine(tgl, jam_masuk_std)
-                    menit_telat = (jam_masuk_dt - batas_dt).total_seconds() / 60
-
-                    # Cek toleransi keterlambatan: 1x per periode, max 10 menit untuk telat pertama
-                    if ke == config.TOLERANSI_TELAT_HARI_KE and menit_telat <= config.TOLERANSI_TELAT_MAX_MENIT:
-                        potongan = 0  # Ditoleransi, bebas potongan
+                    if izin_telat_resmi:
+                        # Bebas potongan jika ada izin telat resmi yang disetujui
+                        potongan = 0
                     else:
-                        # Karyawan telat kena potongan
-                        if row["Jam_Masuk"] <= config.BATAS_TELAT_RINGAN:
-                            # Telat ringan: 00:01 - jam 12:00
-                            potongan = config.POTONGAN_TELAT_SEDIKIT
-                        elif row["Jam_Masuk"] <= config.BATAS_TELAT_BERAT:
-                            # Telat berat: 12:00 - 15:00
-                            potongan = int(uang_base * config.POTONGAN_TELAT_BANYAK_PERSEN)
+                        # Hitung durasi menit keterlambatan
+                        jam_masuk_dt = datetime.datetime.combine(tgl, row["Jam_Masuk"])
+                        batas_dt = datetime.datetime.combine(tgl, jam_masuk_std)
+                        menit_telat = (jam_masuk_dt - batas_dt).total_seconds() / 60
+
+                        # Cek toleransi keterlambatan: 1x per periode, max 10 menit untuk telat pertama
+                        if ke == config.TOLERANSI_TELAT_HARI_KE and menit_telat <= config.TOLERANSI_TELAT_MAX_MENIT:
+                            potongan = 0  # Ditoleransi, bebas potongan
+                        else:
+                            # Karyawan telat kena potongan
+                            if row["Jam_Masuk"] <= config.BATAS_TELAT_RINGAN:
+                                # Telat ringan: 00:01 - jam 12:00
+                                potongan = config.POTONGAN_TELAT_SEDIKIT
+                            elif row["Jam_Masuk"] <= config.BATAS_TELAT_BERAT:
+                                # Telat berat: 12:00 - 15:00
+                                potongan = int(uang_base * config.POTONGAN_TELAT_BANYAK_PERSEN)
 
             # --- Potongan pulang duluan (hanya di hari kerja biasa) ---
             potongan_pulang = 0
             if profil["ikut_telat"]:  # pakai ikut_telat sebagai proxy profil jam baku
                 jam_keluar_std = config.get_jam_profil(profil, "jam_keluar", nama_hari)
                 if jam_keluar_std and row["Jam_Keluar"] < jam_keluar_std:
-                    # Karyawan pulang duluan — hitung besaran potongan
-                    if row["Jam_Keluar"] < config.BATAS_PULANG_DULUAN_RINGAN:
-                        # Pulang sebelum 15:00 → potongan 50%
-                        potongan_pulang = int(uang_base * config.POTONGAN_PULANG_DULUAN_BANYAK_PERSEN)
-                    elif row["Jam_Keluar"] < config.BATAS_PULANG_DULUAN_BERAT:
-                        # Pulang 15:00 - sebelum 16:00 → potongan Rp10.000
-                        potongan_pulang = config.POTONGAN_PULANG_DULUAN_SEDIKIT
+                    if izin_pulang_resmi:
+                        # Bebas potongan jika ada izin pulang cepat resmi yang disetujui
+                        potongan_pulang = 0
+                    else:
+                        # Karyawan pulang duluan — hitung besaran potongan
+                        if row["Jam_Keluar"] < config.BATAS_PULANG_DULUAN_RINGAN:
+                            # Pulang sebelum 15:00 → potongan 50%
+                            potongan_pulang = int(uang_base * config.POTONGAN_PULANG_DULUAN_BANYAK_PERSEN)
+                        elif row["Jam_Keluar"] < config.BATAS_PULANG_DULUAN_BERAT:
+                            # Pulang 15:00 - sebelum 16:00 → potongan Rp10.000
+                            potongan_pulang = config.POTONGAN_PULANG_DULUAN_SEDIKIT
 
         total = uang_base - potongan - potongan_pulang + bonus_merah
 
@@ -432,7 +505,7 @@ def _label_minggu(tanggal, hari_terakhir_offset=4):
     return label, senin.date()
 
 
-def hitung_rekap_tidak_masuk(df_preprocessing_semua):
+def hitung_rekap_tidak_masuk(df_preprocessing_semua, approved_leaves=None):
     """
     Aturan #2, #3, #3.3.4 — REVISI v2: hari kandidat dan kuota diambil dari
     profil. Hanya proses karyawan dengan ikut_kuota_hari_kerja=True.
@@ -440,6 +513,11 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua):
     df_preprocessing_semua: hasil agregasi harian SEBELUM filter #11 (perlu
     tahu Status_Data utk membedakan Lengkap vs Tidak Lengkap vs tidak ada
     scan sama sekali).
+
+    REVISI v3 (Fitur Cuti & Izin):
+    Jika karyawan memiliki pengajuan cuti resmi (CUTI_TAHUNAN, SAKIT, LAINNYA) yang APPROVED
+    pada hari kerja kandidat, hari tersebut dihitung sebagai hari valid (tidak alpa),
+    sehingga kuota hari kerja terpenuhi dan tidak masuk rekap alpa/tidak masuk tanpa izin.
 
     Return kolom termasuk '_senin_minggu' (tanggal Senin asli, dipakai utk
     deteksi "berturut-turut" di hitung_rekap_alpa_berulang) - kolom ini
@@ -491,16 +569,13 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua):
             ["Label_Minggu", "Senin_Minggu"]
         ):
             hari_lengkap = grup_minggu[grup_minggu["Status_Data"] == "Lengkap"]
-            jml_hari_valid = hari_lengkap["Tanggal"].dt.date.nunique()
-
-            if jml_hari_valid >= min_hari:
-                continue  # aman, tidak perlu dicatat
+            tanggal_lengkap_set = set(hari_lengkap["Tanggal"].dt.date.unique())
 
             cabang_dominan = grup_minggu["Cabang"].value_counts().idxmax()
-
             tanggal_senin = pd.Timestamp(senin_minggu)
             hari_tidak_masuk = []
             keterangan_detail = []
+            hari_cuti_resmi = 0
             
             bulan_id = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
                         "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
@@ -514,6 +589,17 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua):
                 format_tgl = f"{tgl_hari_itu.day} {bulan_id[tgl_hari_itu.month - 1]}"
                 nama_hari_tgl = f"{nama_hari_k} ({format_tgl})"
                 
+                # Cek apakah tanggal ini ada scan lengkap
+                if tgl_hari_itu in tanggal_lengkap_set:
+                    continue
+
+                # Cek apakah karyawan memiliki cuti/sakit/izin resmi yang disetujui (APPROVED)
+                cuti_resmi = _find_approved_leave(nama, tgl_hari_itu, approved_leaves, kategori_filter={"CUTI_TAHUNAN", "SAKIT", "LAINNYA"})
+                if cuti_resmi:
+                    hari_cuti_resmi += 1
+                    continue  # Hari ini diakui sebagai cuti/izin resmi berizin, tidak dihitung alpa/tidak masuk
+
+                # Jika tidak ada cuti resmi dan scan tidak lengkap / tidak ada
                 baris_hari_itu = grup_minggu[grup_minggu["Tanggal"].dt.date == tgl_hari_itu]
                 if baris_hari_itu.empty:
                     hari_tidak_masuk.append(nama_hari_tgl)
@@ -525,6 +611,12 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua):
                             f"*{nama_hari_tgl}: ada scan tapi data tidak lengkap -> dihitung tidak masuk"
                         )
 
+            # Total hari valid = hari dengan scan lengkap + hari dengan cuti/sakit resmi
+            jml_hari_valid = len(tanggal_lengkap_set) + hari_cuti_resmi
+
+            if jml_hari_valid >= min_hari:
+                continue  # Kuota hari kerja terpenuhi, tidak perlu dicatat sebagai anomali
+
             hasil_rows.append({
                 "Cabang": cabang_dominan,
                 "Nama": nama,
@@ -534,7 +626,9 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua):
                 "Jml_Hari_Tidak_Masuk": len(hari_tidak_masuk),
                 "Hari_Tidak_Masuk": ", ".join(hari_tidak_masuk) if hari_tidak_masuk else "-",
                 "Keterangan": (
-                    f"Kurang dari {min_hari} hari kerja (hanya {jml_hari_valid} hari valid)."
+                    f"Kurang dari {min_hari} hari kerja (hanya {jml_hari_valid} hari valid"
+                    + (f" termasuk {hari_cuti_resmi} cuti/izin resmi" if hari_cuti_resmi > 0 else "")
+                    + ")."
                     + (" " + " ".join(keterangan_detail) if keterangan_detail else "")
                 ),
                 "_senin_minggu": senin_minggu,

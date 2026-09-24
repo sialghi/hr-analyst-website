@@ -62,3 +62,23 @@ def require_hr_master(current_user: models.User = Depends(get_current_user)) -> 
             detail="Hanya HR Master yang boleh melakukan aksi ini.",
         )
     return current_user
+
+
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+
+def get_current_user_optional(
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    db: Session = Depends(get_db),
+) -> Optional[models.User]:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if user_id is None:
+            return None
+        return db.query(models.User).filter(models.User.id == int(user_id)).first()
+    except Exception:
+        return None
+

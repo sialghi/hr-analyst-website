@@ -209,7 +209,51 @@ export const api = {
     const res = await request(`/proses/template?format=${format}`);
     return res.blob();
   },
+
+  async getLeaves(params?: { status?: string; nama?: string; kategori?: string }) {
+    const query = new URLSearchParams();
+    if (params?.status) query.set("status", params.status);
+    if (params?.nama) query.set("nama", params.nama);
+    if (params?.kategori) query.set("kategori", params.kategori);
+    const qs = query.toString() ? `?${query.toString()}` : "";
+    const res = await request(`/leaves${qs}`);
+    return res.json();
+  },
+
+  async createLeave(payload: any) {
+    const res = await request("/leaves", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  },
+
+  async updateLeaveStatus(id: number, status: string, catatan_hr?: string) {
+    const res = await request(`/leaves/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status, catatan_hr }),
+    });
+    return res.json();
+  },
+
+  async deleteLeave(id: number) {
+    await request(`/leaves/${id}`, { method: "DELETE" });
+  },
+
+  async chatWithAI(
+    fileId: string,
+    message: string,
+    history: { role: "user" | "model"; text: string }[] = []
+  ): Promise<string> {
+    const res = await request("/chat", {
+      method: "POST",
+      body: JSON.stringify({ file_id: fileId, message, history }),
+    });
+    const data = await res.json();
+    return data.reply as string;
+  },
 };
+
 
 export function triggerBlobDownload(blob: Blob, filename: string) {
   const url = window.URL.createObjectURL(blob);

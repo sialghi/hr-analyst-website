@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState, useMemo, useCallback } from "react";
+import { useRef, useState, useMemo, useCallback, useEffect } from "react";
 import { api, triggerBlobDownload } from "@/lib/api";
 import { PageHeader, Card, Button, Banner } from "@/components/ui";
 
@@ -742,8 +742,392 @@ function SimpleBarChart({ sheet }: { sheet: SheetInfo }) {
 }
 
 /* ===================================================================
-   MAIN PROCESS PAGE
+   AI CHAT PANEL (Floating, bottom-right)
    =================================================================== */
+type ChatMessage = { role: "user" | "model"; text: string };
+
+const SUGGESTED_PROMPTS = [
+  "Siapa karyawan yang paling sering telat?",
+  "Berapa total uang makan keseluruhan?",
+  "Siapa yang mendapat bonus lembur terbesar?",
+  "Karyawan mana yang paling sering tidak masuk?",
+];
+
+function parseInlineFormatted(text: string): React.ReactNode[] {
+  // Bersihkan asteris bertumpuk jika ada
+  const cleaned = text.replace(/\*{3,}/g, "**");
+
+  const parts: React.ReactNode[] = [];
+  const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+  let lastIdx = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(cleaned)) !== null) {
+    if (match.index > lastIdx) {
+      parts.push(cleaned.substring(lastIdx, match.index));
+    }
+    const token = match[0];
+    if (token.startsWith("**") && token.endsWith("**")) {
+      parts.push(
+        <strong key={match.index} className="font-semibold text-slate-900">
+          {token.slice(2, -2)}
+        </strong>
+      );
+    } else if (token.startsWith("*") && token.endsWith("*")) {
+      parts.push(
+        <em key={match.index} className="italic text-slate-700">
+          {token.slice(1, -1)}
+        </em>
+      );
+    } else if (token.startsWith("`") && token.endsWith("`")) {
+      parts.push(
+        <code key={match.index} className="px-1.5 py-0.5 rounded bg-indigo-50 font-mono text-[11px] text-indigo-700 font-medium border border-indigo-100">
+          {token.slice(1, -1)}
+        </code>
+      );
+    }
+    lastIdx = regex.lastIndex;
+  }
+  if (lastIdx < cleaned.length) {
+    parts.push(cleaned.substring(lastIdx));
+  }
+  return parts.length > 0 ? parts : [cleaned];
+}
+
+function FormattedMessage({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const elements: React.ReactNode[] = [];
+
+  lines.forEach((rawLine, idx) => {
+    const line = rawLine.trim();
+
+    if (!line) {
+      elements.push(<div key={`sp-${idx}`} className="h-2" />);
+      return;
+    }
+
+    if (line === "---" || line === "***" || line === "___") {
+      elements.push(<hr key={`hr-${idx}`} className="my-2.5 border-slate-200" />);
+      return;
+    }
+
+    // Headings: ### or ## or #
+    if (line.startsWith("#")) {
+      const headingText = line.replace(/^#+\s*/, "");
+      elements.push(
+        <div key={`h-${idx}`} className="font-bold text-[13px] text-indigo-950 mt-3 mb-1 pt-1 border-b border-indigo-100/70 pb-1 flex items-center gap-1.5">
+          <span className="w-1.5 h-3.5 bg-indigo-600 rounded-full shrink-0" />
+          <span>{parseInlineFormatted(headingText)}</span>
+        </div>
+      );
+      return;
+    }
+
+    // Bullet points: * , - , •
+    const bulletMatch = line.match(/^([*\-•])\s+(.*)/);
+    if (bulletMatch) {
+      elements.push(
+        <div key={`b-${idx}`} className="flex items-start gap-2 py-0.5 pl-1 text-slate-700">
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1.5 shrink-0" />
+          <div className="flex-1 leading-relaxed">{parseInlineFormatted(bulletMatch[2])}</div>
+        </div>
+      );
+      return;
+    }
+
+    // Numbered list: 1. , 2. , or alphabetical a. , b.
+    const numMatch = line.match(/^(\d+|[a-zA-Z])[\.\)]\s+(.*)/);
+    if (numMatch) {
+      elements.push(
+        <div key={`n-${idx}`} className="flex items-start gap-2 py-0.5 pl-1 text-slate-700">
+          <span className="min-w-[18px] h-[18px] rounded-md bg-indigo-50 text-indigo-700 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5 border border-indigo-200/70">
+            {numMatch[1]}
+          </span>
+          <div className="flex-1 leading-relaxed">{parseInlineFormatted(numMatch[2])}</div>
+        </div>
+      );
+      return;
+    }
+
+    // Regular paragraph
+    elements.push(
+      <p key={`p-${idx}`} className="leading-relaxed text-slate-700 py-0.5">
+        {parseInlineFormatted(line)}
+      </p>
+    );
+  });
+
+  return <div className="space-y-0.5 text-xs text-slate-800">{elements}</div>;
+}
+
+function AIChatPanel({ fileId }: { fileId: string }) {
+  const [open, setOpen] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      setTimeout(() => inputRef.current?.focus(), 120);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  async function sendMessage(text: string) {
+    if (!text.trim() || loading) return;
+    const userMsg: ChatMessage = { role: "user", text: text.trim() };
+    const newHistory = [...messages, userMsg];
+    setMessages(newHistory);
+    setInput("");
+    setLoading(true);
+    setChatError(null);
+    try {
+      const reply = await api.chatWithAI(fileId, text.trim(), messages);
+      setMessages([...newHistory, { role: "model", text: reply }]);
+    } catch (err: any) {
+      setChatError(err.message || "Gagal menghubungi AI. Coba lagi.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage(input);
+    }
+  }
+
+  async function handleCopy(text: string, index: number) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIdx(index);
+      setTimeout(() => setCopiedIdx(null), 2000);
+    } catch {
+      // fallback
+    }
+  }
+
+  const hasMessages = messages.length > 0;
+
+  return (
+    <>
+      {/* Floating Button */}
+      {!open && (
+        <button
+          id="ai-chat-fab"
+          onClick={() => setOpen(true)}
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-md hover:bg-indigo-700 transition-colors cursor-pointer"
+          title="Tanya asisten tentang data absensi ini"
+        >
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          <span>Tanya Asisten</span>
+        </button>
+      )}
+
+      {/* Chat Panel */}
+      {open && (
+        <div
+          id="ai-chat-panel"
+          className={`fixed bottom-6 right-6 z-50 flex flex-col transition-all duration-150 rounded-xl shadow-xl border border-slate-200 bg-white overflow-hidden ${
+            isExpanded
+              ? "w-[92vw] sm:w-[620px] max-h-[720px] h-[85vh]"
+              : "w-[92vw] sm:w-[440px] max-h-[600px] h-[580px]"
+          }`}
+        >
+          {/* Header */}
+          <div className="flex items-center gap-3 px-4 py-3 bg-slate-900 text-white shrink-0 border-b border-slate-800">
+            <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-bold leading-tight">Analisis Absensi AI</p>
+              <p className="text-[11px] text-slate-400 leading-tight">Gemma 4 · Google AI</p>
+            </div>
+            <div className="flex items-center gap-1">
+              {hasMessages && (
+                <button
+                  onClick={() => { setMessages([]); setChatError(null); }}
+                  className="text-slate-400 hover:text-white text-[11px] font-medium px-2 py-1 rounded hover:bg-slate-800 transition-colors cursor-pointer mr-1"
+                  title="Hapus riwayat chat"
+                >
+                  Hapus
+                </button>
+              )}
+              {/* Expand / Minimize Toggle */}
+              <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer shrink-0"
+                title={isExpanded ? "Perkecil panel" : "Perbesar panel"}
+                aria-label={isExpanded ? "Perkecil panel" : "Perbesar panel"}
+              >
+                {isExpanded ? (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 14 10 14 10 20" />
+                    <polyline points="20 10 14 10 14 4" />
+                    <line x1="14" y1="10" x2="21" y2="3" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                ) : (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="15 3 21 3 21 9" />
+                    <polyline points="9 21 3 21 3 15" />
+                    <line x1="21" y1="3" x2="14" y2="10" />
+                    <line x1="3" y1="21" x2="10" y2="14" />
+                  </svg>
+                )}
+              </button>
+              {/* Close Button */}
+              <button
+                onClick={() => setOpen(false)}
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer shrink-0"
+                aria-label="Tutup chat"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" x2="6" y1="6" y2="18" />
+                  <line x1="6" x2="18" y1="6" y2="18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Messages Area */}
+          <div className="flex-1 overflow-y-auto px-4 py-3.5 space-y-3 min-h-0 bg-slate-50/70">
+            {!hasMessages && (
+              <div className="space-y-3 pt-1">
+                <div className="p-3 rounded-lg bg-white border border-slate-200 text-center">
+                  <p className="text-xs font-semibold text-slate-800 mb-0.5">Asisten Analisis Absensi</p>
+                  <p className="text-[11px] text-slate-500">
+                    Ketik pertanyaan tentang rincian keterlambatan, lembur, uang makan, atau jam kerja cabang.
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  {SUGGESTED_PROMPTS.map((p, i) => (
+                    <button
+                      key={i}
+                      onClick={() => sendMessage(p)}
+                      disabled={loading}
+                      className="w-full text-left text-xs px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-between"
+                    >
+                      <span>{p}</span>
+                      <span className="text-slate-400">→</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {messages.map((msg, i) => (
+              <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`rounded-xl text-xs ${
+                    msg.role === "user"
+                      ? "max-w-[85%] bg-indigo-600 text-white px-3.5 py-2.5 shadow-xs"
+                      : "w-full max-w-[94%] bg-white text-slate-800 border border-slate-200 shadow-xs p-3.5"
+                  }`}
+                >
+                  {msg.role === "user" ? (
+                    <div className="whitespace-pre-wrap leading-relaxed">{msg.text}</div>
+                  ) : (
+                    <div>
+                      {/* Sub-header inside AI card with Copy button */}
+                      <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-100 text-[11px] text-slate-400">
+                        <span className="font-medium text-slate-600">
+                          Analisis
+                        </span>
+                        <button
+                          onClick={() => handleCopy(msg.text, i)}
+                          className="flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-800 px-2 py-0.5 rounded hover:bg-slate-100 transition-colors cursor-pointer"
+                          title="Salin jawaban ini"
+                        >
+                          {copiedIdx === i ? (
+                            <span className="text-emerald-600 font-medium">
+                              Tersalin ✓
+                            </span>
+                          ) : (
+                            <>
+                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                              </svg>
+                              <span>Salin</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      <FormattedMessage text={msg.text} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {/* Loading indicator */}
+            {loading && (
+              <div className="flex justify-start">
+                <div className="bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 shadow-xs flex items-center gap-2">
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-[11px] text-slate-500 font-medium">Menganalisis data...</span>
+                </div>
+              </div>
+            )}
+
+            {chatError && (
+              <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                {chatError}
+              </div>
+            )}
+
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Input Area */}
+          <div className="px-3.5 py-3 border-t border-slate-200 bg-white shrink-0">
+            <div className="flex items-center gap-2">
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKey}
+                disabled={loading}
+                placeholder="Ketik pertanyaan atau nama karyawan..."
+                className="flex-1 text-xs px-3.5 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:bg-white disabled:opacity-60 transition-colors"
+              />
+              <button
+                onClick={() => sendMessage(input)}
+                disabled={!input.trim() || loading}
+                className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer shrink-0"
+                aria-label="Kirim pesan"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+    </>
+  );
+}
+
+
+
 export default function ProsesPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [processing, setProcessing] = useState(false);
@@ -1273,6 +1657,9 @@ export default function ProsesPage() {
           )}
         </div>
       </Card>
+
+      {/* AI Chat Panel — muncul floating di pojok kanan bawah */}
+      <AIChatPanel fileId={result.file_id} />
     </div>
   );
 }

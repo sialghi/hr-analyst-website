@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import Base, engine
-from .routers import auth, profiles, rules, employees, holidays, process
+from .routers import auth, profiles, rules, employees, holidays, process, chat, leaves, telegram
 
 # Buat semua tabel kalau belum ada (untuk production sebaiknya pakai Alembic migration,
 # tapi create_all() ini cukup aman & simpel untuk skala project ini).
@@ -32,4 +32,8 @@ app.include_router(profiles.router)
 app.include_router(rules.router)
 app.include_router(employees.router)
 app.include_router(holidays.router)
+app.include_router(leaves.router)
 app.include_router(process.router)
+app.include_router(chat.router)
+app.include_router(telegram.router)
+

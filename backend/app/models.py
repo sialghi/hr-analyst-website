@@ -112,3 +112,34 @@ class Holiday(Base):
     id = Column(Integer, primary_key=True, index=True)
     tanggal = Column(Date, unique=True, nullable=False)
     keterangan = Column(String, nullable=True)
+
+
+class LeaveRequest(Base):
+    """
+    Pengajuan Cuti / Izin Karyawan.
+    Bisa dibuat manual oleh HR Master/Staff di web, atau otomatis via Bot Telegram / n8n.
+    Status: PENDING, APPROVED, REJECTED
+    Kategori:
+      - CUTI_TAHUNAN (full day cuti tahunan)
+      - SAKIT (full day sakit)
+      - IZIN_PULANG_CEPAT (izin keluar lebih awal, jam_izin = misal 14:00)
+      - IZIN_TELAT (izin datang terlambat, jam_izin = misal 09:30)
+      - LAINNYA
+    """
+    __tablename__ = "leave_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nama = Column(String, nullable=False, index=True)
+    telegram_user_id = Column(String, nullable=True)
+    kategori = Column(String, nullable=False)  # CUTI_TAHUNAN, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA
+    tanggal_mulai = Column(Date, nullable=False)
+    tanggal_selesai = Column(Date, nullable=False)
+    jam_izin = Column(String, nullable=True)  # Format HH:MM untuk izin jam kerja
+    alasan = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="PENDING")  # PENDING, APPROVED, REJECTED
+    catatan_hr = Column(String, nullable=True)
+    approved_by = Column(String, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+

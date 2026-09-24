@@ -152,3 +152,47 @@ class HolidayOut(HolidayBase):
 
     class Config:
         from_attributes = True
+
+
+# ---------- Leave Request (cuti & izin) ----------
+class LeaveRequestBase(BaseModel):
+    nama: str
+    telegram_user_id: Optional[str] = None
+    kategori: str = "CUTI_TAHUNAN"  # CUTI_TAHUNAN, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA
+    tanggal_mulai: date
+    tanggal_selesai: date
+    jam_izin: Optional[str] = None  # "HH:MM"
+    alasan: Optional[str] = None
+    catatan_hr: Optional[str] = None
+
+
+class LeaveRequestCreate(LeaveRequestBase):
+    pass
+
+
+class LeaveRequestUpdate(BaseModel):
+    nama: Optional[str] = None
+    kategori: Optional[str] = None
+    tanggal_mulai: Optional[date] = None
+    tanggal_selesai: Optional[date] = None
+    jam_izin: Optional[str] = None
+    alasan: Optional[str] = None
+    catatan_hr: Optional[str] = None
+
+
+class LeaveRequestStatusUpdate(BaseModel):
+    status: str  # APPROVED, REJECTED, PENDING
+    catatan_hr: Optional[str] = None
+
+
+class LeaveRequestOut(LeaveRequestBase):
+    id: int
+    status: str
+    approved_by: Optional[str] = None
+    approved_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+

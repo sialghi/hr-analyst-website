@@ -16,6 +16,7 @@ from .loader import (
     load_raw_data, load_master_karyawan, load_tanggal_merah,
     build_master_dict, cari_nama_tidak_dikenal,
     build_master_df_from_db, build_tanggal_merah_from_db,
+    build_approved_leaves_from_db,
 )
 from .preprocessing import jalankan_preprocessing
 from .data_process import (
@@ -87,6 +88,11 @@ def jalankan_pipeline_db(
     master_dict = build_master_dict(df_master)
     log(f"      -> {len(master_dict)} karyawan di master, {len(tanggal_merah_set)} tanggal merah dikenali.")
 
+    # --- 1b. Cuti & izin yang sudah APPROVED ---
+    leaves = db.query(models.LeaveRequest).filter(models.LeaveRequest.status == "APPROVED").all()
+    approved_leaves = build_approved_leaves_from_db(leaves)
+    log(f"      -> {len(leaves)} pengajuan cuti/izin APPROVED ditemukan.")
+
     log(f"[2/5] Membaca data absensi mentah dari: {daftar_input}")
     df_mentah = load_raw_data(daftar_input)
     log(f"      -> {len(df_mentah)} baris scan mentah terbaca.")
@@ -100,13 +106,13 @@ def jalankan_pipeline_db(
 
     log("[4/5] Data Process (telat/lembur/uang makan/tidak masuk)...")
     df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]
-    df_telat = hitung_telat(df_lengkap)
+    df_telat = hitung_telat(df_lengkap, approved_leaves=approved_leaves)
     df_lembur = hitung_lembur(df_lengkap, tanggal_merah=tanggal_merah_set)
-    df_pulang_duluan = hitung_pulang_duluan(df_lengkap)
-    df_uang_makan = hitung_uang_makan(df_lengkap, master_dict=master_dict, tanggal_merah=tanggal_merah_set)
+    df_pulang_duluan = hitung_pulang_duluan(df_lengkap, approved_leaves=approved_leaves)
+    df_uang_makan = hitung_uang_makan(df_lengkap, master_dict=master_dict, tanggal_merah=tanggal_merah_set, approved_leaves=approved_leaves)
     df_profil_exclude = hitung_rekap_profil_exclude(df_lengkap)
 
-    df_tidak_masuk = hitung_rekap_tidak_masuk(df_prep)
+    df_tidak_masuk = hitung_rekap_tidak_masuk(df_prep, approved_leaves=approved_leaves)
     df_alpa_berulang = hitung_rekap_alpa_berulang(df_tidak_masuk)
 
     df_tidak_masuk_export = df_tidak_masuk.drop(columns=["_senin_minggu"], errors="ignore")
@@ -366,6 +372,10 @@ def jalankan_pipeline_db_json(
 
     master_dict = build_master_dict(df_master)
 
+    # --- 1b. Cuti & izin yang sudah APPROVED ---
+    leaves = db.query(models.LeaveRequest).filter(models.LeaveRequest.status == "APPROVED").all()
+    approved_leaves = build_approved_leaves_from_db(leaves)
+
     log(f"[2/5] Membaca data absensi mentah dari: {daftar_input}")
     df_mentah = load_raw_data(daftar_input)
     df_perlu_dicek = cari_nama_tidak_dikenal(df_mentah, master_dict)
@@ -375,12 +385,12 @@ def jalankan_pipeline_db_json(
 
     log("[4/5] Data Process...")
     df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]
-    df_telat = hitung_telat(df_lengkap)
+    df_telat = hitung_telat(df_lengkap, approved_leaves=approved_leaves)
     df_lembur = hitung_lembur(df_lengkap, tanggal_merah=tanggal_merah_set)
-    df_pulang_duluan = hitung_pulang_duluan(df_lengkap)
-    df_uang_makan = hitung_uang_makan(df_lengkap, master_dict=master_dict, tanggal_merah=tanggal_merah_set)
+    df_pulang_duluan = hitung_pulang_duluan(df_lengkap, approved_leaves=approved_leaves)
+    df_uang_makan = hitung_uang_makan(df_lengkap, master_dict=master_dict, tanggal_merah=tanggal_merah_set, approved_leaves=approved_leaves)
     df_profil_exclude = hitung_rekap_profil_exclude(df_lengkap)
-    df_tidak_masuk = hitung_rekap_tidak_masuk(df_prep)
+    df_tidak_masuk = hitung_rekap_tidak_masuk(df_prep, approved_leaves=approved_leaves)
     df_alpa_berulang = hitung_rekap_alpa_berulang(df_tidak_masuk)
     df_tidak_masuk_export = df_tidak_masuk.drop(columns=["_senin_minggu"], errors="ignore")
 

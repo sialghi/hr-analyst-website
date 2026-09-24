@@ -11,15 +11,12 @@ from sqlalchemy.orm import Session
 from .. import models, auth
 from ..database import get_db
 from ..pipeline.service import jalankan_pipeline_db, jalankan_pipeline_db_json
+from ..shared_store import _file_store
 
 router = APIRouter(tags=["process"])
 
 API_KEY = os.environ.get("API_KEY")
 ALLOWED_EXT = (".xlsx", ".xls", ".csv")
-
-# In-memory store untuk file hasil proses (file_id -> {path, filename})
-# Untuk production: gunakan Redis/S3/database. Cukup untuk skala kecil ini.
-_file_store: dict[str, dict] = {}
 
 
 def _cek_api_key(x_api_key):
@@ -114,8 +111,8 @@ async def proses_absensi_manual(
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Gagal memproses data: {e}")
 
-    # Simpan referensi file untuk download nanti
-    _file_store[file_id] = {"path": path_output, "filename": nama_download}
+    # Simpan referensi file untuk download nanti (juga simpan result_data untuk chatbot)
+    _file_store[file_id] = {"path": path_output, "filename": nama_download, "result_data": result_data}
 
     # Tambahkan file_id & filename ke response
     result_data["file_id"] = file_id
