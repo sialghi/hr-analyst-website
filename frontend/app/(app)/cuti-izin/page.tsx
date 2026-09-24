@@ -38,7 +38,10 @@ export default function CutiIzinPage() {
 
   // Modal tambah
   const [modalOpen, setModalOpen] = useState(false);
+  const [employees, setEmployees] = useState<any[]>([]);
+  const [formCabang, setFormCabang] = useState("");
   const [formNama, setFormNama] = useState("");
+  const [isManualNama, setIsManualNama] = useState(false);
   const [formKategori, setFormKategori] = useState("CUTI_TAHUNAN");
   const [formTglMulai, setFormTglMulai] = useState("");
   const [formTglSelesai, setFormTglSelesai] = useState("");
@@ -55,8 +58,12 @@ export default function CutiIzinPage() {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getLeaves();
-      setLeaves(data);
+      const [leavesData, empsData] = await Promise.all([
+        api.getLeaves(),
+        api.getEmployees().catch(() => []),
+      ]);
+      setLeaves(leavesData);
+      setEmployees(empsData || []);
     } catch (err: any) {
       setError(err.message || "Gagal memuat data cuti & izin.");
     } finally {
@@ -67,6 +74,21 @@ export default function CutiIzinPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const cabangList = useMemo(() => {
+    const s = new Set<string>();
+    employees.forEach((emp) => {
+      if (emp.cabang && typeof emp.cabang === "string") {
+        s.add(emp.cabang.trim());
+      }
+    });
+    return Array.from(s).sort();
+  }, [employees]);
+
+  const employeesByCabang = useMemo(() => {
+    if (!formCabang) return employees;
+    return employees.filter((emp) => emp.cabang === formCabang);
+  }, [employees, formCabang]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -374,16 +396,66 @@ export default function CutiIzinPage() {
             </div>
 
             <form onSubmit={handleAdd} className="p-5 space-y-3.5 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Nama Karyawan *</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Contoh: Eri Mutaqin"
-                  value={formNama}
-                  onChange={(e) => setFormNama(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Pilih Cabang</label>
+                  <select
+                    value={formCabang}
+                    onChange={(e) => {
+                      setFormCabang(e.target.value);
+                      setFormNama("");
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    <option value="">-- Semua Cabang ({employees.length}) --</option>
+                    {cabangList.map((cb) => (
+                      <option key={cb} value={cb}>
+                        {cb}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-semibold text-slate-700">Nama Karyawan *</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsManualNama(!isManualNama);
+                        setFormNama("");
+                      }}
+                      className="text-[10px] text-indigo-600 hover:underline cursor-pointer"
+                    >
+                      {isManualNama ? "Pilih dari daftar" : "Ketik manual"}
+                    </button>
+                  </div>
+
+                  {isManualNama ? (
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ketik nama karyawan..."
+                      value={formNama}
+                      onChange={(e) => setFormNama(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500"
+                    />
+                  ) : (
+                    <select
+                      required
+                      value={formNama}
+                      onChange={(e) => setFormNama(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    >
+                      <option value="">-- Pilih Karyawan ({employeesByCabang.length}) --</option>
+                      {employeesByCabang.map((emp) => (
+                        <option key={emp.id} value={emp.nama}>
+                          {emp.nama} {emp.cabang ? `(${emp.cabang})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
               </div>
 
               <div>

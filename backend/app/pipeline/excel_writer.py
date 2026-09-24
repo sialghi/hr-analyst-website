@@ -107,6 +107,41 @@ def _autosize(ws, n_kolom, lebar_default=16, max_lebar=40):
         ws.column_dimensions[col_letter].width = max_len
 
 
+def _set_summary_col_widths(ws):
+    """
+    Atur lebar kolom Summary Overview secara manual agar ringkas dan mudah dibaca.
+    Kolom teks panjang (nama, durasi) dibatasi, kolom angka dibuat compact.
+    """
+    # (col_index, width)
+    lebar = [
+        (1,  12),  # Cabang
+        (2,  20),  # Nama
+        (3,  10),  # Profil
+        (4,   9),  # Absensi In
+        (5,   9),  # Absensi Out
+        (6,  11),  # Hari Kerja Valid
+        (7,  14),  # Masuk Tanggal Merah
+        (8,   8),  # Jml Telat
+        (9,  18),  # Total Durasi Telat
+        (10,  9),  # Jml Lembur
+        (11, 14),  # Jam Lembur (Bulat)
+        (12,  13), # Jml Pulang Duluan
+        (13,  20), # Total Durasi Pulang Duluan
+        (14,  14), # Minggu Bermasalah
+        (15,  16), # Jumlah Hari Tidak Masuk
+        (16,  18), # Total Bonus Lembur (Rp)
+        (17,  18), # Uang Makan Harian (Rp)
+        (18,  16), # Potongan Telat (Rp)
+        (19,  20), # Potongan Pulang Duluan (Rp)
+        (20,  18), # Bonus Tanggal Merah (Rp)
+        (21,  20), # Total Uang Makan Akhir (Rp)
+    ]
+    for col_idx, width in lebar:
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+    # Baris header (row 4) diberi tinggi agar teks wrap terbaca
+    ws.row_dimensions[4].height = 42
+
+
 def _sheet_readme(wb, ringkasan_info):
     ws = wb.create_sheet("README")
     _tulis_judul(ws, "README — Panduan Membaca Laporan Absensi HR (v2)", n_kolom=6)
@@ -256,8 +291,9 @@ def _sheet_summary_overview(wb, daftar_karyawan):
     headers = [
         "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out", "Hari Kerja Valid", "Masuk Tanggal Merah",
         "Jml Telat", "Total Durasi Telat", "Jml Lembur", "Jam Lembur (Bulat)",
-        "Total Bonus Lembur (Rp)", "Jml Pulang Duluan", "Total Durasi Pulang Duluan",
+        "Jml Pulang Duluan", "Total Durasi Pulang Duluan",
         "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
+        "Total Bonus Lembur (Rp)",
         "Uang Makan Harian (Rp)", "Potongan Telat (Rp)", "Potongan Pulang Duluan (Rp)",
         "Bonus Tanggal Merah (Rp)", "Total Uang Makan Akhir (Rp)",
     ]
@@ -302,32 +338,31 @@ def _sheet_summary_overview(wb, daftar_karyawan):
         # Col K: Jam Lembur (Bulat)
         sumif_lembur = f"SUMIF('6. Rekap Lembur'!$B:$B,{nama_ref},'6. Rekap Lembur'!$I:$I)"
         ws.cell(row=r, column=11, value=f"={sumif_lembur}")
-        # Col L: Total Bonus Lembur Rp
-        ws.cell(row=r, column=12, value=f"=SUMIF('6. Rekap Lembur'!$B:$B,{nama_ref},'6. Rekap Lembur'!$J:$J)")
-        ws.cell(row=r, column=12).number_format = FMT_RUPIAH
-        # Col M: Jml Pulang Duluan
-        ws.cell(row=r, column=13, value=f"=COUNTIF('7. Rekap Pulang Duluan'!$B:$B,{nama_ref})")
-        # Col N: Total Durasi Pulang Duluan
+        # Col L: Jml Pulang Duluan
+        ws.cell(row=r, column=12, value=f"=COUNTIF('7. Rekap Pulang Duluan'!$B:$B,{nama_ref})")
+        # Col M: Total Durasi Pulang Duluan
         sumif_pulang = f"SUMIF('7. Rekap Pulang Duluan'!$B:$B,{nama_ref},'7. Rekap Pulang Duluan'!$G:$G)"
-        ws.cell(row=r, column=14, value=f'=IF({sumif_pulang}>0, INT({sumif_pulang}) & " jam " & ROUND(({sumif_pulang}-INT({sumif_pulang}))*60, 0) & " menit", "0 menit")')
-        
+        ws.cell(row=r, column=13, value=f'=IF({sumif_pulang}>0, INT({sumif_pulang}) & " jam " & ROUND(({sumif_pulang}-INT({sumif_pulang}))*60, 0) & " menit", "0 menit")')
         # Col N: Minggu Bermasalah
-        ws.cell(row=r, column=15, value=f"=COUNTIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref})")
+        ws.cell(row=r, column=14, value=f"=COUNTIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref})")
         # Col O: Jumlah Hari Tidak Masuk
-        ws.cell(row=r, column=16, value=f"=SUMIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref},'8. Rekap Tidak Masuk'!$F:$F)")
-        # Col P: Uang Makan Harian
+        ws.cell(row=r, column=15, value=f"=SUMIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref},'8. Rekap Tidak Masuk'!$F:$F)")
+        # Col P: Total Bonus Lembur Rp
+        ws.cell(row=r, column=16, value=f"=SUMIF('6. Rekap Lembur'!$B:$B,{nama_ref},'6. Rekap Lembur'!$J:$J)")
+        ws.cell(row=r, column=16).number_format = FMT_RUPIAH
+        # Col Q: Uang Makan Harian
         ws.cell(row=r, column=17, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$F:$F)")
         ws.cell(row=r, column=17).number_format = FMT_RUPIAH
-        # Col Q: Potongan Telat
+        # Col R: Potongan Telat
         ws.cell(row=r, column=18, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$G:$G)")
         ws.cell(row=r, column=18).number_format = FMT_RUPIAH
-        # Col R: Potongan Pulang Duluan
+        # Col S: Potongan Pulang Duluan
         ws.cell(row=r, column=19, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$H:$H)")
         ws.cell(row=r, column=19).number_format = FMT_RUPIAH
-        # Col S: Bonus Tanggal Merah
+        # Col T: Bonus Tanggal Merah
         ws.cell(row=r, column=20, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$I:$I)")
         ws.cell(row=r, column=20).number_format = FMT_RUPIAH
-        # Col T: Total Uang Makan Akhir
+        # Col U: Total Uang Makan Akhir
         ws.cell(row=r, column=21, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$J:$J)")
         ws.cell(row=r, column=21).number_format = FMT_RUPIAH
 
@@ -340,15 +375,16 @@ def _sheet_summary_overview(wb, daftar_karyawan):
     if n > 0:
         ws.auto_filter.ref = f"A4:{get_column_letter(len(headers))}{baris_akhir}"
     ws.freeze_panes = "A5"
-    _autosize(ws, len(headers))
+    _set_summary_col_widths(ws)
 
     if n > 0:
         chart = BarChart()
         chart.title = "Jml Telat vs Lembur vs Pulang Duluan per Karyawan"
         chart.y_axis.title = "Jumlah Kejadian"
         chart.x_axis.title = "Nama"
-        data = Reference(ws, min_col=7, max_col=7, min_row=4, max_row=baris_akhir)
-        data2 = Reference(ws, min_col=9, max_col=9, min_row=4, max_row=baris_akhir)
+        # Col 8 = Jml Telat, Col 10 = Jml Lembur, Col 12 = Jml Pulang Duluan
+        data = Reference(ws, min_col=8, max_col=8, min_row=4, max_row=baris_akhir)
+        data2 = Reference(ws, min_col=10, max_col=10, min_row=4, max_row=baris_akhir)
         data3 = Reference(ws, min_col=12, max_col=12, min_row=4, max_row=baris_akhir)
         cats = Reference(ws, min_col=2, min_row=baris_mulai, max_row=baris_akhir)
         chart.add_data(data, titles_from_data=True)

@@ -2,11 +2,12 @@
 import datetime
 import os
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Header, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Header, status, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from .. import models, schemas, auth
 from ..database import get_db
+from .telegram import send_leave_status_notification_to_user
 
 router = APIRouter(prefix="/leaves", tags=["leaves"])
 
@@ -85,15 +86,18 @@ def create_leave_request(
 
 
 @router.patch("/{leave_id}/status", response_model=schemas.LeaveRequestOut)
-def update_leave_status(
+async def update_leave_status(
     leave_id: int,
     payload: schemas.LeaveRequestStatusUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    caller=Depends(verify_bot_or_user),
+    current_user: models.User = Depends(auth.require_hr_master),
 ):
     """
     Approval / Reject pengajuan cuti.
-    HANYA HR Master (di web) ATAU Bot/n8n (saat HR Master klik tombol di Telegram) yang boleh mengubah status.
+    HANYA HR Master yang login di Website yang boleh mengubah status (approval lewat Telegram dinonaktifkan).
+    Setelah status diubah, notifikasi otomatis dikirimkan ke Telegram pemohon
+    HANYA pada telegram_user_id yang tersimpan pada pengajuan tersebut.
     """
     leave = db.query(models.LeaveRequest).filter(models.LeaveRequest.id == leave_id).first()
     if not leave:
@@ -103,10 +107,7 @@ def update_leave_status(
     if new_status not in ("APPROVED", "REJECTED", "PENDING"):
         raise HTTPException(status_code=400, detail="Status tidak valid. Gunakan APPROVED, REJECTED, atau PENDING.")
 
-    approver_name = "HR Master (Telegram)" if caller == "bot" else getattr(caller, "nama", "HR Master")
-    if caller != "bot" and getattr(caller, "role", None) != models.RoleEnum.hr_master:
-        raise HTTPException(status_code=403, detail="Hanya HR Master yang dapat menyetujui atau menolak cuti.")
-
+    approver_name = f"HR Master ({current_user.nama})"
     leave.status = new_status
     if payload.catatan_hr is not None:
         leave.catatan_hr = payload.catatan_hr
@@ -120,6 +121,24 @@ def update_leave_status(
 
     db.commit()
     db.refresh(leave)
+
+    # Kirim kabar hasil respon HR Master KHUSUS ke ID Telegram si pengaju
+    if leave.telegram_user_id and new_status in ("APPROVED", "REJECTED"):
+        background_tasks.add_task(
+            send_leave_status_notification_to_user,
+            telegram_user_id=leave.telegram_user_id,
+            leave_id=leave.id,
+            nama=leave.nama,
+            kategori=leave.kategori,
+            tanggal_mulai=leave.tanggal_mulai,
+            tanggal_selesai=leave.tanggal_selesai,
+            jam_izin=leave.jam_izin,
+            alasan=leave.alasan,
+            status=new_status,
+            approved_by=approver_name,
+            catatan_hr=leave.catatan_hr,
+        )
+
     return leave
 
 

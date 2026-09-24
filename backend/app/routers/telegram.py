@@ -108,8 +108,12 @@ async def edit_telegram_message(
         return None
 
 
-async def answer_callback_query(callback_query_id: str, text: Optional[str] = None) -> None:
-    """Menjawab interaksi tombol inline keyboard agar icon loading Telegram berhenti."""
+async def answer_callback_query(
+    callback_query_id: str,
+    text: Optional[str] = None,
+    show_alert: bool = False,
+) -> None:
+    """Menjawab interaksi tombol inline keyboard agar icon loading Telegram berhenti atau memunculkan alert popup."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", TELEGRAM_BOT_TOKEN).strip()
     if not token:
         return
@@ -118,6 +122,8 @@ async def answer_callback_query(callback_query_id: str, text: Optional[str] = No
     payload: Dict[str, Any] = {"callback_query_id": callback_query_id}
     if text:
         payload["text"] = text
+    if show_alert:
+        payload["show_alert"] = True
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -173,11 +179,15 @@ def parse_time_input(text: str) -> Optional[str]:
 
 
 # ===========================================================================
-# 3. NOTIFIKASI KE HR MASTER (DENGAN TOMBOL APPROVAL)
+# 3. NOTIFIKASI TELEGRAM
 # ===========================================================================
 
 async def notify_hr_master_new_leave(leave: models.LeaveRequest):
-    """Kirim notifikasi pengajuan baru ke HR Master lengkap dengan tombol Setujui / Tolak."""
+    """
+    Kirim notifikasi info pengajuan baru ke HR Master.
+    APPROVAL HANYA BISA DILAKUKAN DI WEBSITE OLEH HR MASTER.
+    (Tidak ada tombol approve/reject di Telegram).
+    """
     hr_chat_id = os.environ.get("TELEGRAM_HR_CHAT_ID", TELEGRAM_HR_CHAT_ID).strip()
     if not hr_chat_id:
         print("[Telegram] Warning: TELEGRAM_HR_CHAT_ID belum disetel. Notifikasi HR tidak terkirim.")
@@ -202,20 +212,85 @@ async def notify_hr_master_new_leave(leave: models.LeaveRequest):
         f"📅 *Periode:* {periode}\n"
         f"{jam_info}"
         f"📝 *Alasan:* {leave.alasan or '-'}\n"
+        f"⏳ *Status:* PENDING\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"Silakan berikan keputusan persetujuan:"
+        f"ℹ️ *Persetujuan hanya dapat dilakukan melalui Website HR Analyst oleh HR Master.*\n"
+        f"Silakan buka menu *Cuti & Izin* pada Website HR untuk menyetujui atau menolak."
     )
 
-    reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "✅ Setujui", "callback_data": f"approve_{leave.id}"},
-                {"text": "❌ Tolak", "callback_data": f"reject_{leave.id}"},
-            ]
-        ]
-    }
+    # Kirim info tanpa tombol inline keyboard
+    await send_telegram_message(hr_chat_id, text, reply_markup=None)
 
-    await send_telegram_message(hr_chat_id, text, reply_markup=reply_markup)
+
+async def send_leave_status_notification_to_user(
+    telegram_user_id: str,
+    leave_id: int,
+    nama: str,
+    kategori: str,
+    tanggal_mulai: datetime.date,
+    tanggal_selesai: datetime.date,
+    jam_izin: Optional[str],
+    alasan: Optional[str],
+    status: str,
+    approved_by: Optional[str],
+    catatan_hr: Optional[str] = None,
+):
+    """
+    Kirim notifikasi hasil respon HR Master LANGSUNG dan HANYA ke telegram_user_id milik si pengaju.
+    Dipanggil otomatis setelah HR Master melakukan Approve/Reject di Website HR Analyst.
+    """
+    if not telegram_user_id or not str(telegram_user_id).strip():
+        print(f"[Telegram] Pengajuan #{leave_id} tidak memiliki telegram_user_id. Notifikasi dilewati.")
+        return
+
+    target_chat_id = str(telegram_user_id).strip()
+    kat_name = KATEGORI_NAME_MAP.get(kategori, kategori)
+    is_same = tanggal_mulai == tanggal_selesai
+    periode = (
+        tanggal_mulai.strftime("%d %b %Y")
+        if is_same
+        else f"{tanggal_mulai.strftime('%d %b %Y')} s/d {tanggal_selesai.strftime('%d %b %Y')}"
+    )
+
+    jam_info = f"⏰ *Jam Izin:* {jam_izin}\n" if jam_izin else ""
+    catatan_info = f"💬 *Catatan HR:* _{catatan_hr}_\n" if catatan_hr else ""
+    verifikator = approved_by or "HR Master"
+
+    if status.upper() == "APPROVED":
+        msg = (
+            f"🎉 *KABAR BAIK! Pengajuan Cuti/Izin Disetujui*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Halo *{nama}*, pengajuan cuti/izin Anda telah *DISETUJUI* oleh HR Master melalui Website HR.\n\n"
+            f"🆔 *ID Pengajuan:* `#{leave_id}`\n"
+            f"📋 *Kategori:* {kat_name}\n"
+            f"📅 *Periode:* {periode}\n"
+            f"{jam_info}"
+            f"📝 *Alasan:* {alasan or '-'}\n"
+            f"👤 *Disetujui oleh:* {verifikator}\n"
+            f"{catatan_info}"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"✅ *Status absensi Anda akan otomatis disesuaikan oleh sistem pipeline HR.*"
+        )
+    elif status.upper() == "REJECTED":
+        msg = (
+            f"⚠️ *PEMBERITAHUAN: Pengajuan Cuti/Izin Ditolak*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Halo *{nama}*, mohon maaf pengajuan cuti/izin Anda *DITOLAK* oleh HR Master melalui Website HR.\n\n"
+            f"🆔 *ID Pengajuan:* `#{leave_id}`\n"
+            f"📋 *Kategori:* {kat_name}\n"
+            f"📅 *Periode:* {periode}\n"
+            f"{jam_info}"
+            f"📝 *Alasan:* {alasan or '-'}\n"
+            f"👤 *Diverifikasi oleh:* {verifikator}\n"
+            f"{catatan_info}"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Silakan hubungi HR jika membutuhkan informasi atau koordinasi lebih lanjut."
+        )
+    else:
+        return
+
+    print(f"[Telegram] Mengirim notifikasi status #{leave_id} ({status}) ke user ID: {target_chat_id} ({nama})")
+    await send_telegram_message(target_chat_id, msg)
 
 
 # ===========================================================================
@@ -242,79 +317,20 @@ async def process_telegram_update(update: dict, db: Session):
         chat_id = message.get("chat", {}).get("id")
         msg_id = message.get("message_id")
 
+        # 1. Approval / Reject dari Telegram (DINONAKTIFKAN - HANYA BISA DI WEBSITE OLEH HR MASTER)
+        if data.startswith("approve_") or data.startswith("reject_"):
+            await answer_callback_query(
+                cb_id,
+                text="⛔ Persetujuan pengajuan cuti/izin sekarang HANYA bisa dilakukan oleh HR Master melalui Website HR Analyst!",
+                show_alert=True,
+            )
+            return
+
+        # Jawab callback query untuk interaksi formulir karyawan
         await answer_callback_query(cb_id)
 
-        # 1. Approval / Reject dari HR Master
-        if data.startswith("approve_") or data.startswith("reject_"):
-            is_approve = data.startswith("approve_")
-            leave_id_str = data.split("_", 1)[1]
-            try:
-                leave_id = int(leave_id_str)
-            except ValueError:
-                return
-
-            leave = db.query(models.LeaveRequest).filter(models.LeaveRequest.id == leave_id).first()
-            if not leave:
-                await send_telegram_message(chat_id, f"⚠️ Pengajuan ID `#{leave_id}` tidak ditemukan di database.")
-                return
-
-            # Perbarui status di database
-            new_status = "APPROVED" if is_approve else "REJECTED"
-            approver_title = f"HR Master ({sender_name})"
-            leave.status = new_status
-            leave.approved_by = approver_title
-            leave.approved_at = datetime.datetime.utcnow()
-            db.commit()
-            db.refresh(leave)
-
-            # Update pesan di chat HR (hilangkan tombol agar tidak diklik ganda)
-            status_badge = "✅ *DISETUJUI*" if is_approve else "❌ *DITOLAK*"
-            kat_name = KATEGORI_NAME_MAP.get(leave.kategori, leave.kategori)
-            is_same = leave.tanggal_mulai == leave.tanggal_selesai
-            periode = (
-                leave.tanggal_mulai.strftime("%d %b %Y")
-                if is_same
-                else f"{leave.tanggal_mulai.strftime('%d %b %Y')} s/d {leave.tanggal_selesai.strftime('%d %b %Y')}"
-            )
-            jam_info = f"⏰ *Jam Izin:* {leave.jam_izin}\n" if leave.jam_izin else ""
-
-            updated_text = (
-                f"📋 *STATUS PENGAJUAN CUTI / IZIN*\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"🆔 *ID Pengajuan:* `#{leave.id}`\n"
-                f"👤 *Nama Karyawan:* *{leave.nama}*\n"
-                f"📋 *Kategori:* {kat_name}\n"
-                f"📅 *Periode:* {periode}\n"
-                f"{jam_info}"
-                f"📝 *Alasan:* {leave.alasan or '-'}\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
-                f"Keputusan: {status_badge}\n"
-                f"Oleh: *{approver_title}*\n"
-                f"Waktu: {leave.approved_at.strftime('%d-%m-%Y %H:%M:%S')} UTC"
-            )
-
-            await edit_telegram_message(chat_id, msg_id, updated_text, reply_markup=None)
-
-            # Kirim notifikasi hasil ke Karyawan (jika ada telegram_user_id)
-            if leave.telegram_user_id:
-                if is_approve:
-                    karyawan_msg = (
-                        f"🎉 *KABAR BAIK! Pengajuan Cuti/Izin Disetujui*\n\n"
-                        f"Halo *{leave.nama}*, pengajuan *{kat_name}* Anda untuk tanggal *{periode}* "
-                        f"telah *DISETUJUI* oleh HR Master.\n\n"
-                        f"Status absensi Anda akan otomatis disesuaikan oleh sistem pipeline HR."
-                    )
-                else:
-                    karyawan_msg = (
-                        f"⚠️ *PEMBERITAHUAN: Pengajuan Cuti/Izin Ditolak*\n\n"
-                        f"Halo *{leave.nama}*, mohon maaf pengajuan *{kat_name}* Anda untuk tanggal *{periode}* "
-                        f"*DITOLAK* oleh HR Master.\n\n"
-                        f"Silakan hubungi HR jika membutuhkan informasi lebih lanjut."
-                    )
-                await send_telegram_message(leave.telegram_user_id, karyawan_msg)
-
         # 2. Pilihan Kategori Cuti oleh Karyawan (via inline keyboard)
-        elif data.startswith("kat_"):
+        if data.startswith("kat_"):
             kat_code = data.replace("kat_", "")
             if chat_id in user_states:
                 user_states[chat_id]["data"]["kategori"] = kat_code
@@ -564,15 +580,12 @@ async def process_telegram_update(update: dict, db: Session):
                 f"{jam_info}"
                 f"📝 Alasan: {item.alasan or '-'}"
             )
-            reply_markup = {
-                "inline_keyboard": [
-                    [
-                        {"text": "✅ Setujui", "callback_data": f"approve_{item.id}"},
-                        {"text": "❌ Tolak", "callback_data": f"reject_{item.id}"},
-                    ]
-                ]
-            }
-            await send_telegram_message(chat_id, item_text, reply_markup=reply_markup)
+            await send_telegram_message(chat_id, item_text)
+
+        await send_telegram_message(
+            chat_id,
+            "ℹ️ *Persetujuan pengajuan di atas hanya dapat dilakukan oleh HR Master melalui Website HR Analyst (Menu Cuti & Izin).*"
+        )
         return
 
     # Perintah /status

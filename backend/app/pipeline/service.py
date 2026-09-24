@@ -265,8 +265,9 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
     headers = [
         "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out", "Hari Kerja Valid",
         "Masuk Tanggal Merah", "Jml Telat", "Total Durasi Telat", "Jml Lembur",
-        "Jam Lembur (Bulat)", "Total Bonus Lembur (Rp)", "Jml Pulang Duluan",
+        "Jam Lembur (Bulat)", "Jml Pulang Duluan",
         "Total Durasi Pulang Duluan", "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
+        "Total Bonus Lembur (Rp)",
         "Uang Makan Harian (Rp)", "Potongan Telat (Rp)", "Potongan Pulang Duluan (Rp)",
         "Bonus Tanggal Merah (Rp)", "Total Uang Makan Akhir (Rp)",
     ]
