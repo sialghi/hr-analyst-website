@@ -21,6 +21,48 @@ def list_employees(
     return q.order_by(models.Employee.nama).all()
 
 
+@router.get("/adjustments", response_model=list[schemas.EmployeeAdjustmentOut])
+def list_adjustments(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    """Melihat semua daftar penyesuaian tentatif (bonus/potongan lain-lain) per karyawan."""
+    return db.query(models.EmployeeAdjustment).all()
+
+
+@router.patch("/adjustments", response_model=schemas.EmployeeAdjustmentOut)
+def update_adjustment(
+    payload: schemas.EmployeeAdjustmentUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    """
+    Mengisi / Mengubah Total Bonus Lain-lain (Rp) & Total Potongan Lain-lain (Rp) per karyawan.
+    HANYA HR Master yang diperbolehkan mengubah.
+    """
+    nama_clean = payload.nama.strip()
+    adj = db.query(models.EmployeeAdjustment).filter(models.EmployeeAdjustment.nama.ilike(nama_clean)).first()
+    if not adj:
+        adj = models.EmployeeAdjustment(
+            nama=nama_clean,
+            bonus_lain=payload.bonus_lain or 0.0,
+            potongan_lain=payload.potongan_lain or 0.0,
+            catatan=payload.catatan,
+        )
+        db.add(adj)
+    else:
+        if payload.bonus_lain is not None:
+            adj.bonus_lain = payload.bonus_lain
+        if payload.potongan_lain is not None:
+            adj.potongan_lain = payload.potongan_lain
+        if payload.catatan is not None:
+            adj.catatan = payload.catatan
+
+    db.commit()
+    db.refresh(adj)
+    return adj
+
+
 @router.post("", response_model=schemas.EmployeeOut)
 def create_employee(
     payload: schemas.EmployeeCreate,
@@ -161,22 +203,22 @@ def download_employee_template(
     # Template data contoh — format IDENTIK dengan file data-uangmakan-posisi.xlsx
     # Kolom: Status, Nama, Uang Makan, Gaji Pokok
     data = [
-        {"Status": "Office A",          "Nama": "Budi Santoso",          "Uang Makan": 100000, "Gaji Pokok": ""},
-        {"Status": "Gudang A",          "Nama": "Siti Aminah",           "Uang Makan": 80000,  "Gaji Pokok": ""},
-        {"Status": "Gudang C",          "Nama": "Ahmad Fauzi",           "Uang Makan": 45000,  "Gaji Pokok": ""},
-        {"Status": "Gudang Bandung",    "Nama": "Reni Kusuma",           "Uang Makan": 50000,  "Gaji Pokok": ""},
-        {"Status": "Office C",          "Nama": "Dewi Rahayu",           "Uang Makan": 75000,  "Gaji Pokok": ""},
-        {"Status": "Office Bandung",    "Nama": "Irfan Wijaya",          "Uang Makan": 75000,  "Gaji Pokok": ""},
-        {"Status": "Toko GLC",          "Nama": "Bagus Setiawan",        "Uang Makan": 40000,  "Gaji Pokok": ""},
-        {"Status": "Toko Tanjung Duren","Nama": "Agung Nugroho",         "Uang Makan": "",     "Gaji Pokok": ""},
-        {"Status": "Toko IDD/PIK",      "Nama": "Aulia Putri",           "Uang Makan": 65000,  "Gaji Pokok": ""},
-        {"Status": "Toko Reef Plus/PIK","Nama": "Andry Saputra",         "Uang Makan": 55000,  "Gaji Pokok": ""},
-        {"Status": "Toko Ciledug",      "Nama": "Edi Kuswanto",          "Uang Makan": "",     "Gaji Pokok": ""},
-        {"Status": "Content Marketing", "Nama": "Fahrul Azi",            "Uang Makan": 100000, "Gaji Pokok": ""},
-        {"Status": "Host Live Streaming","Nama": "Intan Melani",          "Uang Makan": 60000,  "Gaji Pokok": ""},
-        {"Status": "Setup",             "Nama": "Karlina",               "Uang Makan": 60000,  "Gaji Pokok": ""},
-        {"Status": "Staff Stock Opname","Nama": "Hamdani",               "Uang Makan": 90000,  "Gaji Pokok": ""},
-        {"Status": "Driver Java Cipulir","Nama": "Harry",                "Uang Makan": "",     "Gaji Pokok": ""},
+        {"Status": "Office A",          "Nama": "Budi Santoso",          "Uang Makan": 100000, "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Gudang A",          "Nama": "Siti Aminah",           "Uang Makan": 80000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Gudang C",          "Nama": "Ahmad Fauzi",           "Uang Makan": 45000,  "BPJS Kesehatan": 67980, "BPJS TK": 203850, "Gaji Pokok": ""},
+        {"Status": "Gudang Bandung",    "Nama": "Reni Kusuma",           "Uang Makan": 50000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Office C",          "Nama": "Dewi Rahayu",           "Uang Makan": 75000,  "BPJS Kesehatan": 72000, "BPJS TK": 216000, "Gaji Pokok": ""},
+        {"Status": "Office Bandung",    "Nama": "Irfan Wijaya",          "Uang Makan": 75000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko GLC",          "Nama": "Bagus Setiawan",        "Uang Makan": 40000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko Tanjung Duren","Nama": "Agung Nugroho",         "Uang Makan": "",     "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko IDD/PIK",      "Nama": "Aulia Putri",           "Uang Makan": 65000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko Reef Plus/PIK","Nama": "Andry Saputra",         "Uang Makan": 55000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko Ciledug",      "Nama": "Edi Kuswanto",          "Uang Makan": "",     "BPJS Kesehatan": 73000, "BPJS TK": 219000, "Gaji Pokok": ""},
+        {"Status": "Content Marketing", "Nama": "Fahrul Azi",            "Uang Makan": 100000, "BPJS Kesehatan": 76000, "BPJS TK": 228000, "Gaji Pokok": ""},
+        {"Status": "Host Live Streaming","Nama": "Intan Melani",          "Uang Makan": 60000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Setup",             "Nama": "Karlina",               "Uang Makan": 60000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Staff Stock Opname","Nama": "Hamdani",               "Uang Makan": 90000,  "BPJS Kesehatan": 55550, "BPJS TK": 166650, "Gaji Pokok": ""},
+        {"Status": "Driver Java Cipulir","Nama": "Harry",                "Uang Makan": "",     "BPJS Kesehatan": 57299, "BPJS TK": 171896, "Gaji Pokok": ""},
     ]
     df = pd.DataFrame(data)
 
@@ -263,6 +305,10 @@ async def import_employees(
             col_map["id_mesin"] = col
         elif cl in ("uang_makan", "uang_makan_", "uang_makan_override", "uangmakan", "uang_makan_khusus"):
             col_map["uang_makan"] = col
+        elif any(k in cl for k in ("bpjs_kesehatan", "bpjs_kes", "potongan_bpjs_kesehatan", "kesehatan")):
+            col_map["bpjs_kesehatan"] = col
+        elif any(k in cl for k in ("bpjs_tk", "bpjs_ketenagakerjaan", "potongan_bpjs_tk", "jamsostek", "bpjstk")):
+            col_map["bpjs_tk"] = col
         elif cl in ("active", "aktif", "status_aktif", "is_active"):
             col_map["active"] = col
         # Kolom Gaji Pokok dari file asli — diabaikan saja, tidak disimpan ke DB
@@ -357,6 +403,23 @@ async def import_employees(
             except (ValueError, OverflowError):
                 uang_makan_override = None
 
+        # BPJS Kesehatan & BPJS TK
+        bpjs_kesehatan = None
+        if "bpjs_kesehatan" in col_map and pd.notna(row.get(col_map["bpjs_kesehatan"])):
+            raw_val = str(row[col_map["bpjs_kesehatan"]]).strip().replace(",", "").replace(".", "")
+            try:
+                bpjs_kesehatan = int(float(raw_val)) if raw_val else 0
+            except (ValueError, OverflowError):
+                bpjs_kesehatan = 0
+
+        bpjs_tk = None
+        if "bpjs_tk" in col_map and pd.notna(row.get(col_map["bpjs_tk"])):
+            raw_val = str(row[col_map["bpjs_tk"]]).strip().replace(",", "").replace(".", "")
+            try:
+                bpjs_tk = int(float(raw_val)) if raw_val else 0
+            except (ValueError, OverflowError):
+                bpjs_tk = 0
+
         # Active
         active = True
         if "active" in col_map and pd.notna(row.get(col_map["active"])):
@@ -373,6 +436,10 @@ async def import_employees(
             if id_mesin is not None:
                 emp.id_mesin = id_mesin
             emp.uang_makan_override = uang_makan_override
+            if bpjs_kesehatan is not None:
+                emp.bpjs_kesehatan = bpjs_kesehatan
+            if bpjs_tk is not None:
+                emp.bpjs_tk = bpjs_tk
             emp.active = active
             updated += 1
         else:
@@ -382,6 +449,8 @@ async def import_employees(
                 cabang=cabang,
                 id_mesin=id_mesin,
                 uang_makan_override=uang_makan_override,
+                bpjs_kesehatan=bpjs_kesehatan or 0,
+                bpjs_tk=bpjs_tk or 0,
                 active=active,
             )
             db.add(new_emp)

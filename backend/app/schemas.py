@@ -119,7 +119,16 @@ class EmployeeBase(BaseModel):
     profile_code: str
     cabang: Optional[str] = None
     uang_makan_override: Optional[int] = None
+    bpjs_kesehatan: Optional[int] = 0
+    bpjs_tk: Optional[int] = 0
     active: bool = True
+
+    # Aturan Khusus per Karyawan (Cascading Override)
+    has_custom_rules: bool = False
+    jam_masuk_override: Optional[str] = None        # "HH:MM", null = ikut profil
+    jam_keluar_override: Optional[str] = None       # "HH:MM", null = ikut profil
+    toleransi_telat_menit_override: Optional[int] = None  # null = ikut global
+    bonus_lembur_per_jam_override: Optional[int] = None   # null = ikut global
 
 
 class EmployeeCreate(EmployeeBase):
@@ -191,6 +200,26 @@ class LeaveRequestOut(LeaveRequestBase):
     approved_by: Optional[str] = None
     approved_at: Optional[datetime] = None
     created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Employee Adjustment (bonus/potongan tentatif) ----------
+class EmployeeAdjustmentUpdate(BaseModel):
+    nama: str
+    bonus_lain: Optional[float] = 0.0
+    potongan_lain: Optional[float] = 0.0
+    catatan: Optional[str] = None
+
+
+class EmployeeAdjustmentOut(BaseModel):
+    id: int
+    nama: str
+    bonus_lain: float
+    potongan_lain: float
+    catatan: Optional[str] = None
     updated_at: datetime
 
     class Config:

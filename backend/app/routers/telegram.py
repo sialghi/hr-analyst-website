@@ -303,6 +303,7 @@ async def process_telegram_update(update: dict, db: Session):
     - Menangani Callback Query (tombol persetujuan HR Master)
     - Menangani Pesan Teks Karyawan (percakapan pengajuan cuti/izin)
     """
+    from .leaves import get_annual_leave_stats, check_leave_overlap
     # -----------------------------------------------------------------------
     # A. MENANGANI TOMBOL INTERAKTIF (CALLBACK QUERY)
     # -----------------------------------------------------------------------
@@ -421,9 +422,34 @@ async def process_telegram_update(update: dict, db: Session):
                 user_states[chat_id]["data"]["nama"] = nama_fix
                 user_states[chat_id]["step"] = "input_tgl_mulai"
 
+                # Hitung statistik jatah kuota cuti tahunan
+                kat_selected = user_states[chat_id]["data"].get("kategori", "")
+                stats = get_annual_leave_stats(db, nama_fix)
+                user_states[chat_id]["data"]["quota_stats"] = stats
+
+                quota_msg = (
+                    f"📊 *Informasi Cuti Tahunan ({stats['year']}):*\n"
+                    f"• Total Jatah: *12 Hari*\n"
+                    f"• Terpakai/Pending: *{stats['used_days']} Hari*\n"
+                    f"• Sisa Jatah: *{stats['remaining_days']} Hari*\n\n"
+                )
+
+                if kat_selected == "CUTI_TAHUNAN" and stats["remaining_days"] <= 0:
+                    user_states.pop(chat_id, None)
+                    await edit_telegram_message(
+                        chat_id,
+                        msg_id,
+                        f"⛔ *MAAF: JATAH CUTI TAHUNAN HABIS*\n\n"
+                        f"Halo *{nama_fix}*, jatah kuota Cuti Tahunan Anda untuk tahun *{stats['year']}* sudah habis (Telah digunakan/pending: *12/12 Hari*).\n\n"
+                        f"Pengajuan cuti tahunan tidak dapat dilanjutkan. Silakan gunakan perintah `/cuti` jika ingin mengajukan jenis izin lainnya (Sakit / Izin Lainnya).",
+                        reply_markup=None,
+                    )
+                    return
+
                 await send_telegram_message(
                     chat_id,
                     f"Karyawan dipilih: *{nama_fix}*{cab_info}\n\n"
+                    f"{quota_msg}"
                     f"Langkah 4: Masukkan *Tanggal Mulai*\n"
                     f"Format: `YYYY-MM-DD` atau `DD-MM-YYYY`\n"
                     f"(Anda juga bisa ketik: `hari ini` atau `besok`):",
@@ -439,6 +465,56 @@ async def process_telegram_update(update: dict, db: Session):
                 tgl_selesai = form_data.get("tanggal_selesai")
                 jam_izin = form_data.get("jam_izin")
                 alasan = form_data.get("alasan")
+
+                # 1. Pengecekan Tanggal Bentrok / Overlap dengan pengajuan aktif sebelumnya
+                if nama and tgl_mulai and tgl_selesai:
+                    overlap = check_leave_overlap(db, nama, tgl_mulai, tgl_selesai)
+                    if overlap:
+                        user_states.pop(chat_id, None)
+                        tgl_str = (
+                            overlap.tanggal_mulai.strftime("%d-%m-%Y")
+                            if overlap.tanggal_mulai == overlap.tanggal_selesai
+                            else f"{overlap.tanggal_mulai.strftime('%d-%m-%Y')} s/d {overlap.tanggal_selesai.strftime('%d-%m-%Y')}"
+                        )
+                        kat_name = KATEGORI_NAME_MAP.get(overlap.kategori, overlap.kategori)
+                        await edit_telegram_message(
+                            chat_id,
+                            msg_id,
+                            f"⛔ *PENGAJUAN DITOLAK: TANGGAL BENTROK*\n\n"
+                            f"Halo *{nama}*, Anda sudah memiliki pengajuan aktif pada tanggal tersebut:\n\n"
+                            f"📋 *Pengajuan:* {kat_name} (`#{overlap.id}`)\n"
+                            f"📅 *Periode Bentrok:* {tgl_str}\n"
+                            f"⏳ *Status:* {overlap.status}\n\n"
+                            f"Anda tidak dapat membuat pengajuan ganda di tanggal yang sama.",
+                            reply_markup=None,
+                        )
+                        return
+
+                # 2. Pengecekan Akhir Kuota Cuti Tahunan
+                if kategori == "CUTI_TAHUNAN" and tgl_mulai and tgl_selesai:
+                    requested_days = (tgl_selesai - tgl_mulai).days + 1
+                    stats = get_annual_leave_stats(db, nama, year=tgl_mulai.year)
+                    if stats["remaining_days"] <= 0:
+                        user_states.pop(chat_id, None)
+                        await edit_telegram_message(
+                            chat_id,
+                            msg_id,
+                            f"⛔ *PENGAJUAN DITOLAK SISTEM*\n\n"
+                            f"Jatah Cuti Tahunan untuk *{nama}* tahun {tgl_mulai.year} sudah habis (12/12 Hari telah digunakan/pending).",
+                            reply_markup=None,
+                        )
+                        return
+                    if requested_days > stats["remaining_days"]:
+                        user_states.pop(chat_id, None)
+                        await edit_telegram_message(
+                            chat_id,
+                            msg_id,
+                            f"⛔ *PENGAJUAN DITOLAK SISTEM*\n\n"
+                            f"Jumlah hari cuti yang Anda ajukan (*{requested_days} Hari*) melebihi sisa kuota Cuti Tahunan Anda (*{stats['remaining_days']} Hari*).\n\n"
+                            f"Silakan ajukan kembali dengan durasi hari yang sesuai.",
+                            reply_markup=None,
+                        )
+                        return
 
                 # Simpan ke Database
                 leave = models.LeaveRequest(
@@ -465,7 +541,7 @@ async def process_telegram_update(update: dict, db: Session):
                     f"✅ *Pengajuan Berhasil Dikirim!*\n\n"
                     f"ID Pengajuan Anda: `#{leave.id}`\n"
                     f"Status saat ini: ⏳ *PENDING*\n\n"
-                    f"Pengajuan telah diteruskan ke HR Master untuk diverifikasi. "
+                    f"Pengajuan telah diteruskan ke HR Master untuk diverifikasi melalui Website HR. "
                     f"Anda akan menerima notifikasi otomatis saat disetujui.",
                     reply_markup=None,
                 )
@@ -628,6 +704,36 @@ async def process_telegram_update(update: dict, db: Session):
         await send_telegram_message(chat_id, "\n".join(lines))
         return
 
+    # Perintah /kuota atau /sisa_cuti
+    if lower_text in ("/kuota", "/sisa_cuti", "/sisa"):
+        last_leave = (
+            db.query(models.LeaveRequest)
+            .filter(models.LeaveRequest.telegram_user_id == str(chat_id))
+            .order_by(models.LeaveRequest.created_at.desc())
+            .first()
+        )
+        if last_leave and last_leave.nama:
+            stats = get_annual_leave_stats(db, last_leave.nama)
+            await send_telegram_message(
+                chat_id,
+                f"📊 *INFORMASI SISA CUTI TAHUNAN ({stats['year']})*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 *Nama Karyawan:* *{stats['nama']}*\n"
+                f"🏖️ *Total Jatah Tahunan:* 12 Hari\n"
+                f"✅ *Sudah Disetujui:* {stats['approved_days']} Hari\n"
+                f"⏳ *Dalam Proses (Pending):* {stats['pending_days']} Hari\n"
+                f"🎯 *Sisa Kuota Cuti:* *{stats['remaining_days']} Hari*\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"Ketik `/cuti` untuk membuat pengajuan baru."
+            )
+        else:
+            await send_telegram_message(
+                chat_id,
+                "ℹ️ Belum ada riwayat pengajuan atas akun Telegram Anda.\n"
+                "Silakan ketik `/cuti` untuk memilih nama Anda dan melihat sisa jatah cuti tahunan."
+            )
+        return
+
     # Perintah /cuti atau /izin
     if lower_text in ("/cuti", "/izin"):
         user_states[chat_id] = {"step": "pilih_kategori", "data": {}}
@@ -655,7 +761,7 @@ async def process_telegram_update(update: dict, db: Session):
     if not state:
         await send_telegram_message(
             chat_id,
-            "Ketik `/cuti` untuk mengajukan cuti/izin, atau `/help` untuk panduan.",
+            "Ketik `/cuti` untuk mengajukan cuti/izin, `/kuota` untuk cek sisa cuti, atau `/help` untuk panduan.",
         )
         return
 
@@ -675,9 +781,30 @@ async def process_telegram_update(update: dict, db: Session):
         state["data"]["nama"] = nama_fix
         state["step"] = "input_tgl_mulai"
 
+        stats = get_annual_leave_stats(db, nama_fix)
+        state["data"]["quota_stats"] = stats
+
+        quota_msg = (
+            f"📊 *Informasi Cuti Tahunan ({stats['year']}):*\n"
+            f"• Total Jatah: *12 Hari*\n"
+            f"• Terpakai/Pending: *{stats['used_days']} Hari*\n"
+            f"• Sisa Jatah: *{stats['remaining_days']} Hari*\n\n"
+        )
+
+        if state["data"].get("kategori") == "CUTI_TAHUNAN" and stats["remaining_days"] <= 0:
+            user_states.pop(chat_id, None)
+            await send_telegram_message(
+                chat_id,
+                f"⛔ *MAAF: JATAH CUTI TAHUNAN HABIS*\n\n"
+                f"Halo *{nama_fix}*, jatah kuota Cuti Tahunan Anda untuk tahun *{stats['year']}* sudah habis (Telah digunakan/pending: *12/12 Hari*).\n\n"
+                f"Pengajuan cuti tahunan tidak dapat dilanjutkan. Silakan gunakan perintah `/cuti` jika ingin mengajukan jenis izin lainnya.",
+            )
+            return
+
         await send_telegram_message(
             chat_id,
             f"Nama Karyawan: *{nama_fix}*\n\n"
+            f"{quota_msg}"
             f"Langkah 3: Masukkan *Tanggal Mulai*\n"
             f"Format: `YYYY-MM-DD` atau `DD-MM-YYYY`\n"
             f"(Anda juga bisa ketik: `hari ini` atau `besok`):",

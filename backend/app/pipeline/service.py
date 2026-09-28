@@ -16,7 +16,7 @@ from .loader import (
     load_raw_data, load_master_karyawan, load_tanggal_merah,
     build_master_dict, cari_nama_tidak_dikenal,
     build_master_df_from_db, build_tanggal_merah_from_db,
-    build_approved_leaves_from_db,
+    build_approved_leaves_from_db, build_bpjs_dict, get_bpjs_info,
 )
 from .preprocessing import jalankan_preprocessing
 from .data_process import (
@@ -37,6 +37,27 @@ CATATAN_ASUMSI = [
     "adalah cabang yang PALING SERING muncul utk orang tsb.",
     "Minggu di awal/akhir periode data yang datanya belum genap tetap dievaluasi apa adanya.",
 ]
+
+# Path default file BPJS. Bisa di-override via env variable BPJS_FILE_PATH.
+_DEFAULT_BPJS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),  # .../backend/app/pipeline/
+    "..", "..", "..",                            # naik 3 level ke root workspace
+    "13. BPJS AKTIF SEPT 2026 - Copy.xlsx"
+)
+BPJS_FILE_PATH = os.environ.get("BPJS_FILE_PATH", os.path.normpath(_DEFAULT_BPJS_PATH))
+
+
+def _load_adjustments_dict(db: Session) -> dict:
+    """Map nama karyawan (lowercase) -> (bonus_lain, potongan_lain)."""
+    rows = db.query(models.EmployeeAdjustment).all()
+    return {
+        (row.nama or "").strip().lower(): (
+            float(row.bonus_lain or 0.0),
+            float(row.potongan_lain or 0.0),
+        )
+        for row in rows
+        if row.nama
+    }
 
 
 def jalankan_pipeline_db(
@@ -91,7 +112,9 @@ def jalankan_pipeline_db(
     # --- 1b. Cuti & izin yang sudah APPROVED ---
     leaves = db.query(models.LeaveRequest).filter(models.LeaveRequest.status == "APPROVED").all()
     approved_leaves = build_approved_leaves_from_db(leaves)
-    log(f"      -> {len(leaves)} pengajuan cuti/izin APPROVED ditemukan.")
+    adjustments_dict = _load_adjustments_dict(db)
+    bpjs_dict = build_bpjs_dict(os.environ["BPJS_FILE_PATH"]) if "BPJS_FILE_PATH" in os.environ and os.path.exists(os.environ["BPJS_FILE_PATH"]) else {}
+    log(f"      -> {len(leaves)} pengajuan cuti/izin APPROVED, {len(bpjs_dict)} entri BPJS ditemukan.")
 
     log(f"[2/5] Membaca data absensi mentah dari: {daftar_input}")
     df_mentah = load_raw_data(daftar_input)
@@ -125,6 +148,9 @@ def jalankan_pipeline_db(
         df_uang_makan=df_uang_makan,
         df_profil_exclude=df_profil_exclude,
         df_perlu_dicek=df_perlu_dicek,
+        adjustments_dict=adjustments_dict,
+        bpjs_dict=bpjs_dict,
+        master_dict=master_dict,
     )
     log("Selesai.")
     return path_output
@@ -176,7 +202,8 @@ def _df_to_records(df, kolom_map=None, kolom_types=None):
 
 
 def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_duluan,
-                                     df_tidak_masuk, df_uang_makan):
+                                     df_tidak_masuk, df_uang_makan, adjustments_dict=None,
+                                     bpjs_dict=None, master_dict=None):
     """Hitung Summary Overview identik dengan formula Excel, tapi di Python."""
     if "Profil" in df_prep.columns:
         daftar = (
@@ -238,6 +265,13 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
                 return f"{j} jam"
             return f"{m} menit"
 
+        bonus_lain, potongan_lain = (adjustments_dict or {}).get(
+            str(nama).strip().lower(), (0.0, 0.0)
+        )
+        bpjs_info = get_bpjs_info(bpjs_dict, str(nama), master_dict=master_dict)
+        bpjs_kesehatan = bpjs_info.get("bpjs_kesehatan", 0)
+        bpjs_tk = bpjs_info.get("bpjs_tk", 0)
+
         rows.append({
             "Cabang": emp["Cabang"],
             "Nama": nama,
@@ -250,11 +284,15 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
             "Total Durasi Telat": _fmt_durasi(total_durasi_telat),
             "Jml Lembur": jml_lembur,
             "Jam Lembur (Bulat)": total_jam_lembur_bulat,
-            "Total Bonus Lembur (Rp)": total_bonus_lembur,
             "Jml Pulang Duluan": jml_pulang_duluan,
             "Total Durasi Pulang Duluan": _fmt_durasi(total_durasi_pd),
             "Minggu Bermasalah": minggu_bermasalah,
             "Jumlah Hari Tidak Masuk": jml_hari_tidak_masuk,
+            "Potongan BPJS Kesehatan (Rp)": bpjs_kesehatan,
+            "Potongan BPJS TK (Rp)": bpjs_tk,
+            "Total Bonus Lain-lain (Rp)": bonus_lain,
+            "Total Potongan Lain-lain (Rp)": potongan_lain,
+            "Total Bonus Lembur (Rp)": total_bonus_lembur,
             "Uang Makan Harian (Rp)": uang_makan_harian,
             "Potongan Telat (Rp)": potongan_telat,
             "Potongan Pulang Duluan (Rp)": potongan_pd_rp,
@@ -267,6 +305,8 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         "Masuk Tanggal Merah", "Jml Telat", "Total Durasi Telat", "Jml Lembur",
         "Jam Lembur (Bulat)", "Jml Pulang Duluan",
         "Total Durasi Pulang Duluan", "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
+        "Potongan BPJS Kesehatan (Rp)", "Potongan BPJS TK (Rp)",
+        "Total Bonus Lain-lain (Rp)", "Total Potongan Lain-lain (Rp)",
         "Total Bonus Lembur (Rp)",
         "Uang Makan Harian (Rp)", "Potongan Telat (Rp)", "Potongan Pulang Duluan (Rp)",
         "Bonus Tanggal Merah (Rp)", "Total Uang Makan Akhir (Rp)",
@@ -277,9 +317,11 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         "Hari Kerja Valid": "number", "Masuk Tanggal Merah": "number",
         "Jml Telat": "number", "Total Durasi Telat": "text",
         "Jml Lembur": "number", "Jam Lembur (Bulat)": "number",
-        "Total Bonus Lembur (Rp)": "currency", "Jml Pulang Duluan": "number",
-        "Total Durasi Pulang Duluan": "text",
+        "Jml Pulang Duluan": "number", "Total Durasi Pulang Duluan": "text",
         "Minggu Bermasalah": "number", "Jumlah Hari Tidak Masuk": "number",
+        "Potongan BPJS Kesehatan (Rp)": "currency", "Potongan BPJS TK (Rp)": "currency",
+        "Total Bonus Lain-lain (Rp)": "currency", "Total Potongan Lain-lain (Rp)": "currency",
+        "Total Bonus Lembur (Rp)": "currency",
         "Uang Makan Harian (Rp)": "currency", "Potongan Telat (Rp)": "currency",
         "Potongan Pulang Duluan (Rp)": "currency", "Bonus Tanggal Merah (Rp)": "currency",
         "Total Uang Makan Akhir (Rp)": "currency",
@@ -376,6 +418,8 @@ def jalankan_pipeline_db_json(
     # --- 1b. Cuti & izin yang sudah APPROVED ---
     leaves = db.query(models.LeaveRequest).filter(models.LeaveRequest.status == "APPROVED").all()
     approved_leaves = build_approved_leaves_from_db(leaves)
+    adjustments_dict = _load_adjustments_dict(db)
+    bpjs_dict = build_bpjs_dict(os.environ["BPJS_FILE_PATH"]) if "BPJS_FILE_PATH" in os.environ and os.path.exists(os.environ["BPJS_FILE_PATH"]) else {}
 
     log(f"[2/5] Membaca data absensi mentah dari: {daftar_input}")
     df_mentah = load_raw_data(daftar_input)
@@ -403,12 +447,18 @@ def jalankan_pipeline_db_json(
         df_uang_makan=df_uang_makan,
         df_profil_exclude=df_profil_exclude,
         df_perlu_dicek=df_perlu_dicek,
+        adjustments_dict=adjustments_dict,
+        bpjs_dict=bpjs_dict,
+        master_dict=master_dict,
     )
     log("Excel selesai ditulis. Menyiapkan data JSON...")
 
     # --- Bangun sheet-sheet JSON ---
     summary_data, daftar_karyawan = _compute_summary_overview_json(
-        df_prep, df_telat, df_lembur, df_pulang_duluan, df_tidak_masuk_export, df_uang_makan
+        df_prep, df_telat, df_lembur, df_pulang_duluan, df_tidak_masuk_export, df_uang_makan,
+        adjustments_dict=adjustments_dict,
+        bpjs_dict=bpjs_dict,
+        master_dict=master_dict,
     )
 
     perbandingan_data = _compute_perbandingan_cabang_json(

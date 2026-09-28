@@ -33,6 +33,83 @@ def verify_bot_or_user(
     )
 
 
+TOTAL_JATAH_CUTI_TAHUNAN = 12
+
+
+def get_annual_leave_stats(db: Session, nama: str, year: Optional[int] = None):
+    """Menghitung total kuota, hari yang dipakai (approved & pending), dan sisa kuota cuti tahunan."""
+    if not year:
+        year = datetime.date.today().year
+
+    leaves = (
+        db.query(models.LeaveRequest)
+        .filter(
+            models.LeaveRequest.nama.ilike(nama.strip()),
+            models.LeaveRequest.kategori == "CUTI_TAHUNAN",
+            models.LeaveRequest.status.in_(["APPROVED", "PENDING"]),
+        )
+        .all()
+    )
+
+    used_days = 0
+    approved_days = 0
+    pending_days = 0
+
+    for l in leaves:
+        if l.tanggal_mulai and l.tanggal_selesai and l.tanggal_mulai.year == year:
+            num_days = (l.tanggal_selesai - l.tanggal_mulai).days + 1
+            if num_days > 0:
+                used_days += num_days
+                if l.status == "APPROVED":
+                    approved_days += num_days
+                elif l.status == "PENDING":
+                    pending_days += num_days
+
+    remaining_days = max(0, TOTAL_JATAH_CUTI_TAHUNAN - used_days)
+    return {
+        "nama": nama.strip(),
+        "total_quota": TOTAL_JATAH_CUTI_TAHUNAN,
+        "used_days": used_days,
+        "approved_days": approved_days,
+        "pending_days": pending_days,
+        "remaining_days": remaining_days,
+        "year": year,
+    }
+
+
+def check_leave_overlap(
+    db: Session,
+    nama: str,
+    tgl_mulai: datetime.date,
+    tgl_selesai: datetime.date,
+    exclude_id: Optional[int] = None,
+):
+    """
+    Mengecek apakah karyawan sudah memiliki pengajuan (status PENDING atau APPROVED)
+    yang bentrok/beririsan dengan rentang tgl_mulai s/d tgl_selesai.
+    """
+    q = db.query(models.LeaveRequest).filter(
+        models.LeaveRequest.nama.ilike(nama.strip()),
+        models.LeaveRequest.status.in_(["APPROVED", "PENDING"]),
+        models.LeaveRequest.tanggal_mulai <= tgl_selesai,
+        models.LeaveRequest.tanggal_selesai >= tgl_mulai,
+    )
+    if exclude_id:
+        q = q.filter(models.LeaveRequest.id != exclude_id)
+
+    return q.first()
+
+
+@router.get("/quota")
+def get_leave_quota(
+    nama: str = Query(..., description="Nama Karyawan"),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    """Melihat sisa jatah kuota cuti tahunan karyawan."""
+    return get_annual_leave_stats(db, nama)
+
+
 @router.get("", response_model=list[schemas.LeaveRequestOut])
 def list_leave_requests(
     status_filter: Optional[str] = Query(default=None, alias="status"),
@@ -67,6 +144,40 @@ def create_leave_request(
     valid_kategori = {"CUTI_TAHUNAN", "SAKIT", "IZIN_PULANG_CEPAT", "IZIN_TELAT", "LAINNYA"}
     if kategori_norm not in valid_kategori:
         kategori_norm = "LAINNYA"
+
+    tgl_m = payload.tanggal_mulai
+    tgl_s = payload.tanggal_selesai
+
+    if tgl_s < tgl_m:
+        raise HTTPException(status_code=400, detail="Tanggal selesai tidak boleh sebelum tanggal mulai.")
+
+    # Pengecekan Tanggal Bentrok / Overlap dengan pengajuan aktif sebelumnya
+    overlap = check_leave_overlap(db, payload.nama, tgl_m, tgl_s)
+    if overlap:
+        tgl_str = (
+            overlap.tanggal_mulai.strftime("%d-%m-%Y")
+            if overlap.tanggal_mulai == overlap.tanggal_selesai
+            else f"{overlap.tanggal_mulai.strftime('%d-%m-%Y')} s/d {overlap.tanggal_selesai.strftime('%d-%m-%Y')}"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Pengajuan bentrok: {payload.nama} sudah memiliki pengajuan {overlap.kategori} (#{overlap.id}) yang aktif pada tanggal {tgl_str} (Status: {overlap.status}).",
+        )
+
+    # Pengecekan Jatah Kuota Cuti Tahunan (12 hari/tahun)
+    if kategori_norm == "CUTI_TAHUNAN":
+        requested_days = (tgl_s - tgl_m).days + 1
+        stats = get_annual_leave_stats(db, payload.nama, year=tgl_m.year)
+        if stats["remaining_days"] <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Jatah Cuti Tahunan untuk {payload.nama} tahun {tgl_m.year} sudah habis (12/12 hari telah digunakan/pending).",
+            )
+        if requested_days > stats["remaining_days"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Jumlah hari cuti yang diajukan ({requested_days} hari) melebihi sisa jatah kuota cuti tahunan ({stats['remaining_days']} hari).",
+            )
 
     leave = models.LeaveRequest(
         nama=payload.nama.strip(),

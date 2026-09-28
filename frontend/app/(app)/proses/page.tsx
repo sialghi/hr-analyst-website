@@ -90,6 +90,73 @@ function exportSheetCSV(sheet: SheetInfo) {
   URL.revokeObjectURL(url);
 }
 
+function EditableAdjCell({
+  nama,
+  fieldKey,
+  initialVal,
+  onSave,
+}: {
+  nama: string;
+  fieldKey: "bonus_lain" | "potongan_lain";
+  initialVal: number;
+  onSave?: (newVal: number) => void;
+}) {
+  const [val, setVal] = useState<string>(initialVal ? String(initialVal) : "");
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  useEffect(() => {
+    setVal(initialVal ? String(initialVal) : "");
+  }, [initialVal]);
+
+  const handleSave = async (newStr: string) => {
+    const num = parseFloat(newStr) || 0;
+    setStatus("saving");
+    try {
+      await api.updateAdjustment({
+        nama,
+        [fieldKey]: num,
+      });
+      setStatus("saved");
+      if (onSave) onSave(num);
+      setTimeout(() => setStatus("idle"), 1500);
+    } catch (err: any) {
+      console.error("Gagal menyimpan penyesuaian:", err);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div className="relative inline-flex items-center gap-1 justify-end">
+      <input
+        type="number"
+        min="0"
+        step="5000"
+        value={val}
+        placeholder="0"
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={(e) => handleSave(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+          }
+        }}
+        className={`w-28 text-right px-2 py-1 text-xs font-semibold rounded border transition-all ${
+          status === "saving"
+            ? "bg-amber-100 border-amber-400 text-amber-900"
+            : status === "saved"
+            ? "bg-emerald-50 border-emerald-400 text-emerald-900"
+            : status === "error"
+            ? "bg-rose-50 border-rose-400 text-rose-900"
+            : "bg-white border-amber-300 text-slate-800 hover:border-amber-400 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 shadow-2xs"
+        }`}
+        title="Ketik nominal lalu tekan Enter atau klik di luar kotak untuk menyimpan."
+      />
+      {status === "saved" && <span className="text-[10px] text-emerald-600 font-bold">✓</span>}
+      {status === "saving" && <span className="text-[10px] text-amber-600 font-bold">...</span>}
+    </div>
+  );
+}
+
 /* ===================================================================
    ICONS (Clean inline SVG)
    =================================================================== */
@@ -300,13 +367,13 @@ function EmployeeModal({
             </div>
             <div className="bg-white px-3.5 py-1.5 rounded-lg border border-slate-200 text-xs">
               <span className="text-slate-500 font-medium">Jam Lembur (Bulat): </span>
-              <span className="font-bold text-indigo-600">
+              <span className="font-bold" style={{ color: "var(--ink)" }}>
                 {summaryRow["Jam Lembur (Bulat)"] != null ? `${summaryRow["Jam Lembur (Bulat)"]} jam` : 0}
               </span>
             </div>
             <div className="bg-white px-3.5 py-1.5 rounded-lg border border-slate-200 text-xs">
               <span className="text-slate-500 font-medium">Bonus Lembur: </span>
-              <span className="font-bold text-indigo-600">{formatRupiah(summaryRow["Total Bonus Lembur (Rp)"])}</span>
+              <span className="font-bold" style={{ color: "var(--ink)" }}>{formatRupiah(summaryRow["Total Bonus Lembur (Rp)"])}</span>
             </div>
             <div className="bg-white px-3.5 py-1.5 rounded-lg border border-slate-200 text-xs">
               <span className="text-slate-500 font-medium">Uang Makan Akhir: </span>
@@ -482,16 +549,17 @@ function SheetTable({
               {visibleHeaders.map((h) => {
                 const isSorted = sortCol === h;
                 const isNumeric = types[h] === "number" || types[h] === "currency";
+                const isEditable = (h === "Total Bonus Lain-lain (Rp)" || h === "Total Potongan Lain-lain (Rp)");
                 return (
                   <th
                     key={h}
                     onClick={() => handleSort(h)}
-                    className={`px-3 py-2.5 font-bold uppercase tracking-wider text-[11px] text-slate-700 whitespace-nowrap cursor-pointer select-none hover:bg-slate-200/60 transition-colors ${
-                      isNumeric ? "text-right" : "text-left"
-                    }`}
+                    className={`px-3 py-2.5 font-bold uppercase tracking-wider text-[11px] whitespace-nowrap cursor-pointer select-none transition-colors ${
+                      isEditable ? "bg-amber-100/90 text-amber-900 border-b-2 border-amber-400" : "text-slate-700 hover:bg-slate-200/60"
+                    } ${isNumeric ? "text-right" : "text-left"}`}
                   >
                     <div className={`inline-flex items-center gap-1 ${isNumeric ? "justify-end" : "justify-start"}`}>
-                      <span>{h}</span>
+                      <span>{h} {isEditable && "✏️"}</span>
                       <span className="text-[10px] text-slate-400">
                         {isSorted ? (sortAsc ? "▲" : "▼") : "⇅"}
                       </span>
@@ -528,6 +596,25 @@ function SheetTable({
                     {visibleHeaders.map((h) => {
                       const isNama = h === "Nama" && onClickNama;
                       const isNumeric = types[h] === "number" || types[h] === "currency";
+                      const isEditableAdj = (h === "Total Bonus Lain-lain (Rp)" || h === "Total Potongan Lain-lain (Rp)");
+
+                      if (isEditableAdj) {
+                        const fieldKey = h === "Total Bonus Lain-lain (Rp)" ? "bonus_lain" : "potongan_lain";
+                        const valNum = row[h] ?? 0;
+                        return (
+                          <td key={h} className="px-2 py-1 whitespace-nowrap text-right bg-amber-50/40 border-x border-amber-200/40">
+                            <EditableAdjCell
+                              nama={row["Nama"]}
+                              fieldKey={fieldKey}
+                              initialVal={valNum}
+                              onSave={(newVal) => {
+                                row[h] = newVal;
+                              }}
+                            />
+                          </td>
+                        );
+                      }
+
                       return (
                         <td
                           key={h}
@@ -1239,7 +1326,10 @@ export default function ProsesPage() {
               e.preventDefault();
               handleFiles(e.dataTransfer.files);
             }}
-            className="border-2 border-dashed border-slate-300 hover:border-indigo-500 rounded-xl p-10 text-center cursor-pointer transition-all duration-200 hover:bg-indigo-50/20 group"
+            className="border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors duration-150 group"
+            style={{ borderColor: "var(--line)" }}
+            onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--accent-light, #94a3b8)")}
+            onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--line)")}
           >
             <input
               ref={inputRef}
@@ -1249,13 +1339,11 @@ export default function ProsesPage() {
               className="hidden"
               onChange={(e) => handleFiles(e.target.files)}
             />
-            <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-indigo-50 group-hover:bg-indigo-100 text-indigo-600 mb-3.5 transition-colors">
-              <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" x2="12" y1="3" y2="15" />
-              </svg>
-            </div>
+            <svg className="w-7 h-7 mx-auto mb-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-muted)" }}>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" x2="12" y1="3" y2="15" />
+            </svg>
             <p className="text-sm font-semibold text-slate-800">
               Pilih file absensi atau seret ke area ini
             </p>
@@ -1276,7 +1364,7 @@ export default function ProsesPage() {
                     className="flex justify-between items-center px-3.5 py-2 rounded-lg text-xs bg-slate-50 border border-slate-200/80"
                   >
                     <div className="flex items-center gap-2 truncate">
-                      <svg className="w-4 h-4 text-indigo-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-muted)" }}>
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                         <polyline points="14 2 14 8 20 8" />
                       </svg>
@@ -1318,7 +1406,7 @@ export default function ProsesPage() {
         <Card className="max-w-3xl mx-auto border border-slate-200/90 shadow-2xs">
           <div className="flex items-start justify-between gap-4 flex-wrap pb-3.5 border-b border-slate-100">
             <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shrink-0 mt-0.5">
+              <div className="shrink-0 mt-0.5" style={{ color: "var(--text-muted)" }}>
                 <IconExcel />
               </div>
               <div>

@@ -97,7 +97,23 @@ class Employee(Base):
     profile_code = Column(String, ForeignKey("profiles.code"), nullable=False)
     cabang = Column(String, nullable=True)
     uang_makan_override = Column(Integer, nullable=True)  # null -> pakai default global
+    bpjs_kesehatan = Column(Integer, nullable=True, default=0)
+    bpjs_tk = Column(Integer, nullable=True, default=0)
     active = Column(Boolean, default=True)
+
+    # ── Aturan Khusus per Karyawan (Cascading Override) ──────────────────────
+    # Flag toggle: jika False, semua field _override di bawah diabaikan (NULL = ikut divisi/global)
+    has_custom_rules = Column(Boolean, default=False, nullable=False)
+
+    # Jam kerja override (format "HH:MM", null = ikut profil)
+    jam_masuk_override = Column(String, nullable=True)
+    jam_keluar_override = Column(String, nullable=True)
+
+    # Toleransi keterlambatan override (null = ikut global)
+    toleransi_telat_menit_override = Column(Integer, nullable=True)
+
+    # Lembur override (null = ikut global)
+    bonus_lembur_per_jam_override = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
@@ -141,5 +157,21 @@ class LeaveRequest(Base):
     approved_by = Column(String, nullable=True)
     approved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+class EmployeeAdjustment(Base):
+    """
+    Penyesuaian tentatif per karyawan (Total Bonus Lain-lain & Total Potongan Lain-lain).
+    Independen, tidak terikat ke rumus penjumlahan manapun, bisa di-edit oleh HR Master di website
+    dan akan langsung dicetak pada kolom Excel Summary Overview.
+    """
+    __tablename__ = "employee_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nama = Column(String, unique=True, nullable=False, index=True)
+    bonus_lain = Column(Float, default=0.0)
+    potongan_lain = Column(Float, default=0.0)
+    catatan = Column(String, nullable=True)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

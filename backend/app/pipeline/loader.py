@@ -15,6 +15,7 @@ di-skip.
 """
 import glob
 import os
+import re
 import pandas as pd
 from . import config_runtime as config
 
@@ -230,8 +231,10 @@ def build_master_df_from_db(employees):
             "Profil": emp.profile_code,
             "Status_Raw": emp.profile_code,
             "Uang_Makan": emp.uang_makan_override if emp.uang_makan_override else config.UANG_MAKAN_DEFAULT,
+            "BPJS_Kesehatan": getattr(emp, "bpjs_kesehatan", 0) or 0,
+            "BPJS_TK": getattr(emp, "bpjs_tk", 0) or 0,
         })
-    df = pd.DataFrame(rows, columns=["Nama_Asli", "Nama_Normal", "Profil", "Status_Raw", "Uang_Makan"])
+    df = pd.DataFrame(rows, columns=["Nama_Asli", "Nama_Normal", "Profil", "Status_Raw", "Uang_Makan", "BPJS_Kesehatan", "BPJS_TK"])
     df = df[df["Nama_Normal"] != ""].reset_index(drop=True)
     duplikat = df[df["Nama_Normal"].duplicated(keep=False)]
     if not duplikat.empty:
@@ -278,6 +281,139 @@ def build_approved_leaves_from_db(leaves):
             "alasan": lv.alasan,
         })
     return lookup
+
+
+
+def build_bpjs_dict(path: str) -> dict:
+    """
+    Baca file BPJS (Excel/CSV) dan bangun dict lookup potongan BPJS per karyawan.
+
+    Kolom yang dicari (case-insensitive, toleran spasi):
+      - 'Nama Tenaga Kerja' (atau variasi: 'Nama', 'Nama Karyawan')
+      - 'Potongan BPJS Kesehatan' (atau 'BPJS Kesehatan', 'Kesehatan')
+      - 'Potongan BPJS TK'       (atau 'BPJS TK', 'Jamsostek')
+
+    Return:
+      {
+        normalisasi_nama(nama): {
+            "bpjs_kesehatan": int,
+            "bpjs_tk": int,
+        },
+        ...
+      }
+    Jika file tidak ditemukan atau kolom tidak dikenali, return dict kosong.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".csv":
+            df = pd.read_csv(path)
+        else:
+            df = pd.read_excel(path)
+    except Exception as e:
+        print(f"[BPJS] Gagal membaca file '{path}': {e}")
+        return {}
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Deteksi kolom nama & BPJS secara fleksibel (case-insensitive)
+    col_nama = None
+    col_kesehatan = None
+    col_tk = None
+    for col in df.columns:
+        cl = col.lower().replace(" ", "_")
+        if col_nama is None and any(k in cl for k in ("nama_tenaga_kerja", "nama_karyawan", "nama")):
+            col_nama = col
+        if col_kesehatan is None and "kesehatan" in cl:
+            col_kesehatan = col
+        if col_tk is None and ("_tk" in cl or "jamsostek" in cl or cl == "bpjs_tk" or cl == "potongan_bpjs_tk"):
+            col_tk = col
+
+    if col_nama is None or col_kesehatan is None or col_tk is None:
+        print(f"[BPJS] Kolom tidak lengkap di '{path}'. "
+              f"Ditemukan: {list(df.columns)}. Butuh kolom Nama, BPJS Kesehatan, BPJS TK.")
+        return {}
+
+    hasil = {}
+    for _, row in df.iterrows():
+        nama_raw = row.get(col_nama)
+        if nama_raw is None or (isinstance(nama_raw, float) and pd.isna(nama_raw)):
+            continue
+        nama_raw = str(nama_raw).strip()
+        if not nama_raw:
+            continue
+        norm = config.normalisasi_nama(nama_raw)
+        if not norm:
+            continue
+        try:
+            kes = int(float(str(row[col_kesehatan]).replace(",", "").strip() or 0))
+        except (ValueError, TypeError):
+            kes = 0
+        try:
+            tk = int(float(str(row[col_tk]).replace(",", "").strip() or 0))
+        except (ValueError, TypeError):
+            tk = 0
+        info = {"bpjs_kesehatan": kes, "bpjs_tk": tk}
+        hasil[norm] = info
+
+        # Tambahkan varian nama (misal m. -> muhammad, pembersihan tanda baca)
+        clean = re.sub(r'\bm[\.\s]+', 'muhammad ', norm)
+        clean = re.sub(r'[^a-z0-9\s]', '', clean).strip()
+        clean = re.sub(r'\s+', ' ', clean)
+        if clean and clean not in hasil:
+            hasil[clean] = info
+
+    return hasil
+
+
+def get_bpjs_info(bpjs_dict: dict, nama_master: str, master_dict: dict = None) -> dict:
+    """
+    Cari informasi BPJS (Kesehatan & TK) untuk nama_master dari bpjs_dict.
+    Jika tidak ada di bpjs_dict (file BPJS), fallback ke data master DB (master_dict).
+    """
+    res = {}
+    if bpjs_dict and nama_master:
+        norm = config.normalisasi_nama(nama_master)
+        if norm in bpjs_dict:
+            res = bpjs_dict[norm]
+        else:
+            clean = re.sub(r'\bm[\.\s]+', 'muhammad ', norm)
+            clean = re.sub(r'[^a-z0-9\s]', '', clean).strip()
+            clean = re.sub(r'\s+', ' ', clean)
+            if clean in bpjs_dict:
+                res = bpjs_dict[clean]
+            else:
+                tokens_master = set(clean.split())
+                if len(tokens_master) >= 2:
+                    for k, v in bpjs_dict.items():
+                        tokens_k = set(k.split())
+                        if len(tokens_k) >= 2 and (tokens_master.issubset(tokens_k) or tokens_k.issubset(tokens_master)):
+                            res = v
+                            break
+
+                if not res and len(clean) >= 8:
+                    from difflib import SequenceMatcher
+                    for k, v in bpjs_dict.items():
+                        if len(k) >= 8 and SequenceMatcher(None, clean, k).ratio() >= 0.88:
+                            res = v
+                            break
+
+    if res and (res.get("bpjs_kesehatan", 0) or res.get("bpjs_tk", 0)):
+        return res
+
+    # Fallback: ambil data BPJS dari DB master jika tersimpan
+    if master_dict and nama_master:
+        norm = config.normalisasi_nama(nama_master)
+        if norm in master_dict:
+            m_info = master_dict[norm]
+            return {
+                "bpjs_kesehatan": m_info.get("BPJS_Kesehatan", 0) or res.get("bpjs_kesehatan", 0),
+                "bpjs_tk": m_info.get("BPJS_TK", 0) or res.get("bpjs_tk", 0),
+            }
+
+    return res or {"bpjs_kesehatan": 0, "bpjs_tk": 0}
 
 
 
@@ -341,6 +477,8 @@ def build_master_dict(df_master):
           "Nama_Asli": str,
           "Profil": str,
           "Uang_Makan": int,
+          "BPJS_Kesehatan": int,
+          "BPJS_TK": int,
       }
     """
     master_dict = {}
@@ -350,6 +488,8 @@ def build_master_dict(df_master):
             "Profil": row["Profil"],
             "Uang_Makan": row["Uang_Makan"],
             "Status_Raw": row.get("Status_Raw", ""),
+            "BPJS_Kesehatan": row.get("BPJS_Kesehatan", 0) or 0,
+            "BPJS_TK": row.get("BPJS_TK", 0) or 0,
         }
     return master_dict
 

@@ -140,6 +140,16 @@ export const api = {
     await request(`/employees/${id}`, { method: "DELETE" });
   },
 
+  async getAdjustments() {
+    const res = await request("/employees/adjustments");
+    return res.json();
+  },
+
+  async updateAdjustment(payload: { nama: string; bonus_lain?: number; potongan_lain?: number; catatan?: string }) {
+    const res = await request("/employees/adjustments", { method: "PATCH", body: JSON.stringify(payload) });
+    return res.json();
+  },
+
   async importEmployees(file: File) {
     const form = new FormData();
     form.append("file", file);

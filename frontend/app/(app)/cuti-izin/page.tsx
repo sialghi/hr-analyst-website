@@ -87,8 +87,36 @@ export default function CutiIzinPage() {
 
   const employeesByCabang = useMemo(() => {
     if (!formCabang) return employees;
-    return employees.filter((emp) => emp.cabang === formCabang);
+    return employees.filter((emp: any) => emp.cabang === formCabang);
   }, [employees, formCabang]);
+
+  const currentYear = new Date().getFullYear();
+
+  const selectedUserQuota = useMemo(() => {
+    if (!formNama) return null;
+    const nameClean = formNama.trim().toLowerCase();
+    let usedDays = 0;
+
+    leaves.forEach((lv) => {
+      if (
+        lv.nama.trim().toLowerCase() === nameClean &&
+        lv.kategori === "CUTI_TAHUNAN" &&
+        (lv.status === "APPROVED" || lv.status === "PENDING")
+      ) {
+        if (lv.tanggal_mulai && lv.tanggal_selesai) {
+          const start = new Date(lv.tanggal_mulai);
+          const end = new Date(lv.tanggal_selesai);
+          if (start.getFullYear() === currentYear) {
+            const diffDays = Math.round((end.getTime() - start.getTime()) / (1000 * 3600 * 24)) + 1;
+            if (diffDays > 0) usedDays += diffDays;
+          }
+        }
+      }
+    });
+
+    const remaining = Math.max(0, 12 - usedDays);
+    return { usedDays, remaining, total: 12 };
+  }, [formNama, leaves, currentYear]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -454,6 +482,15 @@ export default function CutiIzinPage() {
                         </option>
                       ))}
                     </select>
+                  )}
+
+                  {selectedUserQuota && (
+                    <div className={`mt-2 p-2 rounded-lg text-[11px] flex items-center justify-between border ${
+                      selectedUserQuota.remaining > 0 ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-200"
+                    }`}>
+                      <span>📊 Sisa Cuti Tahunan ({currentYear}):</span>
+                      <span className="font-semibold">{selectedUserQuota.remaining} / 12 Hari (Terpakai: {selectedUserQuota.usedDays}h)</span>
+                    </div>
                   )}
                 </div>
               </div>

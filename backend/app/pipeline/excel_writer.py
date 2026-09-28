@@ -129,12 +129,14 @@ def _set_summary_col_widths(ws):
         (13,  20), # Total Durasi Pulang Duluan
         (14,  14), # Minggu Bermasalah
         (15,  16), # Jumlah Hari Tidak Masuk
-        (16,  18), # Total Bonus Lembur (Rp)
-        (17,  18), # Uang Makan Harian (Rp)
-        (18,  16), # Potongan Telat (Rp)
-        (19,  20), # Potongan Pulang Duluan (Rp)
-        (20,  18), # Bonus Tanggal Merah (Rp)
-        (21,  20), # Total Uang Makan Akhir (Rp)
+        (16,  18), # Total Bonus Lain-lain (Rp)
+        (17,  18), # Total Potongan Lain-lain (Rp)
+        (18,  18), # Total Bonus Lembur (Rp)
+        (19,  18), # Uang Makan Harian (Rp)
+        (20,  16), # Potongan Telat (Rp)
+        (21,  20), # Potongan Pulang Duluan (Rp)
+        (22,  18), # Bonus Tanggal Merah (Rp)
+        (23,  20), # Total Uang Makan Akhir (Rp)
     ]
     for col_idx, width in lebar:
         ws.column_dimensions[get_column_letter(col_idx)].width = width
@@ -280,26 +282,36 @@ def _sheet_data_tidak_lengkap(wb, df_prep):
     _autosize(ws, len(df.columns))
 
 
-def _sheet_summary_overview(wb, daftar_karyawan):
+def _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=None, bpjs_dict=None, master_dict=None):
     """
     daftar_karyawan: DataFrame kolom [Cabang, Nama, Profil] - satu baris per karyawan unik.
-
-    Semua metrik ditulis sebagai FORMULA yang merujuk ke sheet 2-6.
-    REVISI v2: tambah kolom Total Uang Makan dan Total Bonus Lembur Rp.
+    adjustments_dict: Dict optional {nama_lowercase: (bonus_lain, potongan_lain)}
+    bpjs_dict: Dict optional {nama_normal: {bpjs_kesehatan: int, bpjs_tk: int}}
+    master_dict: Dict optional {nama_normal: {"BPJS_Kesehatan": int, "BPJS_TK": int, ...}}
     """
+    from . import config_runtime as _cfg
+    if adjustments_dict is None:
+        adjustments_dict = {}
+    if bpjs_dict is None:
+        bpjs_dict = {}
+
     ws = wb.create_sheet("2. Summary Overview")
     headers = [
         "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out", "Hari Kerja Valid", "Masuk Tanggal Merah",
         "Jml Telat", "Total Durasi Telat", "Jml Lembur", "Jam Lembur (Bulat)",
         "Jml Pulang Duluan", "Total Durasi Pulang Duluan",
         "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
+        # --- BPJS columns (NEW) ---
+        "Potongan BPJS Kesehatan (Rp)", "Potongan BPJS TK (Rp)",
+        # --------------------------
+        "Total Bonus Lain-lain (Rp)", "Total Potongan Lain-lain (Rp)",
         "Total Bonus Lembur (Rp)",
         "Uang Makan Harian (Rp)", "Potongan Telat (Rp)", "Potongan Pulang Duluan (Rp)",
         "Bonus Tanggal Merah (Rp)", "Total Uang Makan Akhir (Rp)",
     ]
     _tulis_judul(
         ws, "2. Summary Overview per Karyawan",
-        "Ringkasan per karyawan. Semua angka pakai formula. "
+        "Ringkasan per karyawan. Kolom Bonus/Potongan Lain-lain bersifat tentatif. "
         "Total Uang Makan ada di sheet 12 (Uang Makan).",
         n_kolom=len(headers),
     )
@@ -314,6 +326,10 @@ def _sheet_summary_overview(wb, daftar_karyawan):
         profil_val = row.get("Profil", "")
         ws.cell(row=r, column=3, value=profil_val).font = FONT_NORMAL
         nama_ref = f"$B{r}"
+        nama_str = str(row["Nama"]).strip().lower()
+        adj_data = adjustments_dict.get(nama_str, (0.0, 0.0))
+        from .loader import get_bpjs_info
+        bpjs_info = get_bpjs_info(bpjs_dict, str(row["Nama"]), master_dict=master_dict)
 
         # Col D: Absensi In
         ws.cell(row=r, column=4,
@@ -347,24 +363,39 @@ def _sheet_summary_overview(wb, daftar_karyawan):
         ws.cell(row=r, column=14, value=f"=COUNTIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref})")
         # Col O: Jumlah Hari Tidak Masuk
         ws.cell(row=r, column=15, value=f"=SUMIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref},'8. Rekap Tidak Masuk'!$F:$F)")
-        # Col P: Total Bonus Lembur Rp
-        ws.cell(row=r, column=16, value=f"=SUMIF('6. Rekap Lembur'!$B:$B,{nama_ref},'6. Rekap Lembur'!$J:$J)")
+
+        # Col P: Potongan BPJS Kesehatan (Rp) — dari file BPJS
+        ws.cell(row=r, column=16, value=bpjs_info.get("bpjs_kesehatan", 0))
         ws.cell(row=r, column=16).number_format = FMT_RUPIAH
-        # Col Q: Uang Makan Harian
-        ws.cell(row=r, column=17, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$F:$F)")
+        # Col Q: Potongan BPJS TK (Rp) — dari file BPJS
+        ws.cell(row=r, column=17, value=bpjs_info.get("bpjs_tk", 0))
         ws.cell(row=r, column=17).number_format = FMT_RUPIAH
-        # Col R: Potongan Telat
-        ws.cell(row=r, column=18, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$G:$G)")
+
+        # Col R: Total Bonus Lain-lain Rp (Tentatif - Dari DB / Web Input)
+        ws.cell(row=r, column=18, value=adj_data[0])
         ws.cell(row=r, column=18).number_format = FMT_RUPIAH
-        # Col S: Potongan Pulang Duluan
-        ws.cell(row=r, column=19, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$H:$H)")
+        # Col S: Total Potongan Lain-lain Rp (Tentatif - Dari DB / Web Input)
+        ws.cell(row=r, column=19, value=adj_data[1])
         ws.cell(row=r, column=19).number_format = FMT_RUPIAH
-        # Col T: Bonus Tanggal Merah
-        ws.cell(row=r, column=20, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$I:$I)")
+
+        # Col T: Total Bonus Lembur Rp
+        ws.cell(row=r, column=20, value=f"=SUMIF('6. Rekap Lembur'!$B:$B,{nama_ref},'6. Rekap Lembur'!$J:$J)")
         ws.cell(row=r, column=20).number_format = FMT_RUPIAH
-        # Col U: Total Uang Makan Akhir
-        ws.cell(row=r, column=21, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$J:$J)")
+        # Col U: Uang Makan Harian
+        ws.cell(row=r, column=21, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$F:$F)")
         ws.cell(row=r, column=21).number_format = FMT_RUPIAH
+        # Col V: Potongan Telat
+        ws.cell(row=r, column=22, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$G:$G)")
+        ws.cell(row=r, column=22).number_format = FMT_RUPIAH
+        # Col W: Potongan Pulang Duluan
+        ws.cell(row=r, column=23, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$H:$H)")
+        ws.cell(row=r, column=23).number_format = FMT_RUPIAH
+        # Col X: Bonus Tanggal Merah
+        ws.cell(row=r, column=24, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$I:$I)")
+        ws.cell(row=r, column=24).number_format = FMT_RUPIAH
+        # Col Y: Total Uang Makan Akhir
+        ws.cell(row=r, column=25, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$J:$J)")
+        ws.cell(row=r, column=25).number_format = FMT_RUPIAH
 
         for c in range(1, len(headers) + 1):
             ws.cell(row=r, column=c).border = BORDER_ALL
@@ -382,7 +413,7 @@ def _sheet_summary_overview(wb, daftar_karyawan):
         chart.title = "Jml Telat vs Lembur vs Pulang Duluan per Karyawan"
         chart.y_axis.title = "Jumlah Kejadian"
         chart.x_axis.title = "Nama"
-        # Col 8 = Jml Telat, Col 10 = Jml Lembur, Col 12 = Jml Pulang Duluan
+        # Col 8 = Jml Telat, Col 10 = Jml Lembur, Col 12 = Jml Pulang Duluan (unchanged)
         data = Reference(ws, min_col=8, max_col=8, min_row=4, max_row=baris_akhir)
         data2 = Reference(ws, min_col=10, max_col=10, min_row=4, max_row=baris_akhir)
         data3 = Reference(ws, min_col=12, max_col=12, min_row=4, max_row=baris_akhir)
@@ -540,12 +571,10 @@ def _sheet_perlu_dicek(wb, df_perlu_dicek):
 def tulis_laporan_excel(path_output, df_mentah, df_prep, df_telat, df_lembur,
                          df_pulang_duluan, df_tidak_masuk, df_alpa_berulang,
                          catatan_asumsi, df_uang_makan=None,
-                         df_profil_exclude=None, df_perlu_dicek=None):
+                         df_profil_exclude=None, df_perlu_dicek=None,
+                         adjustments_dict=None, bpjs_dict=None, master_dict=None):
     """
-    REVISI v2: Terima 3 DataFrame baru opsional:
-    - df_uang_makan: hasil hitung_uang_makan()
-    - df_profil_exclude: hasil hitung_rekap_profil_exclude()
-    - df_perlu_dicek: hasil cari_nama_tidak_dikenal()
+    REVISI v2: Terima DataFrame opsional + adjustments_dict, bpjs_dict, master_dict
     """
     wb = openpyxl.Workbook()
     wb.remove(wb.active)  # buang sheet default kosong
@@ -573,7 +602,7 @@ def tulis_laporan_excel(path_output, df_mentah, df_prep, df_telat, df_lembur,
             .sort_values(["Cabang", "Nama"])
         )
 
-    ref_summary = _sheet_summary_overview(wb, daftar_karyawan)
+    ref_summary = _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=adjustments_dict, bpjs_dict=bpjs_dict, master_dict=master_dict)
     daftar_cabang = sorted(daftar_karyawan["Cabang"].unique().tolist())
 
     _sheet_data_mentah(wb, df_mentah)
