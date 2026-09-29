@@ -16,14 +16,17 @@ interface LeaveItem {
   approved_by?: string | null;
   approved_at?: string | null;
   created_at: string;
+  tipe_absensi?: string | null;
+  location_cabang?: string | null;
 }
 
 const KATEGORI_MAP: Record<string, { label: string; badge: string }> = {
-  CUTI_TAHUNAN: { label: "Cuti Tahunan", badge: "bg-blue-50 text-blue-700 border-blue-200" },
-  SAKIT: { label: "Sakit (SKD)", badge: "bg-amber-50 text-amber-700 border-amber-200" },
-  IZIN_PULANG_CEPAT: { label: "Izin Pulang Cepat", badge: "bg-purple-50 text-purple-700 border-purple-200" },
-  IZIN_TELAT: { label: "Izin Datang Terlambat", badge: "bg-orange-50 text-orange-700 border-orange-200" },
-  LAINNYA: { label: "Izin Lainnya", badge: "bg-slate-50 text-slate-700 border-slate-200" },
+  CUTI_TAHUNAN:      { label: "Cuti Tahunan",            badge: "bg-slate-50 text-slate-700 border-slate-200" },
+  SAKIT:             { label: "Sakit (SKD)",              badge: "bg-slate-50 text-slate-700 border-slate-200" },
+  IZIN_PULANG_CEPAT: { label: "Izin Pulang Cepat",       badge: "bg-slate-50 text-slate-700 border-slate-200" },
+  IZIN_TELAT:        { label: "Izin Datang Terlambat",   badge: "bg-slate-50 text-slate-700 border-slate-200" },
+  LAINNYA:           { label: "Izin Lainnya",             badge: "bg-slate-50 text-slate-700 border-slate-200" },
+  WORK_FROM_LOCATION:{ label: "Absensi Jarak Jauh",      badge: "bg-indigo-50 text-indigo-700 border-indigo-200" },
 };
 
 export default function CutiIzinPage() {
@@ -34,6 +37,7 @@ export default function CutiIzinPage() {
   // Filters
   const [filterStatus, setFilterStatus] = useState<string>("ALL");
   const [filterKategori, setFilterKategori] = useState<string>("ALL");
+  const [filterCabang, setFilterCabang] = useState<string>("ALL");
   const [searchNama, setSearchNama] = useState<string>("");
 
   // Modal tambah
@@ -133,6 +137,8 @@ export default function CutiIzinPage() {
         tanggal_selesai: formTglSelesai,
         jam_izin: formJamIzin.trim() || null,
         alasan: formAlasan.trim() || null,
+        tipe_absensi: formKategori === "WORK_FROM_LOCATION" ? "remote_work" : "normal",
+        location_cabang: formKategori === "WORK_FROM_LOCATION" ? (formCabang || null) : null,
       });
       setModalOpen(false);
       // Reset form
@@ -177,15 +183,21 @@ export default function CutiIzinPage() {
     return leaves.filter((item) => {
       if (filterStatus !== "ALL" && item.status !== filterStatus) return false;
       if (filterKategori !== "ALL" && item.kategori !== filterKategori) return false;
+      if (filterCabang !== "ALL") {
+        // Filter by location_cabang untuk WORK_FROM_LOCATION, cabang dari employee untuk lainnya
+        const itemCabang = item.location_cabang || "";
+        if (!itemCabang.toLowerCase().includes(filterCabang.toLowerCase())) return false;
+      }
       if (searchNama && !item.nama.toLowerCase().includes(searchNama.toLowerCase())) return false;
       return true;
     });
-  }, [leaves, filterStatus, filterKategori, searchNama]);
+  }, [leaves, filterStatus, filterKategori, filterCabang, searchNama]);
 
   // Statistik ringkas
   const countPending = leaves.filter((l) => l.status === "PENDING").length;
   const countApproved = leaves.filter((l) => l.status === "APPROVED").length;
   const countRejected = leaves.filter((l) => l.status === "REJECTED").length;
+  const countRemote = leaves.filter((l) => l.kategori === "WORK_FROM_LOCATION").length;
 
   return (
     <div className="space-y-6">
@@ -210,7 +222,7 @@ export default function CutiIzinPage() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs">
           <p className="text-[11px] font-semibold text-amber-600 uppercase tracking-wider">Menunggu Persetujuan</p>
           <p className="text-2xl font-bold text-slate-900 mt-1">{countPending}</p>
@@ -225,6 +237,11 @@ export default function CutiIzinPage() {
           <p className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider">Ditolak</p>
           <p className="text-2xl font-bold text-slate-900 mt-1">{countRejected}</p>
           <p className="text-[11px] text-slate-400 mt-0.5">Tetap dihitung sesuai aturan biasa</p>
+        </div>
+        <div className="p-4 rounded-xl bg-white border border-teal-200/90 shadow-2xs bg-teal-50/30">
+          <p className="text-[11px] font-semibold text-teal-600 uppercase tracking-wider">Absensi Jarak Jauh</p>
+          <p className="text-2xl font-bold text-slate-900 mt-1">{countRemote}</p>
+          <p className="text-[11px] text-slate-400 mt-0.5">Dihitung sebagai Hari Kerja Valid</p>
         </div>
       </div>
 
@@ -261,7 +278,22 @@ export default function CutiIzinPage() {
             <option value="IZIN_PULANG_CEPAT">Izin Pulang Cepat</option>
             <option value="IZIN_TELAT">Izin Datang Terlambat</option>
             <option value="LAINNYA">Lainnya</option>
+            <option value="WORK_FROM_LOCATION">Absensi Jarak Jauh</option>
           </select>
+
+          {/* Filter Cabang — hanya untuk Absensi Jarak Jauh */}
+          {filterKategori === "WORK_FROM_LOCATION" && (
+            <select
+              value={filterCabang}
+              onChange={(e) => setFilterCabang(e.target.value)}
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 focus:outline-none focus:border-indigo-500 cursor-pointer"
+            >
+              <option value="ALL">Semua Cabang</option>
+              {cabangList.map((cb) => (
+                <option key={cb} value={cb}>{cb}</option>
+              ))}
+            </select>
+          )}
         </div>
 
         <button
@@ -289,6 +321,7 @@ export default function CutiIzinPage() {
                 <tr>
                   <th className="px-4 py-3">Nama Karyawan</th>
                   <th className="px-4 py-3">Kategori</th>
+                  <th className="px-4 py-3">Cabang</th>
                   <th className="px-4 py-3">Periode / Jam</th>
                   <th className="px-4 py-3">Alasan</th>
                   <th className="px-4 py-3">Status</th>
@@ -305,7 +338,7 @@ export default function CutiIzinPage() {
                     : `${item.tanggal_mulai} s/d ${item.tanggal_selesai}`;
 
                   return (
-                    <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
+                    <tr key={item.id} className={`hover:bg-slate-50/80 transition-colors ${item.kategori === "WORK_FROM_LOCATION" ? "bg-indigo-50/30" : ""}`}>
                       <td className="px-4 py-3 font-semibold text-slate-900">
                         {item.nama}
                         {item.telegram_user_id && (
@@ -319,10 +352,19 @@ export default function CutiIzinPage() {
                           {kat.label}
                         </span>
                       </td>
+                      <td className="px-4 py-3 text-[11px] text-slate-600">
+                        {item.location_cabang ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-medium">
+                            {item.location_cabang}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         <span className="font-medium text-slate-800">{tglDisplay}</span>
                         {item.jam_izin && (
-                          <span className="block text-[11px] text-purple-600 font-medium">
+                          <span className="block text-[11px] text-slate-600 font-medium">
                             Pukul {item.jam_izin}
                           </span>
                         )}
@@ -488,14 +530,14 @@ export default function CutiIzinPage() {
                     <div className={`mt-2 p-2 rounded-lg text-[11px] flex items-center justify-between border ${
                       selectedUserQuota.remaining > 0 ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-200"
                     }`}>
-                      <span>📊 Sisa Cuti Tahunan ({currentYear}):</span>
+                      <span>Sisa Cuti Tahunan ({currentYear}):</span>
                       <span className="font-semibold">{selectedUserQuota.remaining} / 12 Hari (Terpakai: {selectedUserQuota.usedDays}h)</span>
                     </div>
                   )}
                 </div>
               </div>
 
-              <div>
+                <div>
                 <label className="block font-semibold text-slate-700 mb-1">Kategori Permohonan *</label>
                 <select
                   value={formKategori}
@@ -507,7 +549,13 @@ export default function CutiIzinPage() {
                   <option value="IZIN_PULANG_CEPAT">Izin Pulang Lebih Awal (Parsial)</option>
                   <option value="IZIN_TELAT">Izin Datang Terlambat (Parsial)</option>
                   <option value="LAINNYA">Izin Lainnya</option>
+                  <option value="WORK_FROM_LOCATION">Absensi Jarak Jauh</option>
                 </select>
+                {formKategori === "WORK_FROM_LOCATION" && (
+                  <p className="text-[10px] text-indigo-600 mt-1.5 bg-indigo-50 rounded px-2 py-1 border border-indigo-100">
+                    Hari ini akan dihitung sebagai <strong>Hari Kerja Valid</strong> setelah disetujui HR Master. Pilih cabang karyawan di atas.
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">

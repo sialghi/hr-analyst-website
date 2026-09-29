@@ -167,12 +167,15 @@ class HolidayOut(HolidayBase):
 class LeaveRequestBase(BaseModel):
     nama: str
     telegram_user_id: Optional[str] = None
-    kategori: str = "CUTI_TAHUNAN"  # CUTI_TAHUNAN, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA
+    kategori: str = "CUTI_TAHUNAN"  # CUTI_TAHUNAN, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA, WORK_FROM_LOCATION
     tanggal_mulai: date
     tanggal_selesai: date
     jam_izin: Optional[str] = None  # "HH:MM"
     alasan: Optional[str] = None
     catatan_hr: Optional[str] = None
+    # --- Absensi Jarak Jauh ---
+    tipe_absensi: Optional[str] = "normal"       # "normal" atau "remote_work"
+    location_cabang: Optional[str] = None        # cabang karyawan saat absen jarak jauh
 
 
 class LeaveRequestCreate(LeaveRequestBase):
@@ -199,6 +202,8 @@ class LeaveRequestOut(LeaveRequestBase):
     status: str
     approved_by: Optional[str] = None
     approved_at: Optional[datetime] = None
+    tipe_absensi: Optional[str] = "normal"
+    location_cabang: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

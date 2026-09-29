@@ -17,6 +17,7 @@ from .loader import (
     build_master_dict, cari_nama_tidak_dikenal,
     build_master_df_from_db, build_tanggal_merah_from_db,
     build_approved_leaves_from_db, build_bpjs_dict, get_bpjs_info,
+    build_remote_absences_from_db,
 )
 from .preprocessing import jalankan_preprocessing
 from .data_process import (
@@ -36,6 +37,8 @@ CATATAN_ASUMSI = [
     "Kalau nama sama muncul di lebih dari satu cabang, cabang yang ditampilkan di Summary Overview "
     "adalah cabang yang PALING SERING muncul utk orang tsb.",
     "Minggu di awal/akhir periode data yang datanya belum genap tetap dievaluasi apa adanya.",
+    "Hari Absensi Jarak Jauh (WORK_FROM_LOCATION) yang sudah APPROVED oleh HR Master dihitung "
+    "sebagai Hari Kerja Valid di Summary Overview dan ditampilkan di sheet 'Absensi Jarak Jauh'.",
 ]
 
 # Path default file BPJS. Bisa di-override via env variable BPJS_FILE_PATH.
@@ -112,9 +115,10 @@ def jalankan_pipeline_db(
     # --- 1b. Cuti & izin yang sudah APPROVED ---
     leaves = db.query(models.LeaveRequest).filter(models.LeaveRequest.status == "APPROVED").all()
     approved_leaves = build_approved_leaves_from_db(leaves)
+    remote_absences = build_remote_absences_from_db(db)
     adjustments_dict = _load_adjustments_dict(db)
     bpjs_dict = build_bpjs_dict(os.environ["BPJS_FILE_PATH"]) if "BPJS_FILE_PATH" in os.environ and os.path.exists(os.environ["BPJS_FILE_PATH"]) else {}
-    log(f"      -> {len(leaves)} pengajuan cuti/izin APPROVED, {len(bpjs_dict)} entri BPJS ditemukan.")
+    log(f"      -> {len(leaves)} pengajuan cuti/izin APPROVED, {len(remote_absences)} karyawan punya absensi jarak jauh, {len(bpjs_dict)} entri BPJS ditemukan.")
 
     log(f"[2/5] Membaca data absensi mentah dari: {daftar_input}")
     df_mentah = load_raw_data(daftar_input)
@@ -151,6 +155,7 @@ def jalankan_pipeline_db(
         adjustments_dict=adjustments_dict,
         bpjs_dict=bpjs_dict,
         master_dict=master_dict,
+        remote_absences=remote_absences,
     )
     log("Selesai.")
     return path_output
@@ -203,7 +208,7 @@ def _df_to_records(df, kolom_map=None, kolom_types=None):
 
 def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_duluan,
                                      df_tidak_masuk, df_uang_makan, adjustments_dict=None,
-                                     bpjs_dict=None, master_dict=None):
+                                     bpjs_dict=None, master_dict=None, remote_absences=None):
     """Hitung Summary Overview identik dengan formula Excel, tapi di Python."""
     if "Profil" in df_prep.columns:
         daftar = (
@@ -237,6 +242,14 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         absensi_out = int(prep_emp["Jam_Keluar"].notna().sum()) if "Jam_Keluar" in prep_emp.columns else 0
         hari_kerja_valid = int(((prep_emp.get("Status_Data", pd.Series()) == "Lengkap") & (prep_emp.get("Kategori_Hari", pd.Series()) == "Kerja")).sum())
         masuk_tgl_merah = int((prep_emp.get("Kategori_Hari", pd.Series()) == "Tanggal Merah").sum())
+
+        # Hitung hari absensi jarak jauh yang approved (dari remote_absences dict)
+        from . import config_runtime as _cfg
+        _nama_norm = _cfg.normalisasi_nama(str(nama))
+        _remote_days = remote_absences.get(_nama_norm, []) if remote_absences else []
+        absensi_jarak_jauh = len(_remote_days)
+        # Hari kerja valid = dari fingerprint + dari absensi jarak jauh approved
+        hari_kerja_valid_total = hari_kerja_valid + absensi_jarak_jauh
 
         jml_telat = len(telat_emp)
         total_durasi_telat = float(telat_emp["Durasi_Telat_Jam"].sum()) if "Durasi_Telat_Jam" in telat_emp.columns and not telat_emp.empty else 0
@@ -278,7 +291,8 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
             "Profil": emp.get("Profil", ""),
             "Absensi In": absensi_in,
             "Absensi Out": absensi_out,
-            "Hari Kerja Valid": hari_kerja_valid,
+            "Hari Kerja Valid": hari_kerja_valid_total,
+            "Absensi Jarak Jauh": absensi_jarak_jauh,
             "Masuk Tanggal Merah": masuk_tgl_merah,
             "Jml Telat": jml_telat,
             "Total Durasi Telat": _fmt_durasi(total_durasi_telat),
@@ -302,6 +316,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
 
     headers = [
         "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out", "Hari Kerja Valid",
+        "Absensi Jarak Jauh",
         "Masuk Tanggal Merah", "Jml Telat", "Total Durasi Telat", "Jml Lembur",
         "Jam Lembur (Bulat)", "Jml Pulang Duluan",
         "Total Durasi Pulang Duluan", "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
@@ -314,7 +329,8 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
     types = {
         "Cabang": "text", "Nama": "text", "Profil": "text",
         "Absensi In": "number", "Absensi Out": "number",
-        "Hari Kerja Valid": "number", "Masuk Tanggal Merah": "number",
+        "Hari Kerja Valid": "number", "Absensi Jarak Jauh": "number",
+        "Masuk Tanggal Merah": "number",
         "Jml Telat": "number", "Total Durasi Telat": "text",
         "Jml Lembur": "number", "Jam Lembur (Bulat)": "number",
         "Jml Pulang Duluan": "number", "Total Durasi Pulang Duluan": "text",
@@ -327,6 +343,29 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         "Total Uang Makan Akhir (Rp)": "currency",
     }
     return {"headers": headers, "types": types, "rows": rows}, daftar
+
+
+def _compute_absensi_jarak_jauh_json(remote_absences: dict) -> dict:
+    """
+    Bangun data sheet 'Absensi Jarak Jauh' dari remote_absences dict.
+    Kolom: Cabang | Nama | Tanggal | Status
+    Diurutkan: Cabang → Nama → Tanggal.
+    """
+    rows = []
+    for nama_norm, entries in remote_absences.items():
+        for entry in entries:
+            rows.append({
+                "Cabang" : entry.get("cabang", ""),
+                "Nama"   : entry.get("_nama_asli", nama_norm.title()),  # nama asli jika ada
+                "Tanggal": str(entry["tanggal"]),
+                "Status" : "APPROVED",
+            })
+
+    rows.sort(key=lambda r: (r["Cabang"], r["Nama"], r["Tanggal"]))
+
+    headers = ["Cabang", "Nama", "Tanggal", "Status"]
+    types = {"Cabang": "text", "Nama": "text", "Tanggal": "text", "Status": "text"}
+    return {"headers": headers, "types": types, "rows": rows}
 
 
 def _compute_perbandingan_cabang_json(summary_rows, df_telat, df_lembur, df_pulang_duluan, df_tidak_masuk):
@@ -418,6 +457,7 @@ def jalankan_pipeline_db_json(
     # --- 1b. Cuti & izin yang sudah APPROVED ---
     leaves = db.query(models.LeaveRequest).filter(models.LeaveRequest.status == "APPROVED").all()
     approved_leaves = build_approved_leaves_from_db(leaves)
+    remote_absences = build_remote_absences_from_db(db)
     adjustments_dict = _load_adjustments_dict(db)
     bpjs_dict = build_bpjs_dict(os.environ["BPJS_FILE_PATH"]) if "BPJS_FILE_PATH" in os.environ and os.path.exists(os.environ["BPJS_FILE_PATH"]) else {}
 
@@ -450,6 +490,7 @@ def jalankan_pipeline_db_json(
         adjustments_dict=adjustments_dict,
         bpjs_dict=bpjs_dict,
         master_dict=master_dict,
+        remote_absences=remote_absences,
     )
     log("Excel selesai ditulis. Menyiapkan data JSON...")
 
@@ -459,11 +500,15 @@ def jalankan_pipeline_db_json(
         adjustments_dict=adjustments_dict,
         bpjs_dict=bpjs_dict,
         master_dict=master_dict,
+        remote_absences=remote_absences,
     )
 
     perbandingan_data = _compute_perbandingan_cabang_json(
         summary_data["rows"], df_telat, df_lembur, df_pulang_duluan, df_tidak_masuk_export
     )
+
+    # Sheet absensi jarak jauh
+    absensi_jarak_jauh_data = _compute_absensi_jarak_jauh_json(remote_absences)
 
     # Kolom maps untuk sheet-sheet rekap (sama persis dengan excel_writer.py)
     kolom_telat = {
@@ -568,20 +613,21 @@ def jalankan_pipeline_db_json(
 
     # Build sheets list
     sheets = [
-        {"key": "summary",         "title": "Summary Overview",         "data": summary_data},
-        {"key": "telat",           "title": "Rekap Telat",              "data": _df_to_records(df_telat, kolom_telat, types_telat)},
-        {"key": "lembur",          "title": "Rekap Lembur",             "data": lembur_records},
-        {"key": "pulang_duluan",   "title": "Rekap Pulang Duluan",      "data": _df_to_records(df_pulang_duluan, kolom_pd)},
-        {"key": "tidak_masuk",     "title": "Rekap Tidak Masuk",        "data": _df_to_records(df_tidak_masuk_export, kolom_tm, types_tm)},
-        {"key": "tidak_lengkap",   "title": "Data Tidak Lengkap",       "data": _df_to_records(df_tidak_lengkap)},
-        {"key": "uang_makan",      "title": "Uang Makan",              "data": _df_to_records(df_uang_makan, kolom_um, types_um) if df_uang_makan is not None else _df_to_records(pd.DataFrame(), kolom_um, types_um)},
-        {"key": "perbandingan",    "title": "Perbandingan Cabang",      "data": perbandingan_data},
-        {"key": "profil_exclude",  "title": "Rekap per Profil",         "data": _df_to_records(df_profil_exclude, kolom_pe) if df_profil_exclude is not None else _df_to_records(pd.DataFrame(), kolom_pe)},
-        {"key": "alpa_berulang",   "title": "Alpa Berulang",            "data": _df_to_records(df_alpa_berulang, kolom_alpa, types_alpa)},
-        {"key": "perlu_dicek",     "title": "Perlu Dicek",              "data": _df_to_records(df_perlu_dicek, kolom_dc, types_dc) if df_perlu_dicek is not None else _df_to_records(pd.DataFrame(), kolom_dc, types_dc)},
-        {"key": "preprocessing",   "title": "Preprocessing",            "data": _df_to_records(df_prep[kolom_prep_ada], kolom_prep_map)},
-        {"key": "data_mentah",     "title": "Data Mentah",              "data": data_mentah_records},
-        {"key": "readme",          "title": "README & Panduan",         "data": {"headers": [], "types": {}, "rows": [], "catatan": readme_lines}},
+        {"key": "summary",              "title": "Summary Overview",       "data": summary_data},
+        {"key": "telat",                "title": "Rekap Telat",            "data": _df_to_records(df_telat, kolom_telat, types_telat)},
+        {"key": "lembur",               "title": "Rekap Lembur",           "data": lembur_records},
+        {"key": "pulang_duluan",        "title": "Rekap Pulang Duluan",    "data": _df_to_records(df_pulang_duluan, kolom_pd)},
+        {"key": "tidak_masuk",          "title": "Rekap Tidak Masuk",      "data": _df_to_records(df_tidak_masuk_export, kolom_tm, types_tm)},
+        {"key": "tidak_lengkap",        "title": "Data Tidak Lengkap",     "data": _df_to_records(df_tidak_lengkap)},
+        {"key": "uang_makan",           "title": "Uang Makan",             "data": _df_to_records(df_uang_makan, kolom_um, types_um) if df_uang_makan is not None else _df_to_records(pd.DataFrame(), kolom_um, types_um)},
+        {"key": "perbandingan",         "title": "Perbandingan Cabang",    "data": perbandingan_data},
+        {"key": "profil_exclude",       "title": "Rekap per Profil",       "data": _df_to_records(df_profil_exclude, kolom_pe) if df_profil_exclude is not None else _df_to_records(pd.DataFrame(), kolom_pe)},
+        {"key": "alpa_berulang",        "title": "Alpa Berulang",          "data": _df_to_records(df_alpa_berulang, kolom_alpa, types_alpa)},
+        {"key": "absensi_jarak_jauh",   "title": "Absensi Jarak Jauh",    "data": absensi_jarak_jauh_data},
+        {"key": "perlu_dicek",          "title": "Perlu Dicek",            "data": _df_to_records(df_perlu_dicek, kolom_dc, types_dc) if df_perlu_dicek is not None else _df_to_records(pd.DataFrame(), kolom_dc, types_dc)},
+        {"key": "preprocessing",        "title": "Preprocessing",          "data": _df_to_records(df_prep[kolom_prep_ada], kolom_prep_map)},
+        {"key": "data_mentah",          "title": "Data Mentah",            "data": data_mentah_records},
+        {"key": "readme",               "title": "README & Panduan",       "data": {"headers": [], "types": {}, "rows": [], "catatan": readme_lines}},
     ]
 
     # KPI summary
@@ -591,6 +637,7 @@ def jalankan_pipeline_db_json(
     total_bonus_lembur = sum(r.get("Total Bonus Lembur (Rp)", 0) for r in summary_data["rows"])
     total_uang_makan = sum(r.get("Total Uang Makan Akhir (Rp)", 0) for r in summary_data["rows"])
     total_pulang_duluan = sum(r.get("Jml Pulang Duluan", 0) for r in summary_data["rows"])
+    total_absensi_jarak_jauh = sum(r.get("Absensi Jarak Jauh", 0) for r in summary_data["rows"])
     jml_perlu_dicek = len(df_perlu_dicek) if df_perlu_dicek is not None else 0
 
     cabang_list = sorted(daftar_karyawan["Cabang"].unique().tolist()) if not daftar_karyawan.empty else []
@@ -604,6 +651,7 @@ def jalankan_pipeline_db_json(
             "total_bonus_lembur": total_bonus_lembur,
             "total_uang_makan": total_uang_makan,
             "total_pulang_duluan": total_pulang_duluan,
+            "total_absensi_jarak_jauh": total_absensi_jarak_jauh,
             "jml_perlu_dicek": jml_perlu_dicek,
             "total_baris_scan": len(df_mentah),
         },

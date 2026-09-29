@@ -115,10 +115,12 @@ def list_leave_requests(
     status_filter: Optional[str] = Query(default=None, alias="status"),
     nama: Optional[str] = Query(default=None),
     kategori: Optional[str] = Query(default=None),
+    cabang: Optional[str] = Query(default=None),
+    tipe_absensi: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.get_current_user),
 ):
-    """Melihat daftar permohonan cuti/izin (bisa difilter status, nama, kategori)."""
+    """Melihat daftar permohonan cuti/izin (bisa difilter status, nama, kategori, cabang, tipe_absensi)."""
     q = db.query(models.LeaveRequest)
     if status_filter:
         q = q.filter(models.LeaveRequest.status == status_filter.upper())
@@ -126,6 +128,10 @@ def list_leave_requests(
         q = q.filter(models.LeaveRequest.nama.ilike(f"%{nama}%"))
     if kategori:
         q = q.filter(models.LeaveRequest.kategori == kategori.upper())
+    if cabang:
+        q = q.filter(models.LeaveRequest.location_cabang.ilike(f"%{cabang}%"))
+    if tipe_absensi:
+        q = q.filter(models.LeaveRequest.tipe_absensi == tipe_absensi.lower())
     return q.order_by(models.LeaveRequest.created_at.desc()).all()
 
 
@@ -141,9 +147,12 @@ def create_leave_request(
     """
     # Normalisasi format kategori
     kategori_norm = payload.kategori.upper().strip()
-    valid_kategori = {"CUTI_TAHUNAN", "SAKIT", "IZIN_PULANG_CEPAT", "IZIN_TELAT", "LAINNYA"}
+    valid_kategori = {"CUTI_TAHUNAN", "SAKIT", "IZIN_PULANG_CEPAT", "IZIN_TELAT", "LAINNYA", "WORK_FROM_LOCATION"}
     if kategori_norm not in valid_kategori:
         kategori_norm = "LAINNYA"
+
+    # Tentukan tipe_absensi otomatis berdasarkan kategori
+    tipe_absensi = "remote_work" if kategori_norm == "WORK_FROM_LOCATION" else "normal"
 
     tgl_m = payload.tanggal_mulai
     tgl_s = payload.tanggal_selesai
@@ -188,6 +197,8 @@ def create_leave_request(
         jam_izin=payload.jam_izin,
         alasan=payload.alasan,
         catatan_hr=payload.catatan_hr,
+        tipe_absensi=tipe_absensi,
+        location_cabang=payload.location_cabang,
         status="PENDING",
     )
     db.add(leave)

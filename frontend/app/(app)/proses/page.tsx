@@ -315,6 +315,7 @@ function EmployeeModal({
     { title: "Rekap Lembur", key: "lembur" },
     { title: "Rekap Pulang Duluan", key: "pulang_duluan" },
     { title: "Uang Makan", key: "uang_makan" },
+    { title: "Rekap Absensi Jarak Jauh", key: "absensi_jarak_jauh" },
     { title: "Rekap Tidak Masuk", key: "tidak_masuk" },
   ];
 
@@ -559,7 +560,7 @@ function SheetTable({
                     } ${isNumeric ? "text-right" : "text-left"}`}
                   >
                     <div className={`inline-flex items-center gap-1 ${isNumeric ? "justify-end" : "justify-start"}`}>
-                      <span>{h} {isEditable && "✏️"}</span>
+                      <span>{h}</span>
                       <span className="text-[10px] text-slate-400">
                         {isSorted ? (sortAsc ? "▲" : "▼") : "⇅"}
                       </span>
@@ -1482,7 +1483,7 @@ export default function ProsesPage() {
                           <td className="px-3 py-1.5 whitespace-nowrap text-center text-slate-600">{r.id_mesin}</td>
                           <td className="px-3 py-1.5 whitespace-nowrap text-center text-indigo-600 font-semibold">{r.timestamp}</td>
                           <td className="px-3 py-1.5 whitespace-nowrap text-center font-sans font-semibold">
-                            <span className={`px-2 py-0.5 rounded text-[10px] ${r.tipe === "C/Masuk" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-blue-50 text-blue-700 border border-blue-200"}`}>
+                            <span className={`px-2 py-0.5 rounded text-[10px] ${r.tipe === "C/Masuk" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-50 text-slate-700 border border-slate-200"}`}>
                               {r.tipe}
                             </span>
                           </td>
@@ -1498,8 +1499,7 @@ export default function ProsesPage() {
                 {/* 4 Panduan Penting */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 text-xs">
                   <div className="p-3 rounded-lg border border-slate-200/90 bg-slate-50/50">
-                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                    <span className="font-bold text-slate-800">
                       1. Struktur 8 Kolom Mesin
                     </span>
                     <p className="text-slate-500 mt-1 leading-relaxed">
@@ -1508,8 +1508,7 @@ export default function ProsesPage() {
                   </div>
 
                   <div className="p-3 rounded-lg border border-slate-200/90 bg-slate-50/50">
-                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    <span className="font-bold text-slate-800">
                       2. Format Tanggal & Waktu
                     </span>
                     <p className="text-slate-500 mt-1 leading-relaxed">
@@ -1518,8 +1517,7 @@ export default function ProsesPage() {
                   </div>
 
                   <div className="p-3 rounded-lg border border-slate-200/90 bg-slate-50/50">
-                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                    <span className="font-bold text-slate-800">
                       3. Kesesuaian Nama Karyawan
                     </span>
                     <p className="text-slate-500 mt-1 leading-relaxed">
@@ -1528,8 +1526,7 @@ export default function ProsesPage() {
                   </div>
 
                   <div className="p-3 rounded-lg border border-slate-200/90 bg-slate-50/50">
-                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                    <span className="font-bold text-slate-800">
                       4. Fleksibel: Header & Multi-File
                     </span>
                     <p className="text-slate-500 mt-1 leading-relaxed">

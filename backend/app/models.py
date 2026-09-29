@@ -141,13 +141,15 @@ class LeaveRequest(Base):
       - IZIN_PULANG_CEPAT (izin keluar lebih awal, jam_izin = misal 14:00)
       - IZIN_TELAT (izin datang terlambat, jam_izin = misal 09:30)
       - LAINNYA
+      - WORK_FROM_LOCATION (absensi jarak jauh — karyawan bekerja di luar kantor,
+        tidak ada data fingerprint, hari tsb dihitung sebagai Hari Kerja Valid jika APPROVED)
     """
     __tablename__ = "leave_requests"
 
     id = Column(Integer, primary_key=True, index=True)
     nama = Column(String, nullable=False, index=True)
     telegram_user_id = Column(String, nullable=True)
-    kategori = Column(String, nullable=False)  # CUTI_TAHUNAN, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA
+    kategori = Column(String, nullable=False)  # CUTI_TAHUNAN, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA, WORK_FROM_LOCATION
     tanggal_mulai = Column(Date, nullable=False)
     tanggal_selesai = Column(Date, nullable=False)
     jam_izin = Column(String, nullable=True)  # Format HH:MM untuk izin jam kerja
@@ -156,6 +158,13 @@ class LeaveRequest(Base):
     catatan_hr = Column(String, nullable=True)
     approved_by = Column(String, nullable=True)
     approved_at = Column(DateTime, nullable=True)
+
+    # --- Absensi Jarak Jauh (WORK_FROM_LOCATION) ---
+    # tipe_absensi: "normal" untuk cuti/izin biasa, "remote_work" untuk absensi jarak jauh
+    tipe_absensi = Column(String, nullable=True, default="normal")
+    # location_cabang: cabang karyawan saat absen jarak jauh (untuk filtering di website & pipeline)
+    location_cabang = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 

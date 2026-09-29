@@ -220,11 +220,13 @@ export const api = {
     return res.blob();
   },
 
-  async getLeaves(params?: { status?: string; nama?: string; kategori?: string }) {
+  async getLeaves(params?: { status?: string; nama?: string; kategori?: string; cabang?: string; tipe_absensi?: string }) {
     const query = new URLSearchParams();
     if (params?.status) query.set("status", params.status);
     if (params?.nama) query.set("nama", params.nama);
     if (params?.kategori) query.set("kategori", params.kategori);
+    if (params?.cabang) query.set("cabang", params.cabang);
+    if (params?.tipe_absensi) query.set("tipe_absensi", params.tipe_absensi);
     const qs = query.toString() ? `?${query.toString()}` : "";
     const res = await request(`/leaves${qs}`);
     return res.json();

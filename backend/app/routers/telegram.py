@@ -35,6 +35,7 @@ KATEGORI_NAME_MAP = {
     "IZIN_TELAT": "⏰ Izin Datang Terlambat",
     "IZIN_PULANG_CEPAT": "🏃 Izin Pulang Lebih Awal",
     "LAINNYA": "📝 Izin Lainnya",
+    "WORK_FROM_LOCATION": "📍 Absensi Jarak Jauh",
 }
 
 
@@ -202,13 +203,16 @@ async def notify_hr_master_new_leave(leave: models.LeaveRequest):
     )
 
     jam_info = f"⏰ *Jam Izin:* {leave.jam_izin}\n" if leave.jam_izin else ""
+    # Tambahkan info cabang khusus untuk Absensi Jarak Jauh
+    cabang_info = f"🏢 *Cabang:* {leave.location_cabang}\n" if leave.location_cabang else ""
 
     text = (
-        f"🔔 *PENGAJUAN CUTI / IZIN BARU*\n"
+        f"🔔 *PENGAJUAN BARU*\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🆔 *ID Pengajuan:* `#{leave.id}`\n"
         f"👤 *Nama Karyawan:* *{leave.nama}*\n"
         f"📋 *Kategori:* {kat_name}\n"
+        f"{cabang_info}"
         f"📅 *Periode:* {periode}\n"
         f"{jam_info}"
         f"📝 *Alasan:* {leave.alasan or '-'}\n"
@@ -218,7 +222,6 @@ async def notify_hr_master_new_leave(leave: models.LeaveRequest):
         f"Silakan buka menu *Cuti & Izin* pada Website HR untuk menyetujui atau menolak."
     )
 
-    # Kirim info tanpa tombol inline keyboard
     await send_telegram_message(hr_chat_id, text, reply_markup=None)
 
 
@@ -525,6 +528,8 @@ async def process_telegram_update(update: dict, db: Session):
                     tanggal_selesai=tgl_selesai,
                     jam_izin=jam_izin,
                     alasan=alasan,
+                    tipe_absensi="remote_work" if kategori == "WORK_FROM_LOCATION" else "normal",
+                    location_cabang=form_data.get("cabang"),
                     status="PENDING",
                 )
                 db.add(leave)
@@ -553,6 +558,146 @@ async def process_telegram_update(update: dict, db: Session):
             user_states.pop(chat_id, None)
             await edit_telegram_message(chat_id, msg_id, "❌ Pengajuan telah dibatalkan.", reply_markup=None)
 
+        # -----------------------------------------------------------------------
+        # ABSENSI JARAK JAUH — callback handler (prefix wfl_)
+        # -----------------------------------------------------------------------
+
+        # Pilih Cabang (WFL)
+        elif data.startswith("wfl_cab_"):
+            cab_selected = data.replace("wfl_cab_", "")
+            if chat_id in user_states:
+                if cab_selected == "MANUAL":
+                    user_states[chat_id]["step"] = "wfl_input_nama"
+                    await send_telegram_message(
+                        chat_id,
+                        "Silakan ketik *Nama Lengkap Karyawan* sesuai yang terdaftar di HR:"
+                    )
+                else:
+                    user_states[chat_id]["data"]["cabang"] = cab_selected
+                    user_states[chat_id]["step"] = "wfl_pilih_karyawan"
+
+                    emps = (
+                        db.query(models.Employee)
+                        .filter(models.Employee.cabang == cab_selected, models.Employee.active == True)  # noqa: E712
+                        .order_by(models.Employee.nama.asc())
+                        .all()
+                    )
+
+                    keyboard = []
+                    row = []
+                    for emp in emps:
+                        row.append({"text": f"👤 {emp.nama}", "callback_data": f"wfl_emp_{emp.id}"})
+                        if len(row) == 2:
+                            keyboard.append(row)
+                            row = []
+                    if row:
+                        keyboard.append(row)
+                    keyboard.append([{"text": "✏️ Ketik Nama Manual", "callback_data": "wfl_cab_MANUAL"}])
+
+                    await send_telegram_message(
+                        chat_id,
+                        f"Cabang: *{cab_selected}*\n\n"
+                        f"Langkah 2: Pilih *Nama Karyawan*:",
+                        reply_markup={"inline_keyboard": keyboard},
+                    )
+
+        # Pilih Karyawan (WFL)
+        elif data.startswith("wfl_emp_"):
+            emp_id_str = data.replace("wfl_emp_", "")
+            if chat_id in user_states:
+                try:
+                    emp = db.query(models.Employee).filter(models.Employee.id == int(emp_id_str)).first()
+                    nama_fix = emp.nama if emp else "Karyawan"
+                except Exception:
+                    nama_fix = "Karyawan"
+
+                user_states[chat_id]["data"]["nama"] = nama_fix
+                user_states[chat_id]["step"] = "wfl_input_tanggal"
+                cabang = user_states[chat_id]["data"].get("cabang", "")
+
+                await send_telegram_message(
+                    chat_id,
+                    f"Karyawan: *{nama_fix}* ({cabang})\n\n"
+                    f"Langkah 3: Masukkan *Tanggal* absensi jarak jauh\n"
+                    f"Format: `YYYY-MM-DD` atau `DD-MM-YYYY`\n"
+                    f"(Bisa juga ketik: `hari ini` atau `besok`)\n\n"
+                    f"_Jika lebih dari 1 hari, masukkan tanggal mulainya dulu._",
+                )
+
+        # Konfirmasi Absensi Jarak Jauh
+        elif data == "wfl_confirm_submit":
+            if chat_id in user_states:
+                form_data = user_states[chat_id]["data"]
+                nama = form_data.get("nama", "")
+                cabang = form_data.get("cabang", "")
+                tgl_mulai = form_data.get("tanggal_mulai")
+                tgl_selesai = form_data.get("tanggal_selesai")
+                alasan = form_data.get("alasan", "-")
+
+                # Cek overlap dengan pengajuan aktif
+                overlap = check_leave_overlap(db, nama, tgl_mulai, tgl_selesai)
+                if overlap:
+                    user_states.pop(chat_id, None)
+                    tgl_str = (
+                        overlap.tanggal_mulai.strftime("%d-%m-%Y")
+                        if overlap.tanggal_mulai == overlap.tanggal_selesai
+                        else f"{overlap.tanggal_mulai.strftime('%d-%m-%Y')} s/d {overlap.tanggal_selesai.strftime('%d-%m-%Y')}"
+                    )
+                    kat_name = KATEGORI_NAME_MAP.get(overlap.kategori, overlap.kategori)
+                    await edit_telegram_message(
+                        chat_id, msg_id,
+                        f"⛔ *PENGAJUAN DITOLAK: TANGGAL BENTROK*\n\n"
+                        f"*{nama}* sudah memiliki pengajuan aktif:\n"
+                        f"📋 {kat_name} (`#{overlap.id}`)\n"
+                        f"📅 {tgl_str} | Status: {overlap.status}",
+                        reply_markup=None,
+                    )
+                    return
+
+                # Simpan ke database
+                leave = models.LeaveRequest(
+                    nama=nama,
+                    telegram_user_id=str(chat_id),
+                    kategori="WORK_FROM_LOCATION",
+                    tanggal_mulai=tgl_mulai,
+                    tanggal_selesai=tgl_selesai,
+                    alasan=alasan,
+                    tipe_absensi="remote_work",
+                    location_cabang=cabang,
+                    status="PENDING",
+                )
+                db.add(leave)
+                db.commit()
+                db.refresh(leave)
+
+                user_states.pop(chat_id, None)
+
+                is_same = tgl_mulai == tgl_selesai
+                periode_str = (
+                    tgl_mulai.strftime("%d %B %Y")
+                    if is_same
+                    else f"{tgl_mulai.strftime('%d %B %Y')} s/d {tgl_selesai.strftime('%d %B %Y')}"
+                )
+
+                await edit_telegram_message(
+                    chat_id, msg_id,
+                    f"✅ *Absensi Jarak Jauh Berhasil Diajukan!*\n\n"
+                    f"🆔 ID Pengajuan: `#{leave.id}`\n"
+                    f"👤 Nama: *{nama}*\n"
+                    f"🏢 Cabang: *{cabang}*\n"
+                    f"📅 Periode: *{periode_str}*\n"
+                    f"⏳ Status: *PENDING*\n\n"
+                    f"Pengajuan diteruskan ke HR Master untuk diverifikasi. "
+                    f"Anda akan menerima notifikasi setelah disetujui.",
+                    reply_markup=None,
+                )
+
+                await notify_hr_master_new_leave(leave)
+
+        elif data == "wfl_cancel":
+            user_states.pop(chat_id, None)
+            await edit_telegram_message(chat_id, msg_id, "❌ Pengajuan absensi jarak jauh dibatalkan.", reply_markup=None)
+
         return
 
     # -----------------------------------------------------------------------
@@ -579,6 +724,7 @@ async def process_telegram_update(update: dict, db: Session):
             f"serta memfasilitasi persetujuan instan oleh HR Master.\n\n"
             f"*Perintah yang tersedia:*\n"
             f"• `/cuti` atau `/izin` : Ajukan cuti / sakit / izin telat / pulang cepat\n"
+            f"• `/absen_luar` : Ajukan absensi jarak jauh (bekerja di luar kantor)\n"
             f"• `/status` : Cek status permohonan cuti Anda\n"
             f"• `/batal` : Batalkan pengisian form yang sedang berjalan\n"
             f"• `/help` : Panduan penggunaan bot\n"
@@ -598,14 +744,23 @@ async def process_telegram_update(update: dict, db: Session):
         await send_telegram_message(
             chat_id,
             f"ℹ️ *PANDUAN PENGGUNAAN BOT HR*\n\n"
-            f"1. Ketik `/cuti` untuk memulai formulir pengajuan.\n"
-            f"2. Pilih jenis permohonan (Cuti Tahunan, Sakit, Izin Telat, Izin Pulang Cepat).\n"
-            f"3. Masukkan nama lengkap karyawan.\n"
+            f"*Pengajuan Cuti & Izin:*\n"
+            f"1. Ketik `/cuti` untuk memulai formulir.\n"
+            f"2. Pilih jenis (Cuti Tahunan, Sakit, Izin Telat, Izin Pulang Cepat).\n"
+            f"3. Pilih cabang & nama karyawan.\n"
             f"4. Masukkan tanggal mulai & selesai.\n"
-            f"5. Jika izin telat/pulang awal, masukkan jam izin (contoh: `09:30` atau `14:00`).\n"
-            f"6. Tuliskan alasan singkat permohonan.\n"
-            f"7. Konfirmasi pengiriman pengajuan.\n\n"
-            f"Setelah diajukan, HR Master akan menerima notifikasi tombol persetujuan secara instan.",
+            f"5. Jika izin telat/pulang awal, masukkan jam izin (contoh: `09:30`).\n"
+            f"6. Tuliskan alasan, lalu konfirmasi.\n\n"
+            f"*Absensi Jarak Jauh:*\n"
+            f"1. Ketik `/absen_luar` untuk memulai formulir.\n"
+            f"2. Pilih cabang & nama karyawan.\n"
+            f"3. Pilih tanggal absensi jarak jauh.\n"
+            f"4. Tuliskan alasan/keterangan, lalu konfirmasi.\n"
+            f"5. HR Master akan menyetujui di website. Hari tersebut akan dihitung sebagai Hari Kerja Valid.\n\n"
+            f"*Perintah Lainnya:*\n"
+            f"• `/status` : Cek 5 riwayat pengajuan terakhir\n"
+            f"• `/kuota` : Cek sisa jatah cuti tahunan\n"
+            f"• `/batal` : Batalkan pengisian form",
         )
         return
 
@@ -754,6 +909,43 @@ async def process_telegram_update(update: dict, db: Session):
         )
         return
 
+    # Perintah /absen_luar — Absensi Jarak Jauh
+    if lower_text in ("/absen_luar", "/absen_remote", "/remote"):
+        user_states[chat_id] = {
+            "step": "wfl_pilih_cabang",
+            "data": {"kategori": "WORK_FROM_LOCATION"},
+        }
+
+        # Ambil daftar cabang unik dari master karyawan
+        cabang_records = (
+            db.query(models.Employee.cabang)
+            .filter(models.Employee.active == True)  # noqa: E712
+            .distinct()
+            .all()
+        )
+        cabang_list = sorted([c[0] for c in cabang_records if c[0]])
+
+        keyboard = []
+        row = []
+        for cb_name in cabang_list:
+            row.append({"text": f"🏢 {cb_name}", "callback_data": f"wfl_cab_{cb_name}"})
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([{"text": "✏️ Ketik Nama Manual", "callback_data": "wfl_cab_MANUAL"}])
+
+        await send_telegram_message(
+            chat_id,
+            "📍 *FORMULIR ABSENSI JARAK JAUH*\n\n"
+            "Untuk karyawan yang ditugaskan di luar kantor dan tidak bisa absen via mesin fingerprint.\n"
+            "Setelah diajukan, HR Master akan menyetujui di website.\n\n"
+            "Langkah 1: Pilih *Cabang* karyawan:",
+            reply_markup={"inline_keyboard": keyboard},
+        )
+        return
+
     # -----------------------------------------------------------------------
     # C. ALUR STATE MACHINE FORMULIR
     # -----------------------------------------------------------------------
@@ -761,7 +953,8 @@ async def process_telegram_update(update: dict, db: Session):
     if not state:
         await send_telegram_message(
             chat_id,
-            "Ketik `/cuti` untuk mengajukan cuti/izin, `/kuota` untuk cek sisa cuti, atau `/help` untuk panduan.",
+            "Ketik `/cuti` untuk mengajukan cuti/izin, `/absen_luar` untuk absensi jarak jauh, "
+            "`/kuota` untuk cek sisa cuti, atau `/help` untuk panduan.",
         )
         return
 
@@ -936,6 +1129,126 @@ async def process_telegram_update(update: dict, db: Session):
         }
 
         state["step"] = "waiting_confirmation"
+        await send_telegram_message(chat_id, summary_text, reply_markup=reply_markup)
+        return
+
+    # -----------------------------------------------------------------------
+    # D. STATE MACHINE — ABSENSI JARAK JAUH (prefix step: wfl_)
+    # -----------------------------------------------------------------------
+
+    # Step: Input Nama Manual (WFL)
+    if step == "wfl_input_nama":
+        input_nama = text.strip()
+        if len(input_nama) < 3:
+            await send_telegram_message(chat_id, "Nama terlalu pendek. Silakan masukkan nama lengkap:")
+            return
+
+        emp = db.query(models.Employee).filter(models.Employee.nama.ilike(f"%{input_nama}%")).first()
+        nama_fix = emp.nama if emp else input_nama
+        cabang_fix = emp.cabang if emp and emp.cabang else ""
+
+        state["data"]["nama"] = nama_fix
+        state["data"]["cabang"] = cabang_fix
+        state["step"] = "wfl_input_tanggal"
+
+        await send_telegram_message(
+            chat_id,
+            f"Nama: *{nama_fix}*\n\n"
+            f"Langkah 3: Masukkan *Tanggal* absensi jarak jauh\n"
+            f"Format: `YYYY-MM-DD` atau `DD-MM-YYYY`\n"
+            f"(Bisa juga ketik: `hari ini` atau `besok`)\n\n"
+            f"_Jika lebih dari 1 hari, masukkan tanggal mulainya dulu._",
+        )
+        return
+
+    # Step: Input Tanggal Mulai (WFL)
+    if step == "wfl_input_tanggal":
+        parsed_date = parse_date_input(text)
+        if not parsed_date:
+            await send_telegram_message(
+                chat_id,
+                "⚠️ Format tanggal tidak dikenali. Contoh: `2026-09-25` atau `25-09-2026`:",
+            )
+            return
+
+        state["data"]["tanggal_mulai"] = parsed_date
+        state["step"] = "wfl_input_tanggal_selesai"
+
+        await send_telegram_message(
+            chat_id,
+            f"Tanggal Mulai: *{parsed_date.strftime('%d %B %Y')}*\n\n"
+            f"Langkah 4: Masukkan *Tanggal Selesai*\n"
+            f"(Ketik `sama` jika hanya 1 hari):",
+        )
+        return
+
+    # Step: Input Tanggal Selesai (WFL)
+    if step == "wfl_input_tanggal_selesai":
+        tgl_mulai = state["data"]["tanggal_mulai"]
+        if text.strip().lower() in ("sama", "1 hari", "-"):
+            parsed_date = tgl_mulai
+        else:
+            parsed_date = parse_date_input(text)
+
+        if not parsed_date:
+            await send_telegram_message(
+                chat_id,
+                "⚠️ Format tanggal tidak dikenali. Ketik `sama` atau format `YYYY-MM-DD`:",
+            )
+            return
+
+        if parsed_date < tgl_mulai:
+            await send_telegram_message(
+                chat_id,
+                "⚠️ Tanggal selesai tidak boleh lebih awal dari tanggal mulai. Silakan masukkan ulang:",
+            )
+            return
+
+        state["data"]["tanggal_selesai"] = parsed_date
+        state["step"] = "wfl_input_alasan"
+
+        await send_telegram_message(
+            chat_id,
+            f"Tanggal Selesai: *{parsed_date.strftime('%d %B %Y')}*\n\n"
+            f"Langkah 5: Tuliskan *Alasan / Keterangan* penugasan di luar:",
+        )
+        return
+
+    # Step: Input Alasan & Konfirmasi (WFL)
+    if step == "wfl_input_alasan":
+        state["data"]["alasan"] = text.strip()
+        data = state["data"]
+
+        t_mulai = data.get("tanggal_mulai")
+        t_selesai = data.get("tanggal_selesai")
+        is_same = t_mulai == t_selesai
+        periode_str = (
+            t_mulai.strftime("%d %B %Y")
+            if is_same
+            else f"{t_mulai.strftime('%d %B %Y')} s/d {t_selesai.strftime('%d %B %Y')}"
+        )
+
+        summary_text = (
+            f"📍 *RINGKASAN ABSENSI JARAK JAUH*\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 *Nama Karyawan:* {data.get('nama')}\n"
+            f"🏢 *Cabang:* {data.get('cabang') or '-'}\n"
+            f"📅 *Periode:* {periode_str}\n"
+            f"📝 *Alasan:* {data.get('alasan')}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"Apakah data di atas sudah benar?"
+        )
+
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Kirim Pengajuan", "callback_data": "wfl_confirm_submit"},
+                    {"text": "❌ Batalkan", "callback_data": "wfl_cancel"},
+                ]
+            ]
+        }
+
+        state["step"] = "wfl_waiting_confirmation"
         await send_telegram_message(chat_id, summary_text, reply_markup=reply_markup)
         return
 

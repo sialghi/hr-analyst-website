@@ -527,3 +527,56 @@ def cari_nama_tidak_dikenal(df_absensi, master_dict):
         .reset_index(drop=True)
     )
     return hasil
+
+
+def build_remote_absences_from_db(db) -> dict:
+    """
+    BARU: Bangun dict lookup Absensi Jarak Jauh yang sudah APPROVED untuk digunakan pipeline.
+
+    Hanya memuat LeaveRequest dengan:
+      - kategori  = "WORK_FROM_LOCATION"
+      - status    = "APPROVED"
+
+    Return format:
+    {
+        normalisasi_nama(nama): [
+            {
+                "tanggal"  : datetime.date,   # setiap tanggal dalam range mulai..selesai
+                "cabang"   : str,             # location_cabang
+                "alasan"   : str,
+                "leave_id" : int,
+            },
+            ...
+        ]
+    }
+    Satu entry per *hari* (range di-expand), sehingga pipeline tinggal cek per tanggal.
+    """
+    import datetime as _dt
+    from .. import models as _models
+
+    rows = db.query(_models.LeaveRequest).filter(
+        _models.LeaveRequest.kategori == "WORK_FROM_LOCATION",
+        _models.LeaveRequest.status == "APPROVED",
+    ).all()
+
+    lookup: dict = {}
+    for lv in rows:
+        norm_name = config.normalisasi_nama(lv.nama)
+        if not norm_name:
+            continue
+        if norm_name not in lookup:
+            lookup[norm_name] = []
+
+        # Expand range tanggal_mulai..tanggal_selesai menjadi per-hari
+        delta = (lv.tanggal_selesai - lv.tanggal_mulai).days
+        for d in range(delta + 1):
+            tgl = lv.tanggal_mulai + _dt.timedelta(days=d)
+            lookup[norm_name].append({
+                "tanggal"   : tgl,
+                "cabang"    : lv.location_cabang or "",
+                "alasan"    : lv.alasan or "",
+                "leave_id"  : lv.id,
+                "_nama_asli": str(lv.nama).strip(),
+            })
+
+    return lookup

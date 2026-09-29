@@ -120,23 +120,26 @@ def _set_summary_col_widths(ws):
         (4,   9),  # Absensi In
         (5,   9),  # Absensi Out
         (6,  11),  # Hari Kerja Valid
-        (7,  14),  # Masuk Tanggal Merah
-        (8,   8),  # Jml Telat
-        (9,  18),  # Total Durasi Telat
-        (10,  9),  # Jml Lembur
-        (11, 14),  # Jam Lembur (Bulat)
-        (12,  13), # Jml Pulang Duluan
-        (13,  20), # Total Durasi Pulang Duluan
-        (14,  14), # Minggu Bermasalah
-        (15,  16), # Jumlah Hari Tidak Masuk
-        (16,  18), # Total Bonus Lain-lain (Rp)
-        (17,  18), # Total Potongan Lain-lain (Rp)
-        (18,  18), # Total Bonus Lembur (Rp)
-        (19,  18), # Uang Makan Harian (Rp)
-        (20,  16), # Potongan Telat (Rp)
-        (21,  20), # Potongan Pulang Duluan (Rp)
-        (22,  18), # Bonus Tanggal Merah (Rp)
-        (23,  20), # Total Uang Makan Akhir (Rp)
+        (7,  16),  # Absensi Jarak Jauh  ← NEW
+        (8,  14),  # Masuk Tanggal Merah
+        (9,   8),  # Jml Telat
+        (10, 18),  # Total Durasi Telat
+        (11,  9),  # Jml Lembur
+        (12, 14),  # Jam Lembur (Bulat)
+        (13, 13),  # Jml Pulang Duluan
+        (14, 20),  # Total Durasi Pulang Duluan
+        (15, 14),  # Minggu Bermasalah
+        (16, 16),  # Jumlah Hari Tidak Masuk
+        (17, 18),  # Potongan BPJS Kesehatan (Rp)
+        (18, 18),  # Potongan BPJS TK (Rp)
+        (19, 18),  # Total Bonus Lain-lain (Rp)
+        (20, 18),  # Total Potongan Lain-lain (Rp)
+        (21, 18),  # Total Bonus Lembur (Rp)
+        (22, 18),  # Uang Makan Harian (Rp)
+        (23, 16),  # Potongan Telat (Rp)
+        (24, 20),  # Potongan Pulang Duluan (Rp)
+        (25, 18),  # Bonus Tanggal Merah (Rp)
+        (26, 20),  # Total Uang Makan Akhir (Rp)
     ]
     for col_idx, width in lebar:
         ws.column_dimensions[get_column_letter(col_idx)].width = width
@@ -163,6 +166,7 @@ def _sheet_readme(wb, ringkasan_info):
         "12. Uang Makan         -> perhitungan uang makan per hari per karyawan (potongan telat, potongan pulang duluan, & bonus tanggal merah).",
         "13. Rekap per Profil   -> kehadiran & jam kerja untuk profil non-logic-utama (Live Stream, Setup, OB).",
         "14. Perlu Dicek        -> nama di data absensi yang tidak ditemukan di file master karyawan.",
+        "15. Absensi Jarak Jauh -> daftar karyawan yang absensi jarak jauh (WORK_FROM_LOCATION) sudah APPROVED oleh HR Master.",
         "",
         "7 Profil Jadwal Kerja:",
         "- OFFICE           : Sen-Jum 08-16, Sab 08-13",
@@ -282,28 +286,32 @@ def _sheet_data_tidak_lengkap(wb, df_prep):
     _autosize(ws, len(df.columns))
 
 
-def _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=None, bpjs_dict=None, master_dict=None):
+def _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=None, bpjs_dict=None, master_dict=None, remote_absences=None):
     """
     daftar_karyawan: DataFrame kolom [Cabang, Nama, Profil] - satu baris per karyawan unik.
     adjustments_dict: Dict optional {nama_lowercase: (bonus_lain, potongan_lain)}
     bpjs_dict: Dict optional {nama_normal: {bpjs_kesehatan: int, bpjs_tk: int}}
     master_dict: Dict optional {nama_normal: {"BPJS_Kesehatan": int, "BPJS_TK": int, ...}}
+    remote_absences: Dict optional {nama_normal: [{tanggal, cabang, ...}]}
     """
     from . import config_runtime as _cfg
     if adjustments_dict is None:
         adjustments_dict = {}
     if bpjs_dict is None:
         bpjs_dict = {}
+    if remote_absences is None:
+        remote_absences = {}
 
     ws = wb.create_sheet("2. Summary Overview")
     headers = [
-        "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out", "Hari Kerja Valid", "Masuk Tanggal Merah",
+        "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out",
+        "Hari Kerja Valid", "Absensi Jarak Jauh",  # ← NEW kolom
+        "Masuk Tanggal Merah",
         "Jml Telat", "Total Durasi Telat", "Jml Lembur", "Jam Lembur (Bulat)",
         "Jml Pulang Duluan", "Total Durasi Pulang Duluan",
         "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
-        # --- BPJS columns (NEW) ---
+        # --- BPJS columns ---
         "Potongan BPJS Kesehatan (Rp)", "Potongan BPJS TK (Rp)",
-        # --------------------------
         "Total Bonus Lain-lain (Rp)", "Total Potongan Lain-lain (Rp)",
         "Total Bonus Lembur (Rp)",
         "Uang Makan Harian (Rp)", "Potongan Telat (Rp)", "Potongan Pulang Duluan (Rp)",
@@ -337,65 +345,71 @@ def _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=None, bpjs_dic
         # Col E: Absensi Out
         ws.cell(row=r, column=5,
                 value=f"=COUNTIFS('4. Preprocessing'!$B:$B,{nama_ref},'4. Preprocessing'!$G:$G,\"<>\")")
-        # Col F: Hari Kerja Valid
-        ws.cell(row=r, column=6,
-                value=(f"=COUNTIFS('4. Preprocessing'!$B:$B,{nama_ref},"
-                       f"'4. Preprocessing'!$H:$H,\"Lengkap\","
-                       f"'4. Preprocessing'!$I:$I,\"Kerja\")"))
-        # Col G: Masuk Tanggal Merah
-        ws.cell(row=r,column=7,value=f"=COUNTIFS('4. Preprocessing'!$B:$B,{nama_ref},'4. Preprocessing'!$I:$I,\"Tanggal Merah\")")
-        # Col H: Jml Telat
-        ws.cell(row=r, column=8, value=f"=COUNTIF('5. Rekap Telat'!$B:$B,{nama_ref})")
-        # Col I: Total Durasi Telat
+        # Col F: Hari Kerja Valid (fingerprint) + Absensi Jarak Jauh
+        hkv_fingerprint = (f"COUNTIFS('4. Preprocessing'!$B:$B,{nama_ref},"
+                           f"'4. Preprocessing'!$H:$H,\"Lengkap\","
+                           f"'4. Preprocessing'!$I:$I,\"Kerja\")")
+        ajj_count = (f"COUNTIFS('15. Absensi Jarak Jauh'!$B:$B,{nama_ref},"
+                     f"'15. Absensi Jarak Jauh'!$D:$D,\"APPROVED\")")
+        ws.cell(row=r, column=6, value=f"={hkv_fingerprint}+{ajj_count}")
+        # Col G: Absensi Jarak Jauh — nilai statis dari remote_absences dict
+        nama_norm = _cfg.normalisasi_nama(str(row["Nama"]))
+        ajj_val = len(remote_absences.get(nama_norm, []))
+        ws.cell(row=r, column=7, value=ajj_val).font = FONT_NORMAL
+        # Col H: Masuk Tanggal Merah
+        ws.cell(row=r, column=8, value=f"=COUNTIFS('4. Preprocessing'!$B:$B,{nama_ref},'4. Preprocessing'!$I:$I,\"Tanggal Merah\")")
+        # Col I: Jml Telat
+        ws.cell(row=r, column=9, value=f"=COUNTIF('5. Rekap Telat'!$B:$B,{nama_ref})")
+        # Col J: Total Durasi Telat
         sumif_telat = f"SUMIF('5. Rekap Telat'!$B:$B,{nama_ref},'5. Rekap Telat'!$G:$G)"
-        ws.cell(row=r, column=9, value=f'=IF({sumif_telat}>0, INT({sumif_telat}) & " jam " & ROUND(({sumif_telat}-INT({sumif_telat}))*60, 0) & " menit", "0 menit")')
-        # Col J: Jml Lembur
-        ws.cell(row=r, column=10, value=f"=COUNTIF('6. Rekap Lembur'!$B:$B,{nama_ref})")
-        # Col K: Jam Lembur (Bulat)
+        ws.cell(row=r, column=10, value=f'=IF({sumif_telat}>0, INT({sumif_telat}) & " jam " & ROUND(({sumif_telat}-INT({sumif_telat}))*60, 0) & " menit", "0 menit")')
+        # Col K: Jml Lembur
+        ws.cell(row=r, column=11, value=f"=COUNTIF('6. Rekap Lembur'!$B:$B,{nama_ref})")
+        # Col L: Jam Lembur (Bulat)
         sumif_lembur = f"SUMIF('6. Rekap Lembur'!$B:$B,{nama_ref},'6. Rekap Lembur'!$I:$I)"
-        ws.cell(row=r, column=11, value=f"={sumif_lembur}")
-        # Col L: Jml Pulang Duluan
-        ws.cell(row=r, column=12, value=f"=COUNTIF('7. Rekap Pulang Duluan'!$B:$B,{nama_ref})")
-        # Col M: Total Durasi Pulang Duluan
+        ws.cell(row=r, column=12, value=f"={sumif_lembur}")
+        # Col M: Jml Pulang Duluan
+        ws.cell(row=r, column=13, value=f"=COUNTIF('7. Rekap Pulang Duluan'!$B:$B,{nama_ref})")
+        # Col N: Total Durasi Pulang Duluan
         sumif_pulang = f"SUMIF('7. Rekap Pulang Duluan'!$B:$B,{nama_ref},'7. Rekap Pulang Duluan'!$G:$G)"
-        ws.cell(row=r, column=13, value=f'=IF({sumif_pulang}>0, INT({sumif_pulang}) & " jam " & ROUND(({sumif_pulang}-INT({sumif_pulang}))*60, 0) & " menit", "0 menit")')
-        # Col N: Minggu Bermasalah
-        ws.cell(row=r, column=14, value=f"=COUNTIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref})")
-        # Col O: Jumlah Hari Tidak Masuk
-        ws.cell(row=r, column=15, value=f"=SUMIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref},'8. Rekap Tidak Masuk'!$F:$F)")
+        ws.cell(row=r, column=14, value=f'=IF({sumif_pulang}>0, INT({sumif_pulang}) & " jam " & ROUND(({sumif_pulang}-INT({sumif_pulang}))*60, 0) & " menit", "0 menit")')
+        # Col O: Minggu Bermasalah
+        ws.cell(row=r, column=15, value=f"=COUNTIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref})")
+        # Col P: Jumlah Hari Tidak Masuk
+        ws.cell(row=r, column=16, value=f"=SUMIF('8. Rekap Tidak Masuk'!$B:$B,{nama_ref},'8. Rekap Tidak Masuk'!$F:$F)")
 
-        # Col P: Potongan BPJS Kesehatan (Rp) — dari file BPJS
-        ws.cell(row=r, column=16, value=bpjs_info.get("bpjs_kesehatan", 0))
-        ws.cell(row=r, column=16).number_format = FMT_RUPIAH
-        # Col Q: Potongan BPJS TK (Rp) — dari file BPJS
-        ws.cell(row=r, column=17, value=bpjs_info.get("bpjs_tk", 0))
+        # Col Q: Potongan BPJS Kesehatan (Rp)
+        ws.cell(row=r, column=17, value=bpjs_info.get("bpjs_kesehatan", 0))
         ws.cell(row=r, column=17).number_format = FMT_RUPIAH
-
-        # Col R: Total Bonus Lain-lain Rp (Tentatif - Dari DB / Web Input)
-        ws.cell(row=r, column=18, value=adj_data[0])
+        # Col R: Potongan BPJS TK (Rp)
+        ws.cell(row=r, column=18, value=bpjs_info.get("bpjs_tk", 0))
         ws.cell(row=r, column=18).number_format = FMT_RUPIAH
-        # Col S: Total Potongan Lain-lain Rp (Tentatif - Dari DB / Web Input)
-        ws.cell(row=r, column=19, value=adj_data[1])
-        ws.cell(row=r, column=19).number_format = FMT_RUPIAH
 
-        # Col T: Total Bonus Lembur Rp
-        ws.cell(row=r, column=20, value=f"=SUMIF('6. Rekap Lembur'!$B:$B,{nama_ref},'6. Rekap Lembur'!$J:$J)")
+        # Col S: Total Bonus Lain-lain Rp
+        ws.cell(row=r, column=19, value=adj_data[0])
+        ws.cell(row=r, column=19).number_format = FMT_RUPIAH
+        # Col T: Total Potongan Lain-lain Rp
+        ws.cell(row=r, column=20, value=adj_data[1])
         ws.cell(row=r, column=20).number_format = FMT_RUPIAH
-        # Col U: Uang Makan Harian
-        ws.cell(row=r, column=21, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$F:$F)")
+
+        # Col U: Total Bonus Lembur Rp
+        ws.cell(row=r, column=21, value=f"=SUMIF('6. Rekap Lembur'!$B:$B,{nama_ref},'6. Rekap Lembur'!$J:$J)")
         ws.cell(row=r, column=21).number_format = FMT_RUPIAH
-        # Col V: Potongan Telat
-        ws.cell(row=r, column=22, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$G:$G)")
+        # Col V: Uang Makan Harian
+        ws.cell(row=r, column=22, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$F:$F)")
         ws.cell(row=r, column=22).number_format = FMT_RUPIAH
-        # Col W: Potongan Pulang Duluan
-        ws.cell(row=r, column=23, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$H:$H)")
+        # Col W: Potongan Telat
+        ws.cell(row=r, column=23, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$G:$G)")
         ws.cell(row=r, column=23).number_format = FMT_RUPIAH
-        # Col X: Bonus Tanggal Merah
-        ws.cell(row=r, column=24, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$I:$I)")
+        # Col X: Potongan Pulang Duluan
+        ws.cell(row=r, column=24, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$H:$H)")
         ws.cell(row=r, column=24).number_format = FMT_RUPIAH
-        # Col Y: Total Uang Makan Akhir
-        ws.cell(row=r, column=25, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$J:$J)")
+        # Col Y: Bonus Tanggal Merah
+        ws.cell(row=r, column=25, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$I:$I)")
         ws.cell(row=r, column=25).number_format = FMT_RUPIAH
+        # Col Z: Total Uang Makan Akhir
+        ws.cell(row=r, column=26, value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$J:$J)")
+        ws.cell(row=r, column=26).number_format = FMT_RUPIAH
 
         for c in range(1, len(headers) + 1):
             ws.cell(row=r, column=c).border = BORDER_ALL
@@ -413,10 +427,10 @@ def _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=None, bpjs_dic
         chart.title = "Jml Telat vs Lembur vs Pulang Duluan per Karyawan"
         chart.y_axis.title = "Jumlah Kejadian"
         chart.x_axis.title = "Nama"
-        # Col 8 = Jml Telat, Col 10 = Jml Lembur, Col 12 = Jml Pulang Duluan (unchanged)
-        data = Reference(ws, min_col=8, max_col=8, min_row=4, max_row=baris_akhir)
-        data2 = Reference(ws, min_col=10, max_col=10, min_row=4, max_row=baris_akhir)
-        data3 = Reference(ws, min_col=12, max_col=12, min_row=4, max_row=baris_akhir)
+        # Col 9 = Jml Telat, Col 11 = Jml Lembur, Col 13 = Jml Pulang Duluan
+        data = Reference(ws, min_col=9, max_col=9, min_row=4, max_row=baris_akhir)
+        data2 = Reference(ws, min_col=11, max_col=11, min_row=4, max_row=baris_akhir)
+        data3 = Reference(ws, min_col=13, max_col=13, min_row=4, max_row=baris_akhir)
         cats = Reference(ws, min_col=2, min_row=baris_mulai, max_row=baris_akhir)
         chart.add_data(data, titles_from_data=True)
         chart.add_data(data2, titles_from_data=True)
@@ -568,13 +582,69 @@ def _sheet_perlu_dicek(wb, df_perlu_dicek):
     _autosize(ws, len(headers))
 
 
+def _sheet_absensi_jarak_jauh(wb, remote_absences: dict):
+    """Sheet 15: Absensi Jarak Jauh — daftar hari absensi jarak jauh yang APPROVED.
+    Kolom: Cabang | Nama | Tanggal | Status
+    Diurutkan: Cabang → Nama → Tanggal.
+    """
+    from . import config_runtime as _cfg
+    ws = wb.create_sheet("15. Absensi Jarak Jauh")
+    headers = ["Cabang", "Nama", "Tanggal", "Status"]
+    _tulis_judul(
+        ws,
+        "15. Absensi Jarak Jauh",
+        "Daftar karyawan yang absensi jarak jauh (bekerja di luar kantor) sudah APPROVED oleh HR Master. "
+        "Hari ini dihitung sebagai Hari Kerja Valid di Summary Overview.",
+        n_kolom=len(headers),
+    )
+    _tulis_header_tabel(ws, 4, headers)
+
+    # Kumpulkan semua rows & urutkan
+    rows = []
+    for nama_norm, entries in remote_absences.items():
+        for entry in entries:
+            rows.append((
+                entry.get("cabang", ""),
+                entry.get("_nama_asli", nama_norm.title()),
+                entry.get("tanggal"),
+                "APPROVED",
+            ))
+    rows.sort(key=lambda x: (x[0], x[1], str(x[2])))
+
+    FILL_HIJAU = PatternFill("solid", fgColor="E2EFDA")  # hijau muda untuk approved
+
+    for r_idx, (cabang, nama, tanggal, status) in enumerate(rows, start=5):
+        ws.cell(row=r_idx, column=1, value=cabang).font = FONT_NORMAL
+        ws.cell(row=r_idx, column=2, value=nama).font = FONT_NORMAL
+        ws.cell(row=r_idx, column=3, value=str(tanggal) if tanggal else "").font = FONT_NORMAL
+        c_status = ws.cell(row=r_idx, column=4, value=status)
+        c_status.font = Font(name="Arial", size=10, bold=True, color="375623")
+        for c in range(1, 5):
+            ws.cell(row=r_idx, column=c).border = BORDER_ALL
+            ws.cell(row=r_idx, column=c).fill = FILL_HIJAU if r_idx % 2 == 0 else FILL_ALT
+
+    if rows:
+        baris_akhir = 4 + len(rows)
+        ws.auto_filter.ref = f"A4:D{baris_akhir}"
+    else:
+        ws.cell(row=5, column=1,
+                value="(tidak ada absensi jarak jauh yang sudah disetujui pada periode ini)").font = FONT_SUBTITLE
+
+    ws.freeze_panes = "A5"
+    ws.column_dimensions["A"].width = 14
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 12
+
+
 def tulis_laporan_excel(path_output, df_mentah, df_prep, df_telat, df_lembur,
                          df_pulang_duluan, df_tidak_masuk, df_alpa_berulang,
                          catatan_asumsi, df_uang_makan=None,
                          df_profil_exclude=None, df_perlu_dicek=None,
-                         adjustments_dict=None, bpjs_dict=None, master_dict=None):
+                         adjustments_dict=None, bpjs_dict=None, master_dict=None,
+                         remote_absences=None):
     """
-    REVISI v2: Terima DataFrame opsional + adjustments_dict, bpjs_dict, master_dict
+    REVISI v3: Tambah parameter remote_absences untuk sheet Absensi Jarak Jauh.
     """
     wb = openpyxl.Workbook()
     wb.remove(wb.active)  # buang sheet default kosong
@@ -602,7 +672,7 @@ def tulis_laporan_excel(path_output, df_mentah, df_prep, df_telat, df_lembur,
             .sort_values(["Cabang", "Nama"])
         )
 
-    ref_summary = _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=adjustments_dict, bpjs_dict=bpjs_dict, master_dict=master_dict)
+    ref_summary = _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=adjustments_dict, bpjs_dict=bpjs_dict, master_dict=master_dict, remote_absences=remote_absences)
     daftar_cabang = sorted(daftar_karyawan["Cabang"].unique().tolist())
 
     _sheet_data_mentah(wb, df_mentah)
@@ -680,6 +750,9 @@ def tulis_laporan_excel(path_output, df_mentah, df_prep, df_telat, df_lembur,
     else:
         # Tetap buat sheet kosong supaya user tahu fiturnya ada
         _sheet_perlu_dicek(wb, pd.DataFrame())
+
+    # --- Sheet 15: Absensi Jarak Jauh ---
+    _sheet_absensi_jarak_jauh(wb, remote_absences or {})
 
     wb.save(path_output)
     return path_output
