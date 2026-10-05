@@ -504,8 +504,8 @@ async def start_wfl_flow(to_number: str, db: Session):
     await prompt_pilih_cabang(to_number, db, is_wfl=True)
 
 
-async def prompt_pilih_cabang(to_number: str, db: Session, is_wfl: bool = False):
-    """Langkah 2: Menampilkan daftar cabang karyawan."""
+async def prompt_pilih_cabang(to_number: str, db: Session, is_wfl: bool = False, page: int = 1):
+    """Langkah 2: Menampilkan daftar cabang karyawan dengan pagination."""
     cabang_records = (
         db.query(models.Employee.cabang)
         .filter(models.Employee.active == True)
@@ -519,28 +519,74 @@ async def prompt_pilih_cabang(to_number: str, db: Session, is_wfl: bool = False)
     user_states[to_number]["step"] = state_step
 
     title_text = "Absensi Jarak Jauh" if is_wfl else "Pengajuan Cuti/Izin"
+    total_cab = len(cabang_list)
+
+    if total_cab <= 9:
+        body = (
+            f"*{title_text}*\n\n"
+            f"Langkah berikutnya: Silakan pilih *Cabang Karyawan* tempat Anda bertugas:\n\n"
+            f"Pilih salah satu cabang dari menu daftar di bawah atau ketik nama cabang Anda.\n"
+            f"_(Ketik 'manual' jika ingin mengetik nama karyawan langsung)_"
+        )
+        rows = []
+        for cb_name in cabang_list:
+            rows.append({
+                "id": f"{prefix}{cb_name}",
+                "title": f"🏢 {cb_name}"[:24],
+                "description": f"Cabang {cb_name}"[:72],
+            })
+        rows.append({
+            "id": f"{prefix}MANUAL",
+            "title": "✏️ Ketik Nama Manual",
+            "description": "Ketik nama lengkap karyawan manual",
+        })
+        sections = [{"title": "Daftar Cabang", "rows": rows}]
+        await send_whatsapp_list(
+            to_number=to_number,
+            body_text=body,
+            button_label="Pilih Cabang",
+            sections=sections,
+        )
+        return
+
+    import math
+    PER_PAGE = 7
+    total_pages = math.ceil(total_cab / PER_PAGE)
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * PER_PAGE
+    end_idx = start_idx + PER_PAGE
+    page_cabs = cabang_list[start_idx:end_idx]
+
     body = (
         f"*{title_text}*\n\n"
-        f"Langkah berikutnya: Silakan pilih *Cabang Karyawan* tempat Anda bertugas:\n\n"
-        f"Pilih salah satu cabang dari menu daftar di bawah atau ketik nama cabang Anda.\n"
-        f"_(Ketik 'manual' jika ingin mengetik nama karyawan langsung)_"
+        f"Silakan pilih *Cabang Karyawan* (Hal {page}/{total_pages}):\n\n"
+        f"Pilih dari daftar tombol di bawah, atau langsung ketik nama cabang Anda."
     )
-
     rows = []
-    for cb_name in cabang_list[:9]:  # WhatsApp list max 10 rows
+    for cb_name in page_cabs:
         rows.append({
             "id": f"{prefix}{cb_name}",
             "title": f"🏢 {cb_name}"[:24],
             "description": f"Cabang {cb_name}"[:72],
+        })
+    if page < total_pages:
+        rows.append({
+            "id": f"{prefix}PAGE_{page + 1}",
+            "title": f"▶️ Hal {page + 1} ({total_cab - end_idx} Lainnya)",
+            "description": "Lihat cabang di halaman berikutnya",
+        })
+    if page > 1:
+        rows.append({
+            "id": f"{prefix}PAGE_{page - 1}",
+            "title": f"◀️ Kembali ke Hal {page - 1}",
+            "description": "Lihat cabang di halaman sebelumnya",
         })
     rows.append({
         "id": f"{prefix}MANUAL",
         "title": "✏️ Ketik Nama Manual",
         "description": "Ketik nama lengkap karyawan manual",
     })
-
-    sections = [{"title": "Daftar Cabang", "rows": rows}]
-
+    sections = [{"title": f"Daftar Cabang (Hal {page})", "rows": rows[:10]}]
     await send_whatsapp_list(
         to_number=to_number,
         body_text=body,
@@ -549,8 +595,8 @@ async def prompt_pilih_cabang(to_number: str, db: Session, is_wfl: bool = False)
     )
 
 
-async def prompt_pilih_karyawan(to_number: str, cabang: str, db: Session, is_wfl: bool = False):
-    """Langkah 3: Menampilkan daftar karyawan di cabang tertentu."""
+async def prompt_pilih_karyawan(to_number: str, cabang: str, db: Session, is_wfl: bool = False, page: int = 1):
+    """Langkah 3: Menampilkan daftar karyawan di cabang tertentu dengan pagination dan pencarian."""
     emps = (
         db.query(models.Employee)
         .filter(models.Employee.cabang == cabang, models.Employee.active == True)
@@ -573,18 +619,66 @@ async def prompt_pilih_karyawan(to_number: str, cabang: str, db: Session, is_wfl
         )
         return
 
+    total_emps = len(emps)
+    if total_emps <= 9:
+        body = (
+            f"🏢 Cabang: *{cabang}* ({total_emps} Karyawan)\n\n"
+            f"Silakan pilih *Nama Karyawan* dari daftar berikut, atau ketik nama Anda langsung:"
+        )
+        rows = []
+        for emp in emps:
+            rows.append({
+                "id": f"{prefix}{emp.id}",
+                "title": f"👤 {emp.nama}"[:24],
+                "description": f"{cabang} - ID Mesin: {emp.id_mesin or '-'}"[:72],
+            })
+        rows.append({
+            "id": f"{prefix}MANUAL",
+            "title": "✏️ Ketik Nama Manual",
+            "description": "Ketik nama manual jika nama tidak tercantum",
+        })
+        sections = [{"title": f"Karyawan {cabang}", "rows": rows}]
+        await send_whatsapp_list(
+            to_number=to_number,
+            body_text=body,
+            button_label="Pilih Karyawan",
+            sections=sections,
+        )
+        return
+
+    # Pagination: maks 7 item per halaman agar muat tombol Next/Prev dan Manual (Maks 10 baris WhatsApp)
+    import math
+    PER_PAGE = 7
+    total_pages = math.ceil(total_emps / PER_PAGE)
+    page = max(1, min(page, total_pages))
+    start_idx = (page - 1) * PER_PAGE
+    end_idx = start_idx + PER_PAGE
+    page_emps = emps[start_idx:end_idx]
+
     body = (
-        f"Cabang: *{cabang}*\n\n"
-        f"Silakan pilih *Nama Karyawan* dari daftar berikut:\n"
-        f"_(Atau ketik nama karyawan jika tidak ada di daftar)_"
+        f"🏢 Cabang: *{cabang}* ({total_emps} Karyawan)\n"
+        f"📄 Halaman *{page} dari {total_pages}* (Urutan {start_idx + 1}-{min(end_idx, total_emps)})\n\n"
+        f"Silakan pilih dari menu tombol di bawah, ATAU Anda bisa langsung *ketik nama* Anda (contoh: *Yustari* atau *Zainudin*):"
     )
 
     rows = []
-    for emp in emps[:9]:
+    for emp in page_emps:
         rows.append({
             "id": f"{prefix}{emp.id}",
             "title": f"👤 {emp.nama}"[:24],
             "description": f"{cabang} - ID Mesin: {emp.id_mesin or '-'}"[:72],
+        })
+    if page < total_pages:
+        rows.append({
+            "id": f"{prefix}PAGE_{page + 1}",
+            "title": f"▶️ Hal {page + 1} ({total_emps - end_idx} Lainnya)",
+            "description": f"Lihat karyawan halaman {page + 1}",
+        })
+    if page > 1:
+        rows.append({
+            "id": f"{prefix}PAGE_{page - 1}",
+            "title": f"◀️ Kembali ke Hal {page - 1}",
+            "description": f"Lihat karyawan halaman {page - 1}",
         })
     rows.append({
         "id": f"{prefix}MANUAL",
@@ -592,12 +686,11 @@ async def prompt_pilih_karyawan(to_number: str, cabang: str, db: Session, is_wfl
         "description": "Ketik nama manual jika nama tidak tercantum",
     })
 
-    sections = [{"title": f"Karyawan {cabang}", "rows": rows}]
-
+    sections = [{"title": f"Karyawan {cabang} (Hal {page})", "rows": rows[:10]}]
     await send_whatsapp_list(
         to_number=to_number,
         body_text=body,
-        button_label="Pilih Karyawan",
+        button_label="Daftar Karyawan",
         sections=sections,
     )
 
@@ -864,6 +957,10 @@ async def process_whatsapp_incoming(
         cab_val = None
         if action_key.startswith("cab_"):
             cab_val = action_key.replace("cab_", "")
+            if cab_val.startswith("PAGE_"):
+                page_target = int(cab_val.replace("PAGE_", ""))
+                await prompt_pilih_cabang(from_number, db, is_wfl=False, page=page_target)
+                return
         else:
             cab_val = text.strip()
 
@@ -872,13 +969,18 @@ async def process_whatsapp_incoming(
             await send_whatsapp_text(from_number, "Silakan ketik *Nama Lengkap Karyawan* sesuai yang terdaftar di HR:")
             return
 
-        await prompt_pilih_karyawan(from_number, cab_val, db, is_wfl=False)
+        await prompt_pilih_karyawan(from_number, cab_val, db, is_wfl=False, page=1)
         return
 
     # STEP 3: PILIH KARYAWAN (CUTI BIASA)
     if step == "pilih_karyawan":
+        cabang = user_states[from_number]["data"].get("cabang", "")
         if action_key.startswith("emp_"):
             emp_id_str = action_key.replace("emp_", "")
+            if emp_id_str.startswith("PAGE_"):
+                page_target = int(emp_id_str.replace("PAGE_", ""))
+                await prompt_pilih_karyawan(from_number, cabang, db, is_wfl=False, page=page_target)
+                return
             if emp_id_str == "MANUAL":
                 user_states[from_number]["step"] = "input_nama"
                 await send_whatsapp_text(from_number, "Silakan ketik *Nama Lengkap Karyawan* sesuai yang terdaftar di HR:")
@@ -891,8 +993,33 @@ async def process_whatsapp_incoming(
             await check_quota_and_prompt_date(from_number, nama_fix, db, is_wfl=False)
             return
         else:
-            # Ketik nama langsung
-            await check_quota_and_prompt_date(from_number, text.strip(), db, is_wfl=False)
+            # Ketik nama langsung -> Smart search pencocokan nama di database
+            nama_query = text.strip()
+            matched_emp = None
+            if cabang:
+                # 1. Coba exact match di cabang tersebut
+                matched_emp = db.query(models.Employee).filter(
+                    models.Employee.cabang == cabang,
+                    models.Employee.active == True,
+                    models.Employee.nama.ilike(nama_query)
+                ).first()
+                # 2. Coba partial match di cabang tersebut
+                if not matched_emp:
+                    matched_emp = db.query(models.Employee).filter(
+                        models.Employee.cabang == cabang,
+                        models.Employee.active == True,
+                        models.Employee.nama.ilike(f"%{nama_query}%")
+                    ).first()
+
+            # 3. Fallback: coba cari di seluruh cabang
+            if not matched_emp:
+                matched_emp = db.query(models.Employee).filter(
+                    models.Employee.active == True,
+                    models.Employee.nama.ilike(f"%{nama_query}%")
+                ).first()
+
+            nama_fix = matched_emp.nama if matched_emp else nama_query
+            await check_quota_and_prompt_date(from_number, nama_fix, db, is_wfl=False)
             return
 
     # STEP 3B: INPUT NAMA MANUAL
@@ -1026,17 +1153,31 @@ async def process_whatsapp_incoming(
     # ABSENSI JARAK JAUH (WORK FROM LOCATION) STEPS
     # -----------------------------------------------------------------------
     if step == "wfl_pilih_cabang":
-        cab_val = action_key.replace("wfl_cab_", "") if action_key.startswith("wfl_cab_") else text.strip()
+        cab_val = None
+        if action_key.startswith("wfl_cab_"):
+            cab_val = action_key.replace("wfl_cab_", "")
+            if cab_val.startswith("PAGE_"):
+                page_target = int(cab_val.replace("PAGE_", ""))
+                await prompt_pilih_cabang(from_number, db, is_wfl=True, page=page_target)
+                return
+        else:
+            cab_val = text.strip()
+
         if cab_val.upper() in ("MANUAL", "KETIK MANUAL"):
             user_states[from_number]["step"] = "wfl_input_nama"
             await send_whatsapp_text(from_number, "Silakan ketik *Nama Lengkap Karyawan* yang bertugas di luar kantor:")
             return
-        await prompt_pilih_karyawan(from_number, cab_val, db, is_wfl=True)
+        await prompt_pilih_karyawan(from_number, cab_val, db, is_wfl=True, page=1)
         return
 
     if step == "wfl_pilih_karyawan":
+        cabang = user_states[from_number]["data"].get("cabang", "")
         if action_key.startswith("wfl_emp_"):
             emp_id_str = action_key.replace("wfl_emp_", "")
+            if emp_id_str.startswith("PAGE_"):
+                page_target = int(emp_id_str.replace("PAGE_", ""))
+                await prompt_pilih_karyawan(from_number, cabang, db, is_wfl=True, page=page_target)
+                return
             if emp_id_str == "MANUAL":
                 user_states[from_number]["step"] = "wfl_input_nama"
                 await send_whatsapp_text(from_number, "Silakan ketik *Nama Lengkap Karyawan*:")
@@ -1049,7 +1190,30 @@ async def process_whatsapp_incoming(
             await check_quota_and_prompt_date(from_number, nama_fix, db, is_wfl=True)
             return
         else:
-            await check_quota_and_prompt_date(from_number, text.strip(), db, is_wfl=True)
+            # Ketik nama langsung -> Smart search pencocokan nama di database
+            nama_query = text.strip()
+            matched_emp = None
+            if cabang:
+                matched_emp = db.query(models.Employee).filter(
+                    models.Employee.cabang == cabang,
+                    models.Employee.active == True,
+                    models.Employee.nama.ilike(nama_query)
+                ).first()
+                if not matched_emp:
+                    matched_emp = db.query(models.Employee).filter(
+                        models.Employee.cabang == cabang,
+                        models.Employee.active == True,
+                        models.Employee.nama.ilike(f"%{nama_query}%")
+                    ).first()
+
+            if not matched_emp:
+                matched_emp = db.query(models.Employee).filter(
+                    models.Employee.active == True,
+                    models.Employee.nama.ilike(f"%{nama_query}%")
+                ).first()
+
+            nama_fix = matched_emp.nama if matched_emp else nama_query
+            await check_quota_and_prompt_date(from_number, nama_fix, db, is_wfl=True)
             return
 
     if step == "wfl_input_nama":
