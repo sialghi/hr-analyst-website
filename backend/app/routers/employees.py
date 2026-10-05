@@ -214,7 +214,7 @@ def download_employee_template(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_hr_master),
 ):
-    """Mengunduh file Excel template untuk import master karyawan."""
+    """Mengunduh file Excel template untuk import master karyawan (lengkap NIK, Tanggal Masuk & Waktu Berakhir)."""
     import io
     import pandas as pd
     from fastapi.responses import Response
@@ -222,25 +222,17 @@ def download_employee_template(
     # Ambil semua kode profil yang aktif untuk referensi
     profiles = db.query(models.Profile).order_by(models.Profile.code).all()
 
-    # Template data contoh — format IDENTIK dengan file data-uangmakan-posisi.xlsx
-    # Kolom: Status, Nama, Uang Makan, Gaji Pokok
+    # Template data contoh — format sesuai contoh-template.xlsx
+    # Kolom: Status, Nama, Uang Makan, Gaji Pokok, NIK, Tanggal Masuk, Waktu Berakhir, BPJS Kesehatan, BPJS TK
     data = [
-        {"Status": "Office A",          "Nama": "Budi Santoso",          "Uang Makan": 100000, "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Gudang A",          "Nama": "Siti Aminah",           "Uang Makan": 80000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Gudang C",          "Nama": "Ahmad Fauzi",           "Uang Makan": 45000,  "BPJS Kesehatan": 67980, "BPJS TK": 203850, "Gaji Pokok": ""},
-        {"Status": "Gudang Bandung",    "Nama": "Reni Kusuma",           "Uang Makan": 50000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Office C",          "Nama": "Dewi Rahayu",           "Uang Makan": 75000,  "BPJS Kesehatan": 72000, "BPJS TK": 216000, "Gaji Pokok": ""},
-        {"Status": "Office Bandung",    "Nama": "Irfan Wijaya",          "Uang Makan": 75000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko GLC",          "Nama": "Bagus Setiawan",        "Uang Makan": 40000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko Tanjung Duren","Nama": "Agung Nugroho",         "Uang Makan": "",     "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko IDD/PIK",      "Nama": "Aulia Putri",           "Uang Makan": 65000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko Reef Plus/PIK","Nama": "Andry Saputra",         "Uang Makan": 55000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko Ciledug",      "Nama": "Edi Kuswanto",          "Uang Makan": "",     "BPJS Kesehatan": 73000, "BPJS TK": 219000, "Gaji Pokok": ""},
-        {"Status": "Content Marketing", "Nama": "Fahrul Azi",            "Uang Makan": 100000, "BPJS Kesehatan": 76000, "BPJS TK": 228000, "Gaji Pokok": ""},
-        {"Status": "Host Live Streaming","Nama": "Intan Melani",          "Uang Makan": 60000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Setup",             "Nama": "Karlina",               "Uang Makan": 60000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Staff Stock Opname","Nama": "Hamdani",               "Uang Makan": 90000,  "BPJS Kesehatan": 55550, "BPJS TK": 166650, "Gaji Pokok": ""},
-        {"Status": "Driver Java Cipulir","Nama": "Harry",                "Uang Makan": "",     "BPJS Kesehatan": 57299, "BPJS TK": 171896, "Gaji Pokok": ""},
+        {"Status": "Gudang C",           "Nama": "Andi Santanu",          "Uang Makan": 95000,  "Gaji Pokok": "", "NIK": "3207152809990002", "Tanggal Masuk": "2021-11-01", "Waktu Berakhir": "",           "BPJS Kesehatan": 53994, "BPJS TK": 161982},
+        {"Status": "Gudang C",           "Nama": "Dian Maulana",          "Uang Makan": 30000,  "Gaji Pokok": "", "NIK": "3674021209020002", "Tanggal Masuk": "2024-12-03", "Waktu Berakhir": "2025-12-03", "BPJS Kesehatan": 53994, "BPJS TK": 161982},
+        {"Status": "Office A",           "Nama": "Budi Santoso",          "Uang Makan": 100000, "Gaji Pokok": "", "NIK": "3201011508950001", "Tanggal Masuk": "2022-01-15", "Waktu Berakhir": "",           "BPJS Kesehatan": 53994, "BPJS TK": 161982},
+        {"Status": "Gudang A",           "Nama": "Siti Aminah",           "Uang Makan": 80000,  "Gaji Pokok": "", "NIK": "3201024503980003", "Tanggal Masuk": "2023-05-10", "Waktu Berakhir": "2025-05-10", "BPJS Kesehatan": 53994, "BPJS TK": 161982},
+        {"Status": "Office C",           "Nama": "Dewi Rahayu",           "Uang Makan": 75000,  "Gaji Pokok": "", "NIK": "3201036012970004", "Tanggal Masuk": "2024-02-01", "Waktu Berakhir": "",           "BPJS Kesehatan": 72000, "BPJS TK": 216000},
+        {"Status": "Toko GLC",           "Nama": "Bagus Setiawan",        "Uang Makan": 40000,  "Gaji Pokok": "", "NIK": "3201041109960005", "Tanggal Masuk": "2024-06-15", "Waktu Berakhir": "2025-06-15", "BPJS Kesehatan": 53994, "BPJS TK": 161982},
+        {"Status": "Content Marketing",  "Nama": "Fahrul Azi",            "Uang Makan": 100000, "Gaji Pokok": "", "NIK": "3201052004990006", "Tanggal Masuk": "2024-01-10", "Waktu Berakhir": "",           "BPJS Kesehatan": 76000, "BPJS TK": 228000},
+        {"Status": "Driver Java Cipulir","Nama": "Harry",                 "Uang Makan": "",     "Gaji Pokok": "", "NIK": "3201060507940007", "Tanggal Masuk": "2023-09-01", "Waktu Berakhir": "",           "BPJS Kesehatan": 57299, "BPJS TK": 171896},
     ]
     df = pd.DataFrame(data)
 
@@ -917,8 +909,8 @@ async def import_employees(
 
     # -----------------------------------------------------------------------
     # Normalisasi nama kolom — toleran terhadap spasi trailing & variasi nama
-    # Format utama yang didukung: Status | Nama | Uang Makan | Gaji Pokok
-    # (sesuai file data-uangmakan-posisi.xlsx)
+    # Format utama yang didukung: Status | Nama | Uang Makan | Gaji Pokok | NIK | Tanggal Masuk | Waktu Berakhir
+    # (sesuai file contoh-template.xlsx)
     # -----------------------------------------------------------------------
     col_map = {}
     for col in df.columns:
@@ -933,19 +925,52 @@ async def import_employees(
             col_map["id_mesin"] = col
         elif cl in ("uang_makan", "uang_makan_", "uang_makan_override", "uangmakan", "uang_makan_khusus"):
             col_map["uang_makan"] = col
+        elif cl in ("nik", "no_nik", "nik_ktp", "no_ktp"):
+            col_map["nik"] = col
+        elif any(k in cl for k in ("tanggal_masuk", "join_date", "tgl_masuk", "tgl_bergabung", "join", "masuk")):
+            col_map["join_date"] = col
+        elif any(k in cl for k in ("waktu_berakhir", "akhir_kontrak", "selesai_kontrak", "berakhir", "expiring")):
+            col_map["contract_end"] = col
         elif any(k in cl for k in ("bpjs_kesehatan", "bpjs_kes", "potongan_bpjs_kesehatan", "kesehatan")):
             col_map["bpjs_kesehatan"] = col
         elif any(k in cl for k in ("bpjs_tk", "bpjs_ketenagakerjaan", "potongan_bpjs_tk", "jamsostek", "bpjstk")):
             col_map["bpjs_tk"] = col
         elif cl in ("active", "aktif", "status_aktif", "is_active"):
             col_map["active"] = col
-        # Kolom Gaji Pokok dari file asli — diabaikan saja, tidak disimpan ke DB
 
     if "nama" not in col_map:
         raise HTTPException(
             status_code=400,
             detail=f"File harus memiliki kolom 'Nama'. Kolom ditemukan: {list(df.columns)}",
         )
+
+    import datetime
+    from datetime import date as date_type
+
+    def parse_date_val(val):
+        if pd.isna(val) or not val:
+            return None
+        if isinstance(val, (date_type, datetime.datetime)):
+            return val.date() if isinstance(val, datetime.datetime) else val
+        s = str(val).strip()
+        if not s or s.lower() in ("none", "nat", "nan", "-"):
+            return None
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    def clean_nik_val(val):
+        if pd.isna(val) or not val:
+            return None
+        s = str(val).strip().replace(" ", "")
+        if s.endswith(".0"):
+            s = s[:-2]
+        if len(s) != 16 or not s.isdigit():
+            return None
+        return s
 
     # Ambil profil dan default rule dari DB
     profiles = db.query(models.Profile).all()
@@ -1018,11 +1043,10 @@ async def import_employees(
             m = str(row[col_map["id_mesin"]]).strip()
             id_mesin = m if m else None
 
-        # Uang Makan Override — baca dari kolom 'Uang Makan' (format angka)
+        # Uang Makan Override
         uang_makan_override = None
         if "uang_makan" in col_map and pd.notna(row.get(col_map["uang_makan"])):
             raw_um = str(row[col_map["uang_makan"]]).strip()
-            # Bersihkan titik/koma sebagai pemisah ribuan
             raw_um_clean = raw_um.replace(",", "").replace(".", "").replace(" ", "")
             try:
                 val = int(float(raw_um_clean)) if raw_um_clean else None
@@ -1048,6 +1072,21 @@ async def import_employees(
             except (ValueError, OverflowError):
                 bpjs_tk = 0
 
+        # NIK
+        nik_val = None
+        if "nik" in col_map and pd.notna(row.get(col_map["nik"])):
+            nik_val = clean_nik_val(row[col_map["nik"]])
+
+        # Join Date (Tanggal Masuk)
+        join_date_val = None
+        if "join_date" in col_map and pd.notna(row.get(col_map["join_date"])):
+            join_date_val = parse_date_val(row[col_map["join_date"]])
+
+        # Waktu Berakhir Kontrak
+        contract_end_val = None
+        if "contract_end" in col_map and pd.notna(row.get(col_map["contract_end"])):
+            contract_end_val = parse_date_val(row[col_map["contract_end"]])
+
         # Active
         active = True
         if "active" in col_map and pd.notna(row.get(col_map["active"])):
@@ -1063,11 +1102,33 @@ async def import_employees(
                 emp.cabang = cabang
             if id_mesin is not None:
                 emp.id_mesin = id_mesin
-            emp.uang_makan_override = uang_makan_override
+            if uang_makan_override is not None:
+                emp.uang_makan_override = uang_makan_override
             if bpjs_kesehatan is not None:
                 emp.bpjs_kesehatan = bpjs_kesehatan
             if bpjs_tk is not None:
                 emp.bpjs_tk = bpjs_tk
+            if nik_val is not None:
+                emp.nik = nik_val
+            if join_date_val is not None:
+                emp.join_date = join_date_val
+
+            if contract_end_val is not None:
+                emp.employment_status = "PKWT"
+                active_c = next((c for c in emp.contracts if c.status == "ACTIVE"), None)
+                if active_c:
+                    active_c.end_date = contract_end_val
+                else:
+                    new_c = models.EmploymentContract(
+                        employee_id=emp.id,
+                        contract_number=len(emp.contracts) + 1,
+                        start_date=join_date_val or emp.join_date or datetime.date.today(),
+                        end_date=contract_end_val,
+                        status="ACTIVE",
+                        keterangan="Import dari Excel",
+                    )
+                    db.add(new_c)
+
             emp.active = active
             updated += 1
         else:
@@ -1079,9 +1140,25 @@ async def import_employees(
                 uang_makan_override=uang_makan_override,
                 bpjs_kesehatan=bpjs_kesehatan or 0,
                 bpjs_tk=bpjs_tk or 0,
+                nik=nik_val,
+                join_date=join_date_val,
+                employment_status="PKWT" if contract_end_val else "TETAP",
                 active=active,
             )
             db.add(new_emp)
+            db.flush()
+
+            if contract_end_val:
+                new_c = models.EmploymentContract(
+                    employee_id=new_emp.id,
+                    contract_number=1,
+                    start_date=join_date_val or datetime.date.today(),
+                    end_date=contract_end_val,
+                    status="ACTIVE",
+                    keterangan="Import dari Excel",
+                )
+                db.add(new_c)
+
             existing_employees[nama_key] = new_emp
             inserted += 1
 

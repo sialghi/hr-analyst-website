@@ -266,14 +266,6 @@ export default function KaryawanPage() {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // NIK Import modal state
-  const [showNikImport, setShowNikImport] = useState(false);
-  const [nikImportFile, setNikImportFile] = useState<File | null>(null);
-  const [nikImporting, setNikImporting] = useState(false);
-  const [downloadingNikTemplate, setDownloadingNikTemplate] = useState(false);
-  const [nikImportError, setNikImportError] = useState<string | null>(null);
-  const [nikImportResult, setNikImportResult] = useState<any | null>(null);
-  const nikFileInputRef = useRef<HTMLInputElement>(null);
 
 
   function load() {
@@ -381,38 +373,6 @@ export default function KaryawanPage() {
     }
   }
 
-  async function handleDownloadNikTemplate() {
-    setDownloadingNikTemplate(true);
-    setNikImportError(null);
-    try {
-      const blob = await api.downloadNikImportTemplate();
-      triggerBlobDownload(blob, "template_import_nik.xlsx");
-    } catch (err: any) {
-      setNikImportError("Gagal mengunduh template: " + err.message);
-    } finally {
-      setDownloadingNikTemplate(false);
-    }
-  }
-
-  async function handleNikImportSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!nikImportFile) {
-      setNikImportError("Silakan pilih file Excel terlebih dahulu.");
-      return;
-    }
-    setNikImporting(true);
-    setNikImportError(null);
-    setNikImportResult(null);
-    try {
-      const res = await api.importNikData(nikImportFile);
-      setNikImportResult(res);
-      load();
-    } catch (err: any) {
-      setNikImportError(err.message);
-    } finally {
-      setNikImporting(false);
-    }
-  }
 
   function handleFileSelect(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -463,18 +423,6 @@ export default function KaryawanPage() {
                 }}
               >
                 Import Excel/CSV
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setNikImportFile(null);
-                  setNikImportError(null);
-                  setNikImportResult(null);
-                  setShowNikImport(true);
-                }}
-                style={{ background: "var(--accent)", color: "#fff", border: "none" }}
-              >
-                📋 Import NIK & Tanggal
               </Button>
               <Button onClick={startCreate}>+ Tambah Karyawan</Button>
             </div>
@@ -1185,14 +1133,14 @@ export default function KaryawanPage() {
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-x-3 gap-y-1" style={{ color: "var(--text-muted)" }}>
+                <div>• <strong>Status</strong>: Cabang/Divisi (Gudang C, dsb.)</div>
                 <div>• <strong>Nama</strong>: Nama lengkap (wajib)</div>
-                <div>• <strong>Profil</strong>: Divisi (OFFICE, GUDANG, dsb.)</div>
-                <div>• <strong>Cabang</strong>: Lokasi kerja/toko</div>
-                <div>• <strong>ID_Mesin</strong>: PIN mesin absensi</div>
+                <div>• <strong>NIK</strong>: 16 digit KTP</div>
+                <div>• <strong>Tanggal Masuk</strong>: Join Date (YYYY-MM-DD)</div>
+                <div>• <strong>Waktu Berakhir</strong>: Akhir Kontrak PKWT</div>
                 <div>• <strong>Uang_Makan</strong>: Nominal/hari</div>
                 <div>• <strong>BPJS Kesehatan</strong>: Potongan Rp</div>
                 <div>• <strong>BPJS TK</strong>: Potongan Rp</div>
-                <div>• <strong>Active</strong>: True / False</div>
               </div>
             </div>
 
@@ -1263,159 +1211,6 @@ export default function KaryawanPage() {
         </div>
       )}
 
-      {/* ─── Modal Import NIK & Join Date ──────────────────────────────── */}
-      {showNikImport && (
-        <div
-          style={{
-            position: "fixed", inset: 0, zIndex: 1000,
-            background: "rgba(0,0,0,0.45)", backdropFilter: "blur(2px)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}
-          onClick={(e) => { if (e.target === e.currentTarget) setShowNikImport(false); }}
-        >
-          <div
-            style={{
-              background: "var(--surface)", borderRadius: 16,
-              padding: "32px 28px", width: "100%", maxWidth: 520,
-              boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
-            }}
-          >
-            <h2 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 700, color: "var(--ink)" }}>
-              Import NIK, Join Date & Waktu Berakhir
-            </h2>
-            <p style={{ margin: "0 0 20px", fontSize: 13, color: "var(--text-muted)" }}>
-              Update massal NIK, tanggal bergabung, dan waktu berakhir kontrak karyawan.
-            </p>
-
-            {/* Step 1: Download Template */}
-            <div style={{
-              background: "var(--accent-wash)", borderRadius: 10, padding: "14px 16px",
-              marginBottom: 16, border: "1px solid rgba(99,102,241,0.15)"
-            }}>
-              <p style={{ margin: "0 0 10px", fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>
-                📥 Langkah 1: Download Template
-              </p>
-              <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-                Template berisi daftar semua karyawan aktif. Isi kolom{" "}
-                <strong>NIK</strong>, <strong>Join Date</strong>, dan{" "}
-                <strong>Waktu Berakhir</strong> (format: YYYY-MM-DD).
-                Kolom Nama <em>jangan diubah</em>.
-              </p>
-              <Button
-                variant="secondary"
-                onClick={handleDownloadNikTemplate}
-                disabled={downloadingNikTemplate}
-                style={{ fontSize: 12 }}
-              >
-                {downloadingNikTemplate ? "Mengunduh..." : "⬇ Download Template Excel"}
-              </Button>
-            </div>
-
-            {/* Step 2: Upload */}
-            <form onSubmit={handleNikImportSubmit}>
-              <p style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 600, color: "var(--ink)" }}>
-                📤 Langkah 2: Upload Template yang Sudah Diisi
-              </p>
-
-              {nikImportError && (
-                <Banner kind="error" style={{ marginBottom: 12 }}>{nikImportError}</Banner>
-              )}
-
-              {nikImportResult && (
-                <div style={{
-                  background: "#f0fdf4", border: "1px solid #86efac",
-                  borderRadius: 8, padding: "12px 14px", marginBottom: 12, fontSize: 13
-                }}>
-                  <p style={{ margin: "0 0 6px", fontWeight: 700, color: "#166534" }}>
-                    ✅ Import selesai!
-                  </p>
-                  <p style={{ margin: "2px 0", color: "#166534" }}>
-                    ✔ Diupdate: <strong>{nikImportResult.total_updated}</strong> karyawan
-                  </p>
-                  {nikImportResult.total_not_found > 0 && (
-                    <p style={{ margin: "2px 0", color: "#dc2626" }}>
-                      ✘ Nama tidak ditemukan: <strong>{nikImportResult.total_not_found}</strong>
-                      {nikImportResult.detail?.not_found?.length > 0 && (
-                        <span style={{ fontSize: 11, display: "block", marginTop: 2 }}>
-                          ({nikImportResult.detail.not_found.slice(0, 5).join(", ")}
-                          {nikImportResult.detail.not_found.length > 5
-                            ? ` +${nikImportResult.detail.not_found.length - 5} lainnya`
-                            : ""})
-                        </span>
-                      )}
-                    </p>
-                  )}
-                  {nikImportResult.total_nik_conflict > 0 && (
-                    <p style={{ margin: "2px 0", color: "#d97706" }}>
-                      ⚠ NIK duplikat (dilewati): <strong>{nikImportResult.total_nik_conflict}</strong>
-                    </p>
-                  )}
-                  {nikImportResult.total_invalid_nik > 0 && (
-                    <p style={{ margin: "2px 0", color: "#d97706" }}>
-                      ⚠ Format NIK tidak valid: <strong>{nikImportResult.total_invalid_nik}</strong>
-                    </p>
-                  )}
-                  {nikImportResult.total_skipped > 0 && (
-                    <p style={{ margin: "2px 0", color: "#6b7280" }}>
-                      — Dilewati (kosong): <strong>{nikImportResult.total_skipped}</strong>
-                    </p>
-                  )}
-                </div>
-              )}
-
-              <div
-                onClick={() => nikFileInputRef.current?.click()}
-                style={{
-                  border: "2px dashed var(--border)", borderRadius: 10,
-                  padding: "24px 16px", textAlign: "center", cursor: "pointer",
-                  marginBottom: 16,
-                }}
-              >
-                <input
-                  ref={nikFileInputRef}
-                  type="file"
-                  accept=".xlsx,.xls"
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) { setNikImportFile(f); setNikImportError(null); setNikImportResult(null); }
-                  }}
-                />
-                {nikImportFile ? (
-                  <div>
-                    <p style={{ fontWeight: 500, fontSize: 13, color: "var(--ink)" }}>{nikImportFile.name}</p>
-                    <p style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                      {(nikImportFile.size / 1024).toFixed(1)} KB — Klik untuk ganti
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <p style={{ fontSize: 13, fontWeight: 500, color: "var(--ink)" }}>Klik untuk pilih file</p>
-                    <p style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>Hanya format .xlsx / .xls</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex justify-end gap-3 pt-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setShowNikImport(false);
-                    setNikImportFile(null);
-                    setNikImportResult(null);
-                    setNikImportError(null);
-                  }}
-                >
-                  {nikImportResult ? "Tutup" : "Batal"}
-                </Button>
-                <Button type="submit" disabled={!nikImportFile || nikImporting}>
-                  {nikImporting ? "Mengimport..." : "Proses Import"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

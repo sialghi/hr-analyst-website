@@ -239,6 +239,9 @@ def jalankan_pipeline_db(
         master_dict=master_dict,
         remote_absences=remote_absences,
         absen_manual_dict=absen_manual_dict,
+        approved_leaves=approved_leaves,
+        periode_start=periode_start,
+        periode_end=periode_end,
     )
     log("Selesai.")
     return path_output
@@ -289,10 +292,52 @@ def _df_to_records(df, kolom_map=None, kolom_types=None):
     return {"headers": headers, "types": types, "rows": rows}
 
 
+def _hitung_cuti_sakit_periode(approved_leaves_dict, nama, periode_start, periode_end):
+    """Hitung total hari cuti dan sakit per karyawan dalam rentang periode.
+
+    Return: (total_cuti, total_sakit)
+    - CUTI_TAHUNAN: hitung jumlah hari overlap dengan periode
+    - CUTI_SETENGAH_HARI: 0.5 per entry jika tanggalnya dalam periode
+    - SAKIT: hitung jumlah hari overlap dengan periode
+    """
+    if not approved_leaves_dict or not periode_start or not periode_end:
+        return 0.0, 0.0
+
+    norm_name = config.normalisasi_nama(nama)
+    daftar = approved_leaves_dict.get(norm_name, [])
+
+    total_cuti = 0.0
+    total_sakit = 0.0
+
+    for item in daftar:
+        kat = item["kategori"]
+        t_mulai = item["tanggal_mulai"]
+        t_selesai = item["tanggal_selesai"]
+
+        # Hitung overlap dengan periode
+        overlap_start = max(t_mulai, periode_start)
+        overlap_end = min(t_selesai, periode_end)
+
+        if overlap_start > overlap_end:
+            continue  # Tidak ada overlap dengan periode
+
+        if kat == "CUTI_SETENGAH_HARI":
+            total_cuti += 0.5
+        elif kat == "CUTI_TAHUNAN":
+            days = (overlap_end - overlap_start).days + 1
+            total_cuti += days
+        elif kat == "SAKIT":
+            days = (overlap_end - overlap_start).days + 1
+            total_sakit += days
+
+    return total_cuti, total_sakit
+
+
 def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_duluan,
                                      df_tidak_masuk, df_uang_makan, adjustments_dict=None,
                                      bpjs_dict=None, master_dict=None, remote_absences=None,
-                                     absen_manual_dict=None):
+                                     absen_manual_dict=None, approved_leaves=None,
+                                     periode_start=None, periode_end=None):
     """Hitung Summary Overview identik dengan formula Excel, tapi di Python."""
     if "Profil" in df_prep.columns:
         daftar = (
@@ -381,6 +426,11 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         bpjs_kesehatan = bpjs_info.get("bpjs_kesehatan", 0)
         bpjs_tk = bpjs_info.get("bpjs_tk", 0)
 
+        # Hitung cuti & sakit dalam periode file yang diupload
+        emp_cuti, emp_sakit = _hitung_cuti_sakit_periode(
+            approved_leaves, nama, periode_start, periode_end
+        )
+
         rows.append({
             "Cabang": emp["Cabang"],
             "Nama": nama,
@@ -391,6 +441,8 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
             "Absensi Jarak Jauh": absensi_jarak_jauh,
             "Absen Manual": absen_manual,
             "Masuk Tanggal Merah": masuk_tgl_merah,
+            "Cuti": emp_cuti,
+            "Sakit": emp_sakit,
             "Jml Telat": jml_telat,
             "Total Durasi Telat": _fmt_durasi(total_durasi_telat),
             "Jml Lembur": jml_lembur,
@@ -414,7 +466,8 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
     headers = [
         "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out", "Hari Kerja Valid",
         "Absensi Jarak Jauh", "Absen Manual",
-        "Masuk Tanggal Merah", "Jml Telat", "Total Durasi Telat", "Jml Lembur",
+        "Masuk Tanggal Merah", "Cuti", "Sakit",
+        "Jml Telat", "Total Durasi Telat", "Jml Lembur",
         "Jam Lembur (Bulat)", "Jml Pulang Duluan",
         "Total Durasi Pulang Duluan", "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
         "Potongan BPJS Kesehatan (Rp)", "Potongan BPJS TK (Rp)",
@@ -429,6 +482,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         "Hari Kerja Valid": "number", "Absensi Jarak Jauh": "number",
         "Absen Manual": "number",
         "Masuk Tanggal Merah": "number",
+        "Cuti": "number", "Sakit": "number",
         "Jml Telat": "number", "Total Durasi Telat": "text",
         "Jml Lembur": "number", "Jam Lembur (Bulat)": "number",
         "Jml Pulang Duluan": "number", "Total Durasi Pulang Duluan": "text",
@@ -611,6 +665,9 @@ def jalankan_pipeline_db_json(
         master_dict=master_dict,
         remote_absences=remote_absences,
         absen_manual_dict=absen_manual_dict,
+        approved_leaves=approved_leaves,
+        periode_start=periode_start,
+        periode_end=periode_end,
     )
     log("Excel selesai ditulis. Menyiapkan data JSON...")
 
@@ -622,6 +679,9 @@ def jalankan_pipeline_db_json(
         master_dict=master_dict,
         remote_absences=remote_absences,
         absen_manual_dict=absen_manual_dict,
+        approved_leaves=approved_leaves,
+        periode_start=periode_start,
+        periode_end=periode_end,
     )
 
     perbandingan_data = _compute_perbandingan_cabang_json(

@@ -50,16 +50,23 @@ _run_migrations()
 
 app = FastAPI(title="HR Absensi Pipeline - Web API")
 
-FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*").strip()
-origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
-if FRONTEND_ORIGIN and FRONTEND_ORIGIN != "*" and "nama-app-anda" not in FRONTEND_ORIGIN:
-    origins.append(FRONTEND_ORIGIN)
-elif FRONTEND_ORIGIN == "*":
-    origins = ["*"]
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "").strip()
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+if FRONTEND_ORIGIN and FRONTEND_ORIGIN != "*":
+    for orig in FRONTEND_ORIGIN.split(","):
+        cleaned = orig.strip().rstrip("/")
+        if cleaned and cleaned not in origins:
+            origins.append(cleaned)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins if FRONTEND_ORIGIN != "*" else ["*"],
+    allow_origin_regex=r"https?://.*" if FRONTEND_ORIGIN == "*" else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
