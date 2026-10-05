@@ -14,41 +14,34 @@ Base.metadata.create_all(bind=engine)
 
 
 def _run_migrations():
-    """Migrasi otomatis untuk memastikan kolom-kolom baru ditambahkan ke tabel yang sudah ada."""
+    """Migrasi otomatis untuk memastikan SEMUA kolom dari Base.metadata ada di database."""
     from sqlalchemy import inspect, text
     try:
         inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        with engine.begin() as conn:
-            if "leave_requests" in tables:
-                cols = {c["name"] for c in inspector.get_columns("leave_requests")}
-                new_cols = {
-                    "whatsapp_user_id": "VARCHAR",
-                    "telegram_user_id": "VARCHAR",
-                    "tipe_absensi": "VARCHAR DEFAULT 'normal'",
-                    "location_cabang": "VARCHAR",
-                    "foto_bukti": "VARCHAR",
-                    "jam_izin": "VARCHAR",
-                    "catatan_hr": "VARCHAR",
-                    "approved_by": "VARCHAR",
-                    "approved_at": "TIMESTAMP",
-                }
-                for col_name, col_type in new_cols.items():
-                    if col_name not in cols:
-                        conn.execute(text(f"ALTER TABLE leave_requests ADD COLUMN {col_name} {col_type}"))
+        existing_tables = set(inspector.get_table_names())
 
-            if "employees" in tables:
-                cols_emp = {c["name"] for c in inspector.get_columns("employees")}
-                new_emp_cols = {
-                    "tanggal_masuk": "DATE",
-                    "jenis_kontrak": "VARCHAR DEFAULT 'PKWT'",
-                    "durasi_kontrak_bulan": "INTEGER DEFAULT 12",
-                    "tanggal_berakhir_kontrak": "DATE",
-                    "reminder_sent_at": "TIMESTAMP",
-                }
-                for col_name, col_type in new_emp_cols.items():
-                    if col_name not in cols_emp:
-                        conn.execute(text(f"ALTER TABLE employees ADD COLUMN {col_name} {col_type}"))
+        with engine.begin() as conn:
+            for table_name, table in Base.metadata.tables.items():
+                if table_name in existing_tables:
+                    existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+                    for col in table.columns:
+                        if col.name not in existing_cols:
+                            col_type = col.type.compile(engine.dialect)
+                            default_clause = ""
+                            if col.default is not None and hasattr(col.default, "arg"):
+                                val = col.default.arg
+                                if isinstance(val, (int, float)):
+                                    default_clause = f" DEFAULT {val}"
+                                elif isinstance(val, bool):
+                                    default_clause = f" DEFAULT {str(val).lower()}"
+                                elif isinstance(val, str):
+                                    default_clause = f" DEFAULT '{val}'"
+                            sql = f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type}{default_clause}"
+                            print(f"[MIGRATION] Adding column: {sql}")
+                            try:
+                                conn.execute(text(sql))
+                            except Exception as col_err:
+                                print(f"[MIGRATION ERROR on {col.name}]: {col_err}")
     except Exception as e:
         print(f"[MIGRATION WARN] {e}")
 
