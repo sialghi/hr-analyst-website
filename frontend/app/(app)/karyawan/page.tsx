@@ -127,6 +127,7 @@ function formToPayload(form: typeof BLANK_FORM) {
   const isPKWT = form.employment_status === "PKWT";
   return {
     nama: form.nama,
+    nik: form.nik || null,
     id_mesin: form.id_mesin || null,
     profile_code: form.profile_code,
     cabang: form.cabang || null,
@@ -595,6 +596,11 @@ export default function KaryawanPage() {
                         Join: {fmtDate(emp.join_date)}
                       </span>
                     )}
+                    {emp.nik && (
+                      <span className="text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
+                        NIK: {emp.nik}
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="px-4 py-3">
@@ -757,6 +763,20 @@ export default function KaryawanPage() {
                       style={inputStyle}
                       value={form.nama}
                       onChange={(e) => setForm({ ...form, nama: e.target.value })}
+                    />
+                  </Field>
+
+                  <Field label="NIK (16 digit KTP, opsional)">
+                    <input
+                      className={inputCls}
+                      style={inputStyle}
+                      maxLength={16}
+                      placeholder="Contoh: 3175012345670001"
+                      value={form.nik}
+                      onChange={(e) => {
+                        const v = e.target.value.replace(/\D/g, "").slice(0, 16);
+                        setForm({ ...form, nik: v });
+                      }}
                     />
                   </Field>
 
