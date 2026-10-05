@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from .. import models
 from ..database import get_db
+from ..cloudinary_helper import upload_to_cloudinary
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
@@ -119,7 +120,8 @@ MAX_MEDIA_BYTES = 10 * 1024 * 1024  # 10 MB
 async def download_whatsapp_media(media_id: str, mime_type: str = "image/jpeg") -> Optional[str]:
     """
     Download media dari WhatsApp Cloud API menggunakan media_id.
-    Simpan ke UPLOAD_DIR dan kembalikan path relatif (untuk disimpan di DB).
+    - Jika Cloudinary terkonfigurasi → upload ke Cloudinary, kembalikan URL publik.
+    - Jika tidak → simpan ke UPLOAD_DIR lokal, kembalikan path relatif.
     Mengembalikan 'EXCEEDED_SIZE' jika ukuran melebihi 10MB.
     """
     token = get_env_var("WHATSAPP_ACCESS_TOKEN")
@@ -169,11 +171,22 @@ async def download_whatsapp_media(media_id: str, mime_type: str = "image/jpeg") 
             }
             ext = ext_map.get(mime_type.lower(), "jpg")
             filename = f"{uuid.uuid4().hex}.{ext}"
-            filepath = UPLOAD_DIR / filename
 
+            # 3a. Coba upload ke Cloudinary terlebih dahulu
+            cloudinary_url = upload_to_cloudinary(
+                file_bytes=dl_resp.content,
+                filename=filename,
+            )
+            if cloudinary_url:
+                # Simpan URL Cloudinary langsung sebagai foto_bukti
+                print(f"[WhatsApp] Berkas tersimpan di Cloudinary: {cloudinary_url}")
+                return cloudinary_url
+
+            # 3b. Fallback: simpan ke disk lokal (untuk localhost / non-Cloudinary)
+            filepath = UPLOAD_DIR / filename
             filepath.write_bytes(dl_resp.content)
             rel_path = f"uploads/foto_absensi/{filename}"
-            print(f"[WhatsApp] Berkas bukti tersimpan: {filepath} ({len(dl_resp.content)} bytes)")
+            print(f"[WhatsApp] Berkas bukti tersimpan lokal: {filepath} ({len(dl_resp.content)} bytes)")
             return rel_path
 
     except Exception as e:

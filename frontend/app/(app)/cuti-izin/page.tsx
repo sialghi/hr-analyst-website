@@ -110,7 +110,13 @@ export default function CutiIzinPage() {
     }
   }
 
-  // Filters
+  /** Resolusi URL foto bukti — mendukung URL Cloudinary penuh maupun path relatif lokal */
+  function getPhotoUrl(path?: string | null): string {
+    if (!path) return "";
+    if (path.startsWith("http://") || path.startsWith("https://")) return path;
+    return `${API_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+  }
+
   const [filterStatus, setFilterStatus] = useState<string>("ALL");
   const [filterKategori, setFilterKategori] = useState<string>("ALL");
   const [filterCabang, setFilterCabang] = useState<string>("ALL");
@@ -670,7 +676,7 @@ export default function CutiIzinPage() {
                         {item.foto_bukti ? (
                           item.foto_bukti.toLowerCase().endsWith(".pdf") ? (
                             <a
-                              href={`${API_BASE}/${item.foto_bukti}`}
+                              href={getPhotoUrl(item.foto_bukti)}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 hover:border-rose-300 transition-colors shadow-2xs"
@@ -688,7 +694,7 @@ export default function CutiIzinPage() {
                             <button
                               type="button"
                               onClick={() => {
-                                setPreviewMediaUrl(`${API_BASE}/${item.foto_bukti}`);
+                                setPreviewMediaUrl(getPhotoUrl(item.foto_bukti));
                                 setPreviewMediaTitle(`${item.nama} - ${kat.label} (${tglDisplay})`);
                               }}
                               className="group relative inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:border-indigo-400 hover:bg-indigo-50/40 hover:shadow-2xs transition-all cursor-pointer text-[11px] font-medium text-slate-700"
@@ -696,7 +702,7 @@ export default function CutiIzinPage() {
                             >
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
-                                src={`${API_BASE}/${item.foto_bukti}`}
+                                src={getPhotoUrl(item.foto_bukti)}
                                 alt="Bukti"
                                 className="w-4 h-4 rounded object-cover border border-slate-200"
                               />
