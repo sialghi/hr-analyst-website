@@ -12,6 +12,49 @@ from .routers import auth, profiles, rules, employees, holidays, process, chat, 
 # tapi create_all() ini cukup aman & simpel untuk skala project ini).
 Base.metadata.create_all(bind=engine)
 
+
+def _run_migrations():
+    """Migrasi otomatis untuk memastikan kolom-kolom baru ditambahkan ke tabel yang sudah ada."""
+    from sqlalchemy import inspect, text
+    try:
+        inspector = inspect(engine)
+        tables = inspector.get_table_names()
+        with engine.begin() as conn:
+            if "leave_requests" in tables:
+                cols = {c["name"] for c in inspector.get_columns("leave_requests")}
+                new_cols = {
+                    "whatsapp_user_id": "VARCHAR",
+                    "telegram_user_id": "VARCHAR",
+                    "tipe_absensi": "VARCHAR DEFAULT 'normal'",
+                    "location_cabang": "VARCHAR",
+                    "foto_bukti": "VARCHAR",
+                    "jam_izin": "VARCHAR",
+                    "catatan_hr": "VARCHAR",
+                    "approved_by": "VARCHAR",
+                    "approved_at": "TIMESTAMP",
+                }
+                for col_name, col_type in new_cols.items():
+                    if col_name not in cols:
+                        conn.execute(text(f"ALTER TABLE leave_requests ADD COLUMN {col_name} {col_type}"))
+
+            if "employees" in tables:
+                cols_emp = {c["name"] for c in inspector.get_columns("employees")}
+                new_emp_cols = {
+                    "tanggal_masuk": "DATE",
+                    "jenis_kontrak": "VARCHAR DEFAULT 'PKWT'",
+                    "durasi_kontrak_bulan": "INTEGER DEFAULT 12",
+                    "tanggal_berakhir_kontrak": "DATE",
+                    "reminder_sent_at": "TIMESTAMP",
+                }
+                for col_name, col_type in new_emp_cols.items():
+                    if col_name not in cols_emp:
+                        conn.execute(text(f"ALTER TABLE employees ADD COLUMN {col_name} {col_type}"))
+    except Exception as e:
+        print(f"[MIGRATION WARN] {e}")
+
+
+_run_migrations()
+
 app = FastAPI(title="HR Absensi Pipeline - Web API")
 
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "*").strip()
