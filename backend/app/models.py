@@ -94,6 +94,7 @@ class Employee(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nama = Column(String, nullable=False, index=True)
+    nik = Column(String, nullable=True, unique=True, index=True)  # NIK KTP 16 digit
     id_mesin = Column(String, nullable=True)  # ID di mesin absensi, opsional
     profile_code = Column(String, ForeignKey("profiles.code"), nullable=False)
     cabang = Column(String, nullable=True)

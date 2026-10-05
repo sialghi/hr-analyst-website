@@ -274,6 +274,346 @@ def download_employee_template(
     )
 
 
+# ─────────────────────────────────────────────────────────────
+# Template & Import NIK / Join Date / Waktu Berakhir Kontrak
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/template/nik-import")
+def download_nik_import_template(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    """
+    Download template Excel berisi SELURUH karyawan aktif dari database.
+    Kolom: Nama (read-only ref), NIK, Join Date, Waktu Berakhir Kontrak.
+    HR cukup mengisi kolom yang kosong lalu upload kembali.
+    """
+    import io
+    import openpyxl
+    from openpyxl.styles import (
+        PatternFill, Font, Alignment, Border, Side, Protection
+    )
+    from openpyxl.utils import get_column_letter
+    from fastapi.responses import Response
+
+    employees = (
+        db.query(models.Employee)
+        .filter(models.Employee.active == True)
+        .order_by(models.Employee.cabang, models.Employee.nama)
+        .all()
+    )
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Import NIK & Tanggal"
+
+    # ── Warna & style ──────────────────────────────────────────
+    HEADER_FILL   = PatternFill("solid", fgColor="1E3A5F")   # biru tua
+    LOCKED_FILL   = PatternFill("solid", fgColor="D9E2F3")   # biru muda (read-only)
+    INPUT_FILL    = PatternFill("solid", fgColor="FFFDE7")   # kuning muda (isi di sini)
+    HEADER_FONT   = Font(bold=True, color="FFFFFF", size=11)
+    LOCKED_FONT   = Font(color="333333", size=10)
+    INPUT_FONT    = Font(color="1A1A1A", size=10)
+    CENTER        = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    BORDER_THIN   = Border(
+        left=Side(style="thin", color="BBBBBB"),
+        right=Side(style="thin", color="BBBBBB"),
+        top=Side(style="thin", color="BBBBBB"),
+        bottom=Side(style="thin", color="BBBBBB"),
+    )
+
+    # ── Baris judul ────────────────────────────────────────────
+    ws.merge_cells("A1:F1")
+    title_cell = ws["A1"]
+    title_cell.value = "TEMPLATE IMPORT NIK, JOIN DATE & WAKTU BERAKHIR KONTRAK"
+    title_cell.font = Font(bold=True, color="1E3A5F", size=13)
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 30
+
+    ws.merge_cells("A2:F2")
+    note_cell = ws["A2"]
+    note_cell.value = (
+        "Petunjuk: Isi kolom NIK, Join Date, dan Waktu Berakhir Kontrak. "
+        "Kolom No & Nama JANGAN DIUBAH. Format tanggal: YYYY-MM-DD (contoh: 2024-04-15). "
+        "Kolom 'Waktu Berakhir' hanya untuk karyawan PKWT."
+    )
+    note_cell.font = Font(italic=True, color="555555", size=9)
+    note_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    ws.row_dimensions[2].height = 28
+
+    # ── Header kolom ───────────────────────────────────────────
+    headers = ["No", "Cabang", "Nama Karyawan", "NIK (16 digit KTP)", "Join Date (YYYY-MM-DD)", "Waktu Berakhir Kontrak (YYYY-MM-DD)"]
+    col_widths = [5, 18, 30, 22, 26, 34]
+
+    for col_idx, (header, width) in enumerate(zip(headers, col_widths), start=1):
+        cell = ws.cell(row=3, column=col_idx, value=header)
+        cell.fill = HEADER_FILL
+        cell.font = HEADER_FONT
+        cell.alignment = CENTER
+        cell.border = BORDER_THIN
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    ws.row_dimensions[3].height = 22
+
+    # ── Data karyawan ──────────────────────────────────────────
+    for row_idx, emp in enumerate(employees, start=4):
+        # Ambil tanggal berakhir kontrak aktif (jika PKWT)
+        contract_end = None
+        if emp.employment_status == "PKWT" and emp.contracts:
+            active_c = next((c for c in emp.contracts if c.status == "ACTIVE"), None)
+            if active_c:
+                contract_end = active_c.end_date.isoformat()
+
+        row_data = [
+            row_idx - 3,                  # No
+            emp.cabang or "",             # Cabang
+            emp.nama,                     # Nama (read-only)
+            emp.nik or "",                # NIK (isi)
+            emp.join_date.isoformat() if emp.join_date else "",  # Join Date
+            contract_end or "",           # Waktu Berakhir
+        ]
+
+        for col_idx, value in enumerate(row_data, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = BORDER_THIN
+            cell.font = LOCKED_FONT
+
+            if col_idx <= 3:
+                # Kolom No, Cabang, Nama → background biru muda (read-only visual)
+                cell.fill = LOCKED_FILL
+                cell.alignment = CENTER if col_idx == 1 else Alignment(vertical="center")
+            else:
+                # Kolom NIK, Join Date, Waktu Berakhir → kuning (input)
+                cell.fill = INPUT_FILL
+                cell.font = INPUT_FONT
+                cell.alignment = CENTER
+
+        ws.row_dimensions[row_idx].height = 18
+
+    # ── Sheet petunjuk ─────────────────────────────────────────
+    ws2 = wb.create_sheet("Petunjuk")
+    petunjuk = [
+        ["PETUNJUK PENGISIAN TEMPLATE"],
+        [],
+        ["Kolom", "Keterangan"],
+        ["No", "Nomor urut. JANGAN DIUBAH."],
+        ["Cabang", "Cabang karyawan. JANGAN DIUBAH."],
+        ["Nama Karyawan", "Nama karyawan. JANGAN DIUBAH. Sistem akan mencari berdasarkan nama ini."],
+        ["NIK (16 digit KTP)", "Nomor Induk Kependudukan 16 digit. Kosongkan jika tidak ada."],
+        ["Join Date", "Tanggal mulai kerja. Format: YYYY-MM-DD (contoh: 2024-04-15). Kosongkan jika tidak ingin mengubah."],
+        ["Waktu Berakhir Kontrak", "Tanggal berakhir kontrak (khusus karyawan PKWT). Format: YYYY-MM-DD. Kosongkan jika tidak relevan."],
+        [],
+        ["CATATAN PENTING:"],
+        ["• Kolom No, Cabang, dan Nama TIDAK BOLEH diubah. Sistem membaca berdasarkan nama."],
+        ["• Baris yang kolom NIK, Join Date, dan Waktu Berakhir-nya SEMUA kosong akan dilewati (tidak diproses)."],
+        ["• Jika karyawan sudah punya NIK di database, kolom NIK akan terisi otomatis saat download template."],
+        ["• Waktu Berakhir Kontrak hanya berlaku jika karyawan sudah terdaftar sebagai PKWT di sistem."],
+        ["• File ini hanya bisa diupload oleh HR Master."],
+    ]
+    for r_idx, row_vals in enumerate(petunjuk, start=1):
+        for c_idx, val in enumerate(row_vals, start=1):
+            cell = ws2.cell(row=r_idx, column=c_idx, value=val)
+            if r_idx == 1:
+                cell.font = Font(bold=True, size=13, color="1E3A5F")
+            elif r_idx == 3:
+                cell.font = Font(bold=True)
+    ws2.column_dimensions["A"].width = 30
+    ws2.column_dimensions["B"].width = 80
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="template_import_nik.xlsx"'
+        },
+    )
+
+
+@router.post("/import/nik")
+def import_nik_from_excel(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    """
+    Upload file Excel hasil isi template NIK untuk update massal:
+    NIK, Join Date, dan Waktu Berakhir Kontrak karyawan.
+
+    Aturan:
+    - Match karyawan berdasarkan nama (case-insensitive, strip whitespace).
+    - Hanya kolom yang diisi yang diupdate (kolom kosong dilewati).
+    - Waktu Berakhir hanya diproses jika karyawan berstatus PKWT.
+    - Mengembalikan ringkasan hasil: diupdate, dilewati, tidak ditemukan.
+    """
+    import io
+    import openpyxl
+    from datetime import date as date_type
+
+    if not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="File harus berformat Excel (.xlsx atau .xls).")
+
+    content = file.file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="File Excel tidak valid atau rusak.")
+
+    # Cari sheet utama (bukan sheet Petunjuk)
+    sheet_name = next(
+        (s for s in wb.sheetnames if "petunjuk" not in s.lower()),
+        wb.sheetnames[0]
+    )
+    ws = wb[sheet_name]
+
+    # Baca header dari baris ke-3 (baris 1-2 adalah judul & catatan)
+    header_row = [str(c.value or "").strip().lower() for c in ws[3]]
+    
+    def col_idx(keyword: str) -> int:
+        """Cari indeks kolom berdasarkan keyword (0-based)."""
+        for i, h in enumerate(header_row):
+            if keyword in h:
+                return i
+        return -1
+
+    idx_nama   = col_idx("nama")
+    idx_nik    = col_idx("nik")
+    idx_join   = col_idx("join")
+    idx_end    = col_idx("berakhir")
+
+    if idx_nama < 0 or idx_nik < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Format file tidak dikenali. Pastikan menggunakan template resmi yang diunduh dari sistem."
+        )
+
+    def parse_date(val) -> Optional[date_type]:
+        if not val:
+            return None
+        if isinstance(val, (date_type,)):
+            return val
+        if hasattr(val, "date"):  # datetime object
+            return val.date()
+        s = str(val).strip()
+        if not s or s == "None":
+            return None
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d"):
+            try:
+                import datetime
+                return datetime.datetime.strptime(s, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    def clean_nik(val) -> Optional[str]:
+        if not val:
+            return None
+        s = str(val).strip().replace(" ", "")
+        # Hapus desimal jika Excel simpan sebagai float (misal: 1234567890123456.0)
+        if s.endswith(".0"):
+            s = s[:-2]
+        if len(s) != 16 or not s.isdigit():
+            return None
+        return s
+
+    results = {
+        "updated": [],
+        "skipped": [],    # baris kosong / tidak ada data baru
+        "not_found": [],  # nama tidak cocok
+        "nik_conflict": [],  # NIK sudah dipakai karyawan lain
+        "invalid_nik": [],   # format NIK salah
+    }
+
+    for row in ws.iter_rows(min_row=4):
+        vals = [cell.value for cell in row]
+        if len(vals) <= max(idx_nama, idx_nik):
+            continue
+
+        nama_raw = vals[idx_nama]
+        if not nama_raw:
+            continue
+
+        nama_key = str(nama_raw).strip()
+        nik_raw  = vals[idx_nik]  if idx_nik  >= 0 else None
+        join_raw = vals[idx_join] if idx_join >= 0 else None
+        end_raw  = vals[idx_end]  if idx_end  >= 0 else None
+
+        # Skip jika semua kolom yang perlu diisi kosong
+        if not nik_raw and not join_raw and not end_raw:
+            results["skipped"].append(nama_key)
+            continue
+
+        # Cari karyawan di DB (case-insensitive)
+        emp = db.query(models.Employee).filter(
+            models.Employee.nama.ilike(nama_key)
+        ).first()
+
+        if not emp:
+            results["not_found"].append(nama_key)
+            continue
+
+        updated_fields = []
+
+        # -- Update NIK --
+        if nik_raw:
+            clean = clean_nik(nik_raw)
+            if not clean:
+                results["invalid_nik"].append({"nama": nama_key, "nik_raw": str(nik_raw)})
+            else:
+                # Cek duplikat NIK
+                conflict = db.query(models.Employee).filter(
+                    models.Employee.nik == clean,
+                    models.Employee.id != emp.id,
+                ).first()
+                if conflict:
+                    results["nik_conflict"].append({
+                        "nama": nama_key,
+                        "nik": clean,
+                        "konflik_dengan": conflict.nama,
+                    })
+                else:
+                    emp.nik = clean
+                    updated_fields.append("NIK")
+
+        # -- Update Join Date --
+        join_date_parsed = parse_date(join_raw)
+        if join_date_parsed:
+            emp.join_date = join_date_parsed
+            updated_fields.append("Join Date")
+
+        # -- Update Waktu Berakhir Kontrak (hanya PKWT) --
+        if end_raw and emp.employment_status == "PKWT":
+            end_date_parsed = parse_date(end_raw)
+            if end_date_parsed:
+                active_c = next(
+                    (c for c in emp.contracts if c.status == "ACTIVE"), None
+                )
+                if active_c:
+                    active_c.end_date = end_date_parsed
+                    updated_fields.append("Waktu Berakhir Kontrak")
+
+        if updated_fields:
+            results["updated"].append({
+                "nama": emp.nama,
+                "fields": ", ".join(updated_fields),
+            })
+
+    db.commit()
+
+    return {
+        "message": "Import selesai.",
+        "total_updated": len(results["updated"]),
+        "total_skipped": len(results["skipped"]),
+        "total_not_found": len(results["not_found"]),
+        "total_nik_conflict": len(results["nik_conflict"]),
+        "total_invalid_nik": len(results["invalid_nik"]),
+        "detail": results,
+    }
+
+
 @router.get("/{employee_id}", response_model=schemas.EmployeeOut)
 def get_employee_detail(
     employee_id: int,

@@ -139,6 +139,7 @@ class EmploymentContractOut(EmploymentContractBase):
 # ---------- Employee (master karyawan) ----------
 class EmployeeBase(BaseModel):
     nama: str
+    nik: Optional[str] = None             # NIK KTP 16 digit
     id_mesin: Optional[str] = None
     profile_code: str
     cabang: Optional[str] = None

@@ -191,6 +191,18 @@ export const api = {
     return res.blob();
   },
 
+  async downloadNikImportTemplate(): Promise<Blob> {
+    const res = await request("/employees/template/nik-import");
+    return res.blob();
+  },
+
+  async importNikData(file: File): Promise<any> {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await request("/employees/import/nik", { method: "POST", body: form });
+    return res.json();
+  },
+
   async getHolidays() {
     const res = await request("/holidays");
     return res.json();
