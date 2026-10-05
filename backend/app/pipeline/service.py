@@ -63,6 +63,36 @@ def _load_adjustments_dict(db: Session) -> dict:
     }
 
 
+def _load_absen_manual_dict(db: Session, tahun: int, bulan: int) -> dict:
+    """Map nama karyawan (normalisasi_nama) -> jumlah hari absen manual utk periode tsb."""
+    rows = (
+        db.query(models.AbsenManual)
+        .filter(models.AbsenManual.tahun == tahun, models.AbsenManual.bulan == bulan)
+        .all()
+    )
+    return {
+        config.normalisasi_nama(row.nama): int(row.jumlah or 0)
+        for row in rows
+        if row.nama and int(row.jumlah or 0) > 0
+    }
+
+
+def _derive_periode(df_prep) -> tuple | None:
+    """
+    Tentukan periode (tahun, bulan) data absensi dari kolom Tanggal df_prep.
+    Pakai bulan kalender yang paling banyak muncul (mode) supaya aman kalau
+    file mentah menjelang bulan berikutnya. None kalau tidak ada tanggal sama sekali.
+    """
+    if df_prep is None or df_prep.empty or "Tanggal" not in df_prep.columns:
+        return None
+    tgl = pd.to_datetime(df_prep["Tanggal"], errors="coerce").dropna()
+    if tgl.empty:
+        return None
+    mode = tgl.dt.to_period("M").mode()
+    periode = mode.iloc[0] if not mode.empty else tgl.dt.to_period("M").iloc[0]
+    return int(periode.year), int(periode.month)
+
+
 def jalankan_pipeline_db(
     daftar_input,
     path_output: str,
@@ -131,6 +161,9 @@ def jalankan_pipeline_db(
     log("[3/5] Preprocessing...")
     df_prep = jalankan_preprocessing(df_mentah, master_dict=master_dict, tanggal_merah=tanggal_merah_set)
 
+    periode = _derive_periode(df_prep)
+    absen_manual_dict = _load_absen_manual_dict(db, *periode) if periode else {}
+
     log("[4/5] Data Process (telat/lembur/uang makan/tidak masuk)...")
     df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]
     df_telat = hitung_telat(df_lengkap, approved_leaves=approved_leaves)
@@ -156,6 +189,7 @@ def jalankan_pipeline_db(
         bpjs_dict=bpjs_dict,
         master_dict=master_dict,
         remote_absences=remote_absences,
+        absen_manual_dict=absen_manual_dict,
     )
     log("Selesai.")
     return path_output
@@ -208,7 +242,8 @@ def _df_to_records(df, kolom_map=None, kolom_types=None):
 
 def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_duluan,
                                      df_tidak_masuk, df_uang_makan, adjustments_dict=None,
-                                     bpjs_dict=None, master_dict=None, remote_absences=None):
+                                     bpjs_dict=None, master_dict=None, remote_absences=None,
+                                     absen_manual_dict=None):
     """Hitung Summary Overview identik dengan formula Excel, tapi di Python."""
     if "Profil" in df_prep.columns:
         daftar = (
@@ -248,8 +283,13 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         _nama_norm = _cfg.normalisasi_nama(str(nama))
         _remote_days = remote_absences.get(_nama_norm, []) if remote_absences else []
         absensi_jarak_jauh = len(_remote_days)
-        # Hari kerja valid = dari fingerprint + dari absensi jarak jauh approved
-        hari_kerja_valid_total = hari_kerja_valid + absensi_jarak_jauh
+
+        # Hari absen manual (diisi HR dari website) untuk periode data ini
+        absen_manual = int((absen_manual_dict or {}).get(_nama_norm, 0))
+
+        # Hari kerja valid = fingerprint + absensi jarak jauh approved + absen manual
+        hari_kerja_valid_total = hari_kerja_valid + absensi_jarak_jauh + absen_manual
+        # Absen manual HANYA menambah Hari Kerja Valid, tidak ke Absensi In/Out
 
         jml_telat = len(telat_emp)
         total_durasi_telat = float(telat_emp["Durasi_Telat_Jam"].sum()) if "Durasi_Telat_Jam" in telat_emp.columns and not telat_emp.empty else 0
@@ -266,6 +306,13 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         potongan_pd_rp = float(um_emp["Potongan_Pulang_Duluan"].sum()) if "Potongan_Pulang_Duluan" in um_emp.columns and not um_emp.empty else 0
         bonus_tgl_merah_rp = float(um_emp["Bonus_Tanggal_Merah"].sum()) if "Bonus_Tanggal_Merah" in um_emp.columns and not um_emp.empty else 0
         total_uang_makan = float(um_emp["Total_Uang_Makan"].sum()) if "Total_Uang_Makan" in um_emp.columns and not um_emp.empty else 0
+
+        # Absen manual ikut menambah uang makan: jumlah hari x tarif karyawan (tanpa potongan)
+        _info_master = (master_dict or {}).get(_nama_norm, {})
+        _uang_makan_nominal = float(_info_master.get("Uang_Makan", config.UANG_MAKAN_DEFAULT))
+        _uang_makan_manual = absen_manual * _uang_makan_nominal
+        uang_makan_harian += _uang_makan_manual
+        total_uang_makan += _uang_makan_manual
 
         def _fmt_durasi(jam):
             if jam <= 0:
@@ -293,6 +340,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
             "Absensi Out": absensi_out,
             "Hari Kerja Valid": hari_kerja_valid_total,
             "Absensi Jarak Jauh": absensi_jarak_jauh,
+            "Absen Manual": absen_manual,
             "Masuk Tanggal Merah": masuk_tgl_merah,
             "Jml Telat": jml_telat,
             "Total Durasi Telat": _fmt_durasi(total_durasi_telat),
@@ -316,7 +364,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
 
     headers = [
         "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out", "Hari Kerja Valid",
-        "Absensi Jarak Jauh",
+        "Absensi Jarak Jauh", "Absen Manual",
         "Masuk Tanggal Merah", "Jml Telat", "Total Durasi Telat", "Jml Lembur",
         "Jam Lembur (Bulat)", "Jml Pulang Duluan",
         "Total Durasi Pulang Duluan", "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
@@ -330,6 +378,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         "Cabang": "text", "Nama": "text", "Profil": "text",
         "Absensi In": "number", "Absensi Out": "number",
         "Hari Kerja Valid": "number", "Absensi Jarak Jauh": "number",
+        "Absen Manual": "number",
         "Masuk Tanggal Merah": "number",
         "Jml Telat": "number", "Total Durasi Telat": "text",
         "Jml Lembur": "number", "Jam Lembur (Bulat)": "number",
@@ -468,6 +517,9 @@ def jalankan_pipeline_db_json(
     log("[3/5] Preprocessing...")
     df_prep = jalankan_preprocessing(df_mentah, master_dict=master_dict, tanggal_merah=tanggal_merah_set)
 
+    periode = _derive_periode(df_prep)
+    absen_manual_dict = _load_absen_manual_dict(db, *periode) if periode else {}
+
     log("[4/5] Data Process...")
     df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]
     df_telat = hitung_telat(df_lengkap, approved_leaves=approved_leaves)
@@ -491,6 +543,7 @@ def jalankan_pipeline_db_json(
         bpjs_dict=bpjs_dict,
         master_dict=master_dict,
         remote_absences=remote_absences,
+        absen_manual_dict=absen_manual_dict,
     )
     log("Excel selesai ditulis. Menyiapkan data JSON...")
 
@@ -501,6 +554,7 @@ def jalankan_pipeline_db_json(
         bpjs_dict=bpjs_dict,
         master_dict=master_dict,
         remote_absences=remote_absences,
+        absen_manual_dict=absen_manual_dict,
     )
 
     perbandingan_data = _compute_perbandingan_cabang_json(
@@ -655,6 +709,7 @@ def jalankan_pipeline_db_json(
             "jml_perlu_dicek": jml_perlu_dicek,
             "total_baris_scan": len(df_mentah),
         },
+        "periode": {"tahun": periode[0], "bulan": periode[1]} if periode else None,
         "sheets": sheets,
         "cabang_list": cabang_list,
         "profil_list": profil_list,

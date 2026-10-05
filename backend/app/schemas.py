@@ -112,6 +112,30 @@ class BusinessRuleOut(BusinessRuleBase):
         from_attributes = True
 
 
+# ---------- Employment Contract (kontrak kerja PKWT) ----------
+class EmploymentContractBase(BaseModel):
+    contract_number: int = 1
+    start_date: date
+    end_date: date
+    status: str = "ACTIVE"  # ACTIVE, EXPIRED, PROMOTED_TO_PERMANENT, RENEWED
+    keterangan: Optional[str] = None
+
+
+class EmploymentContractCreate(BaseModel):
+    start_date: date
+    end_date: date
+    keterangan: Optional[str] = None
+
+
+class EmploymentContractOut(EmploymentContractBase):
+    id: int
+    employee_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # ---------- Employee (master karyawan) ----------
 class EmployeeBase(BaseModel):
     nama: str
@@ -122,6 +146,15 @@ class EmployeeBase(BaseModel):
     bpjs_kesehatan: Optional[int] = 0
     bpjs_tk: Optional[int] = 0
     active: bool = True
+
+    # Status Kepegawaian & Data Kontrak
+    employment_status: str = "TETAP"  # "TETAP" atau "PKWT"
+    join_date: Optional[date] = None   # Tanggal masuk / bergabung
+
+    # Input helper saat membuat/mengubah karyawan PKWT
+    contract_start_date: Optional[date] = None
+    contract_end_date: Optional[date] = None
+    contract_keterangan: Optional[str] = None
 
     # Aturan Khusus per Karyawan (Cascading Override)
     has_custom_rules: bool = False
@@ -141,6 +174,9 @@ class EmployeeUpdate(EmployeeBase):
 
 class EmployeeOut(EmployeeBase):
     id: int
+    contracts: List[EmploymentContractOut] = []
+    tenure_display: Optional[str] = None
+    contract_reminder_status: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True
@@ -167,9 +203,11 @@ class HolidayOut(HolidayBase):
 class LeaveRequestBase(BaseModel):
     nama: str
     telegram_user_id: Optional[str] = None
-    kategori: str = "CUTI_TAHUNAN"  # CUTI_TAHUNAN, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA, WORK_FROM_LOCATION
+    whatsapp_user_id: Optional[str] = None
+    kategori: str = "CUTI_TAHUNAN"  # CUTI_TAHUNAN, CUTI_SETENGAH_HARI, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA, WORK_FROM_LOCATION
     tanggal_mulai: date
     tanggal_selesai: date
+    jumlah_hari: Optional[float] = None   # Explicit override: 0.5 untuk setengah hari, None = hitung dari rentang tanggal
     jam_izin: Optional[str] = None  # "HH:MM"
     alasan: Optional[str] = None
     catatan_hr: Optional[str] = None
@@ -204,6 +242,8 @@ class LeaveRequestOut(LeaveRequestBase):
     approved_at: Optional[datetime] = None
     tipe_absensi: Optional[str] = "normal"
     location_cabang: Optional[str] = None
+    jumlah_hari: Optional[float] = None
+    foto_bukti: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -230,3 +270,77 @@ class EmployeeAdjustmentOut(BaseModel):
     class Config:
         from_attributes = True
 
+
+# ---------- Employee Adjustment (bonus/potongan lain) ----------
+class EmployeeAdjustmentUpdate(BaseModel):
+    nama: str
+    bonus_lain: Optional[float] = None
+    potongan_lain: Optional[float] = None
+    catatan: Optional[str] = None
+
+
+class EmployeeAdjustmentOut(BaseModel):
+    id: int
+    nama: str
+    bonus_lain: float
+    potongan_lain: float
+    catatan: Optional[str] = None
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Absen Manual (hari kerja manual per periode) ----------
+class AbsenManualUpdate(BaseModel):
+    nama: str
+    tahun: int = Field(..., ge=2000, le=2100)
+    bulan: int = Field(..., ge=1, le=12)
+    jumlah: int = Field(default=0, ge=0, le=31)
+
+
+class AbsenManualOut(BaseModel):
+    id: int
+    nama: str
+    tahun: int
+    bulan: int
+    jumlah: int
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Leave Balance Ledger ----------
+class LeaveBalanceLedgerOut(BaseModel):
+    id: int
+    employee_id: int
+    year: int
+    entry_type: str   # GRANT_ANNIVERSARY, GRANT_ANNUAL_RESET, USED, REVERSED, EXPIRED
+    amount: float
+    leave_request_id: Optional[int] = None
+    note: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LeaveBalanceInfoOut(BaseModel):
+    """Response schema untuk endpoint GET /leaves/balance-info."""
+    employee_id: Optional[int] = None
+    nama: str
+    join_date: Optional[str] = None
+    year: int
+    has_quota: bool
+    is_eligible: bool = False
+    quota_granted: float
+    quota_used: float
+    quota_remaining: float
+    is_exceeded: bool = False
+    anniversary_date: Optional[str] = None
+    next_anniversary: Optional[str] = None
+    is_first_year: bool = False
+    eligible_from: Optional[str] = None
+    expired_date: Optional[str] = None
+    error: Optional[str] = None

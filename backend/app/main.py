@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 import os
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from .database import Base, engine
-from .routers import auth, profiles, rules, employees, holidays, process, chat, leaves, telegram
+from .routers import auth, profiles, rules, employees, holidays, process, chat, leaves, whatsapp
 
 # Buat semua tabel kalau belum ada (untuk production sebaiknya pakai Alembic migration,
 # tapi create_all() ini cukup aman & simpel untuk skala project ini).
@@ -35,5 +37,17 @@ app.include_router(holidays.router)
 app.include_router(leaves.router)
 app.include_router(process.router)
 app.include_router(chat.router)
-app.include_router(telegram.router)
+app.include_router(whatsapp.router)
+
+# Serve uploaded foto bukti absensi jarak jauh via /uploads/...
+_uploads_dir = Path(__file__).resolve().parent.parent / "uploads"
+_uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+
+
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    from .scheduler import start_daily_contract_scheduler
+    asyncio.create_task(start_daily_contract_scheduler())
 

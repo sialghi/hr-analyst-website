@@ -3,7 +3,8 @@ import datetime
 import enum
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, Float, Date, DateTime, ForeignKey, JSON, Enum
+    Column, Integer, String, Boolean, Float, Date, DateTime, ForeignKey, JSON, Enum,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -101,6 +102,12 @@ class Employee(Base):
     bpjs_tk = Column(Integer, nullable=True, default=0)
     active = Column(Boolean, default=True)
 
+    # ── Status Kepegawaian & Data Kontrak ────────────────────────────────────
+    # employment_status: "TETAP" (karyawan tetap) atau "PKWT" (karyawan kontrak)
+    employment_status = Column(String, nullable=False, default="TETAP")
+    # join_date: Tanggal mulai bergabung / masuk perusahaan (Wajib diisi untuk hitungan kompensasi PHK)
+    join_date = Column(Date, nullable=True)
+
     # ── Aturan Khusus per Karyawan (Cascading Override) ──────────────────────
     # Flag toggle: jika False, semua field _override di bawah diabaikan (NULL = ikut divisi/global)
     has_custom_rules = Column(Boolean, default=False, nullable=False)
@@ -119,6 +126,33 @@ class Employee(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     profile = relationship("Profile", back_populates="employees")
+    contracts = relationship("EmploymentContract", back_populates="employee", cascade="all, delete-orphan", order_by="EmploymentContract.contract_number.desc()")
+
+
+class EmploymentContract(Base):
+    """
+    Riwayat Kontrak Kerja Karyawan (PKWT).
+    Mendukung perpanjangan (kontrak ke-1, ke-2, dst.) dan audit histori saat karyawan diangkat jadi TETAP.
+    Status:
+      - ACTIVE: Kontrak berjalan
+      - EXPIRED: Masa kontrak telah habis
+      - PROMOTED_TO_PERMANENT: Karyawan diangkat menjadi Karyawan Tetap
+      - RENEWED: Kontrak telah diperpanjang ke periode berikutnya
+    """
+    __tablename__ = "employment_contracts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    contract_number = Column(Integer, nullable=False, default=1)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    status = Column(String, nullable=False, default="ACTIVE")
+    keterangan = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    employee = relationship("Employee", back_populates="contracts")
 
 
 class Holiday(Base):
@@ -136,10 +170,11 @@ class LeaveRequest(Base):
     Bisa dibuat manual oleh HR Master/Staff di web, atau otomatis via Bot Telegram / n8n.
     Status: PENDING, APPROVED, REJECTED
     Kategori:
-      - CUTI_TAHUNAN (full day cuti tahunan)
-      - SAKIT (full day sakit)
-      - IZIN_PULANG_CEPAT (izin keluar lebih awal, jam_izin = misal 14:00)
-      - IZIN_TELAT (izin datang terlambat, jam_izin = misal 09:30)
+      - CUTI_TAHUNAN       (full day cuti tahunan — memotong 1 hari kuota)
+      - CUTI_SETENGAH_HARI (setengah hari cuti — memotong 0.5 hari kuota, kode "CS" di Excel)
+      - SAKIT              (full day sakit — tidak memotong kuota cuti)
+      - IZIN_PULANG_CEPAT  (izin keluar lebih awal, jam_izin = misal 14:00)
+      - IZIN_TELAT         (izin datang terlambat, jam_izin = misal 09:30)
       - LAINNYA
       - WORK_FROM_LOCATION (absensi jarak jauh — karyawan bekerja di luar kantor,
         tidak ada data fingerprint, hari tsb dihitung sebagai Hari Kerja Valid jika APPROVED)
@@ -149,9 +184,13 @@ class LeaveRequest(Base):
     id = Column(Integer, primary_key=True, index=True)
     nama = Column(String, nullable=False, index=True)
     telegram_user_id = Column(String, nullable=True)
-    kategori = Column(String, nullable=False)  # CUTI_TAHUNAN, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA, WORK_FROM_LOCATION
+    whatsapp_user_id = Column(String, nullable=True)
+    kategori = Column(String, nullable=False)  # CUTI_TAHUNAN, CUTI_SETENGAH_HARI, SAKIT, IZIN_PULANG_CEPAT, IZIN_TELAT, LAINNYA, WORK_FROM_LOCATION
     tanggal_mulai = Column(Date, nullable=False)
     tanggal_selesai = Column(Date, nullable=False)
+    # jumlah_hari: Jumlah hari cuti yang dipakai. Biasanya (tanggal_selesai - tanggal_mulai).days + 1,
+    # tapi untuk CUTI_SETENGAH_HARI nilainya 0.5. Null berarti dihitung otomatis dari rentang tanggal.
+    jumlah_hari = Column(Float, nullable=True)
     jam_izin = Column(String, nullable=True)  # Format HH:MM untuk izin jam kerja
     alasan = Column(String, nullable=True)
     status = Column(String, nullable=False, default="PENDING")  # PENDING, APPROVED, REJECTED
@@ -164,6 +203,8 @@ class LeaveRequest(Base):
     tipe_absensi = Column(String, nullable=True, default="normal")
     # location_cabang: cabang karyawan saat absen jarak jauh (untuk filtering di website & pipeline)
     location_cabang = Column(String, nullable=True)
+    # foto_bukti: path relatif foto bukti absensi jarak jauh (JPEG/PNG/dll)
+    foto_bukti = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
@@ -184,3 +225,56 @@ class EmployeeAdjustment(Base):
     catatan = Column(String, nullable=True)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
+
+class AbsenManual(Base):
+    """
+    Jumlah hari absen manual per karyawan per periode (tahun + bulan).
+    Nilai ini ditambahkan ke Absensi In, Absensi Out, Hari Kerja Valid,
+    dan uang makan (jumlah hari x tarif uang makan karyawan) saat pipeline berjalan.
+    Bisa diisi oleh HR Master maupun HR Staff dari halaman Proses Absensi.
+    """
+    __tablename__ = "absen_manual"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nama = Column(String, nullable=False, index=True)
+    tahun = Column(Integer, nullable=False)
+    bulan = Column(Integer, nullable=False)
+    jumlah = Column(Integer, default=0)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("nama", "tahun", "bulan", name="uq_absen_manual_nama_periode"),
+    )
+
+
+class LeaveBalanceLedger(Base):
+    """
+    Ledger riwayat saldo cuti tahunan per karyawan.
+    Saldo aktif = SUM(amount) WHERE year=X AND employee_id=Y.
+
+    Tipe entri (entry_type):
+      - GRANT_ANNIVERSARY   : Kuota proporsional saat anniversary (setahun pertama)
+      - GRANT_ANNUAL_RESET  : Kuota penuh 12 hari saat reset 1 Januari (karyawan >1 tahun)
+      - USED                : Pemotongan saat cuti disetujui (amount negatif)
+      - REVERSED            : Pembalikan USED saat cuti dibatalkan/ditolak (amount positif)
+      - EXPIRED             : Hangus sisa saldo saat reset 1 Januari (amount negatif)
+
+    Idempotency:
+      - GRANT_ANNIVERSARY & GRANT_ANNUAL_RESET dijamin unik per (employee_id, year, entry_type)
+        via unique constraint — aman dijalankan berkali-kali.
+      - USED & REVERSED terikat ke leave_request_id yang spesifik.
+      - EXPIRED juga dijamin unik per (employee_id, year, entry_type).
+    """
+    __tablename__ = "leave_balance_ledger"
+
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    year = Column(Integer, nullable=False, index=True)
+    entry_type = Column(String, nullable=False)  # GRANT_ANNIVERSARY, GRANT_ANNUAL_RESET, USED, REVERSED, EXPIRED
+    amount = Column(Float, nullable=False)        # positif = tambah, negatif = kurang
+    leave_request_id = Column(Integer, ForeignKey("leave_requests.id", ondelete="SET NULL"), nullable=True)
+    note = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    employee = relationship("Employee")
+    leave_request = relationship("LeaveRequest")

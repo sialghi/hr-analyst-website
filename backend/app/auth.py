@@ -64,6 +64,16 @@ def require_hr_master(current_user: models.User = Depends(get_current_user)) -> 
     return current_user
 
 
+def require_hr(current_user: models.User = Depends(get_current_user)) -> models.User:
+    """HR Master maupun HR Staff boleh. (Saat ini dua-duanya satu-satunya role.)"""
+    if current_user.role not in (models.RoleEnum.hr_master, models.RoleEnum.hr_staff):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Hanya HR yang boleh melakukan aksi ini.",
+        )
+    return current_user
+
+
 oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 

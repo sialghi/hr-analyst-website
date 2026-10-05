@@ -5,6 +5,28 @@ import { PageHeader, Card, Field, Button, Banner, inputCls, inputStyle } from "@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+interface EmploymentContract {
+  id: number;
+  contract_number: number;
+  start_date: string;
+  end_date: string;
+  status: string;
+  keterangan: string | null;
+}
+
+interface ContractReminderStatus {
+  contract_id: number;
+  contract_number: number;
+  start_date: string;
+  end_date: string;
+  days_left: number;
+  status_label: string;
+  badge_color: string;
+  message: string;
+  is_expired: boolean;
+  is_expiring: boolean;
+}
+
 interface Employee {
   id: number;
   nama: string;
@@ -15,6 +37,12 @@ interface Employee {
   bpjs_kesehatan: number | null;
   bpjs_tk: number | null;
   active: boolean;
+  // Status kepegawaian
+  employment_status: string;           // "TETAP" | "PKWT"
+  join_date: string | null;
+  tenure_display: string | null;
+  contracts: EmploymentContract[];
+  contract_reminder_status: ContractReminderStatus | null;
   // Override fields
   has_custom_rules: boolean;
   jam_masuk_override: string | null;
@@ -51,6 +79,13 @@ const BLANK_FORM = {
   bpjs_kesehatan: "",
   bpjs_tk: "",
   active: true,
+  // Status kepegawaian & kontrak
+  employment_status: "TETAP",
+  join_date: "",
+  contract_start_date: "",
+  contract_end_date: "",
+  contract_keterangan: "",
+  // Override fields
   has_custom_rules: false,
   jam_masuk_override: "",
   jam_keluar_override: "",
@@ -59,6 +94,8 @@ const BLANK_FORM = {
 };
 
 function empToForm(emp: Employee) {
+  // Untuk edit: pre-fill tanggal kontrak aktif bila ada
+  const activeContract = emp.contracts?.find((c) => c.status === "ACTIVE") ?? emp.contracts?.[0];
   return {
     nama: emp.nama,
     id_mesin: emp.id_mesin || "",
@@ -68,6 +105,13 @@ function empToForm(emp: Employee) {
     bpjs_kesehatan: emp.bpjs_kesehatan != null ? emp.bpjs_kesehatan.toString() : "",
     bpjs_tk: emp.bpjs_tk != null ? emp.bpjs_tk.toString() : "",
     active: emp.active,
+    // Status kepegawaian & kontrak
+    employment_status: emp.employment_status || "TETAP",
+    join_date: emp.join_date || "",
+    contract_start_date: activeContract?.start_date || "",
+    contract_end_date: activeContract?.end_date || "",
+    contract_keterangan: activeContract?.keterangan || "",
+    // Override fields
     has_custom_rules: emp.has_custom_rules ?? false,
     jam_masuk_override: emp.jam_masuk_override || "",
     jam_keluar_override: emp.jam_keluar_override || "",
@@ -77,6 +121,7 @@ function empToForm(emp: Employee) {
 }
 
 function formToPayload(form: typeof BLANK_FORM) {
+  const isPKWT = form.employment_status === "PKWT";
   return {
     nama: form.nama,
     id_mesin: form.id_mesin || null,
@@ -86,6 +131,13 @@ function formToPayload(form: typeof BLANK_FORM) {
     bpjs_kesehatan: form.bpjs_kesehatan ? parseInt(form.bpjs_kesehatan) : 0,
     bpjs_tk: form.bpjs_tk ? parseInt(form.bpjs_tk) : 0,
     active: form.active,
+    // Status kepegawaian & kontrak
+    employment_status: form.employment_status || "TETAP",
+    join_date: form.join_date || null,
+    contract_start_date: isPKWT && form.contract_start_date ? form.contract_start_date : null,
+    contract_end_date: isPKWT && form.contract_end_date ? form.contract_end_date : null,
+    contract_keterangan: isPKWT && form.contract_keterangan ? form.contract_keterangan : null,
+    // Override fields
     has_custom_rules: form.has_custom_rules,
     jam_masuk_override: form.has_custom_rules && form.jam_masuk_override ? form.jam_masuk_override : null,
     jam_keluar_override: form.has_custom_rules && form.jam_keluar_override ? form.jam_keluar_override : null,
@@ -196,7 +248,7 @@ export default function KaryawanPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<any>({ ...BLANK_FORM });
-  const [activeTab, setActiveTab] = useState<"data" | "aturan">("data");
+  const [activeTab, setActiveTab] = useState<"data" | "kontrak" | "aturan">("data");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -210,7 +262,9 @@ export default function KaryawanPage() {
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+
   function load() {
+
     api.getEmployees().then(setEmployees).catch((e) => setError(e.message));
     api.getProfiles().then(setProfiles).catch(() => {});
     api.getRules().then(setGlobalRules).catch(() => {});
@@ -226,6 +280,12 @@ export default function KaryawanPage() {
     setActiveTab("data");
     setShowForm(true);
     setError(null);
+  }
+
+  // Helper: format date string YYYY-MM-DD dari ISO string API
+  function fmtDate(d: string | null | undefined) {
+    if (!d) return "—";
+    return new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" });
   }
 
   function startEdit(emp: Employee) {
@@ -387,6 +447,7 @@ export default function KaryawanPage() {
               <th className="px-4 py-3 font-medium">Cabang</th>
               <th className="px-4 py-3 font-medium">BPJS Kes.</th>
               <th className="px-4 py-3 font-medium">BPJS TK</th>
+              <th className="px-4 py-3 font-medium">Kepegawaian</th>
               <th className="px-4 py-3 font-medium">Status</th>
               {master && (
                 <th className="px-4 py-3 font-medium text-right">Aksi</th>
@@ -451,6 +512,35 @@ export default function KaryawanPage() {
                     : "Rp 0"}
                 </td>
                 <td className="px-4 py-3">
+                  <div className="flex flex-col gap-1">
+                    <span
+                      className="px-2 py-0.5 rounded text-xs font-semibold border w-fit"
+                      style={{
+                        background: emp.employment_status === "PKWT" ? "#eff6ff" : "var(--paper)",
+                        borderColor: emp.employment_status === "PKWT" ? "#bfdbfe" : "var(--line)",
+                        color: emp.employment_status === "PKWT" ? "#1e40af" : "var(--text-muted)",
+                      }}
+                    >
+                      {emp.employment_status || "TETAP"}
+                    </span>
+                    {emp.contract_reminder_status?.is_expired && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-700 border border-red-200 w-fit">
+                        Kontrak Berakhir!
+                      </span>
+                    )}
+                    {emp.contract_reminder_status?.is_expiring && !emp.contract_reminder_status?.is_expired && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 w-fit">
+                        Sisa {emp.contract_reminder_status.days_left} hari
+                      </span>
+                    )}
+                    {emp.join_date && (
+                      <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                        Join: {fmtDate(emp.join_date)}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
                   <span
                     className="px-2.5 py-0.5 rounded text-xs font-medium border"
                     style={{
@@ -485,7 +575,7 @@ export default function KaryawanPage() {
             {filtered.length === 0 && (
               <tr>
                 <td
-                  colSpan={master ? 7 : 6}
+                  colSpan={master ? 8 : 7}
                   className="px-4 py-8 text-center"
                   style={{ color: "var(--text-muted)" }}
                 >
@@ -551,6 +641,27 @@ export default function KaryawanPage() {
               </button>
               <button
                 type="button"
+                id="tab-kontrak"
+                style={tabStyle(activeTab === "kontrak")}
+                onClick={() => setActiveTab("kontrak")}
+              >
+                Kepegawaian
+                {form.employment_status === "PKWT" && (
+                  <span
+                    style={{
+                      marginLeft: 6,
+                      display: "inline-block",
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      background: "#3b82f6",
+                      verticalAlign: "middle",
+                    }}
+                  />
+                )}
+              </button>
+              <button
+                type="button"
                 id="tab-aturan-khusus"
                 style={tabStyle(activeTab === "aturan")}
                 onClick={() => setActiveTab("aturan")}
@@ -570,6 +681,9 @@ export default function KaryawanPage() {
                   />
                 )}
               </button>
+
+
+
             </div>
 
             {/* Tab Content — scrollable */}
@@ -657,7 +771,105 @@ export default function KaryawanPage() {
                 </>
               )}
 
-              {/* ── TAB 2: Aturan Khusus ── */}
+              {/* ── TAB 2: Kepegawaian & Kontrak ── */}
+              {activeTab === "kontrak" && (
+                <div className="space-y-4">
+
+                  {/* Status Kepegawaian */}
+                  <Field label="Status Kepegawaian">
+                    <select
+                      required
+                      className={inputCls}
+                      style={inputStyle}
+                      value={form.employment_status}
+                      onChange={(e) => setForm({ ...form, employment_status: e.target.value })}
+                    >
+                      <option value="TETAP">TETAP — Karyawan Tetap</option>
+                      <option value="PKWT">PKWT — Karyawan Kontrak</option>
+                    </select>
+                  </Field>
+
+                  {/* Tanggal Bergabung */}
+                  <Field label="Tanggal Masuk / Bergabung" hint="Wajib diisi untuk semua karyawan. Digunakan untuk hitung masa kerja.">
+                    <input
+                      type="date"
+                      required
+                      className={inputCls}
+                      style={inputStyle}
+                      value={form.join_date}
+                      onChange={(e) => setForm({ ...form, join_date: e.target.value })}
+                    />
+                  </Field>
+
+                  {/* Kontrak PKWT — hanya tampil jika PKWT */}
+                  {form.employment_status === "PKWT" && (
+                    <>
+                      <div
+                        className="rounded-lg p-3 text-xs"
+                        style={{ background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1e40af" }}
+                      >
+                        <strong>PKWT:</strong> Isi periode kontrak di bawah. Jika sudah ada kontrak aktif, form ini akan memperbarui tanggalnya. Untuk riwayat perpanjangan, gunakan fitur Perpanjang Kontrak di dashboard.
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <Field label="Tanggal Mulai Kontrak" hint="Wajib untuk PKWT">
+                          <input
+                            type="date"
+                            required={form.employment_status === "PKWT"}
+                            className={inputCls}
+                            style={inputStyle}
+                            value={form.contract_start_date}
+                            onChange={(e) => setForm({ ...form, contract_start_date: e.target.value })}
+                          />
+                        </Field>
+                        <Field label="Tanggal Selesai Kontrak" hint="Wajib untuk PKWT">
+                          <input
+                            type="date"
+                            required={form.employment_status === "PKWT"}
+                            className={inputCls}
+                            style={inputStyle}
+                            value={form.contract_end_date}
+                            onChange={(e) => setForm({ ...form, contract_end_date: e.target.value })}
+                          />
+                        </Field>
+                      </div>
+
+                      <Field label="Keterangan Kontrak (opsional)" hint='Contoh: "PKWT Pertama", "Perpanjangan ke-2"'>
+                        <input
+                          className={inputCls}
+                          style={inputStyle}
+                          placeholder="Keterangan kontrak..."
+                          value={form.contract_keterangan}
+                          onChange={(e) => setForm({ ...form, contract_keterangan: e.target.value })}
+                        />
+                      </Field>
+                    </>
+                  )}
+
+                  {/* Info masa kerja saat edit */}
+                  {editingId && (
+                    <div
+                      className="rounded-lg p-3 text-xs space-y-1"
+                      style={{ background: "var(--paper)", border: "1px solid var(--line)" }}
+                    >
+                      <p className="font-medium" style={{ color: "var(--text-muted)" }}>Info kontrak tersimpan:</p>
+                      <p style={{ color: "var(--ink)" }}>
+                        Status saat ini: <strong>{form.employment_status}</strong>
+                        {form.join_date && (
+                          <> · Join: <strong>{fmtDate(form.join_date)}</strong></>
+                        )}
+                      </p>
+                      {form.employment_status === "PKWT" && form.contract_end_date && (
+                        <p style={{ color: "var(--ink)" }}>
+                          Kontrak aktif berakhir: <strong>{fmtDate(form.contract_end_date)}</strong>
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── TAB 3: Aturan Khusus ── */}
               {activeTab === "aturan" && (
                 <div className="space-y-5">
                   {/* Toggle */}
@@ -799,7 +1011,10 @@ export default function KaryawanPage() {
                   )}
                 </div>
               )}
+
+
             </div>
+
 
             {/* Modal Footer */}
             <div

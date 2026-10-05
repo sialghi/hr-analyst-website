@@ -9,44 +9,149 @@ from ..database import get_db
 router = APIRouter(prefix="/employees", tags=["employees"])
 
 
+from ..config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
+
+
+def _enrich_employee_data(emp: models.Employee) -> models.Employee:
+    """Helper untuk menghitung tenure & contract_reminder_status pada objek Employee."""
+    emp.tenure_display = calculate_tenure(emp.join_date)["display"]
+
+    today = get_today_jakarta()
+    if emp.employment_status == "PKWT" and emp.contracts:
+        active_contract = next((c for c in emp.contracts if c.status == "ACTIVE"), emp.contracts[0] if emp.contracts else None)
+        if active_contract:
+            days_left = (active_contract.end_date - today).days
+            if days_left < 0:
+                status_label = "EXPIRED"
+                badge_color = "red"
+                msg = f"Kontrak #{active_contract.contract_number} telah berakhir {abs(days_left)} hari lalu ({active_contract.end_date.strftime('%d-%m-%Y')})"
+            elif days_left <= CONTRACT_REMINDER_DAYS:
+                status_label = "EXPIRING_SOON"
+                badge_color = "amber"
+                msg = f"Sisa {days_left} hari! Kontrak #{active_contract.contract_number} berakhir {active_contract.end_date.strftime('%d-%m-%Y')}"
+            else:
+                status_label = "ACTIVE"
+                badge_color = "green"
+                msg = f"Kontrak #{active_contract.contract_number} Aktif ({days_left} hari tersisa)"
+
+            emp.contract_reminder_status = {
+                "contract_id": active_contract.id,
+                "contract_number": active_contract.contract_number,
+                "start_date": active_contract.start_date.isoformat(),
+                "end_date": active_contract.end_date.isoformat(),
+                "days_left": days_left,
+                "status_label": status_label,
+                "badge_color": badge_color,
+                "message": msg,
+                "is_expired": days_left < 0,
+                "is_expiring": 0 <= days_left <= CONTRACT_REMINDER_DAYS,
+            }
+        else:
+            emp.contract_reminder_status = None
+    else:
+        emp.contract_reminder_status = None
+
+    return emp
+
+
 @router.get("", response_model=list[schemas.EmployeeOut])
 def list_employees(
     profile_code: Optional[str] = Query(default=None),
+    employment_status: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.get_current_user),
 ):
     q = db.query(models.Employee)
     if profile_code:
         q = q.filter(models.Employee.profile_code == profile_code)
-    return q.order_by(models.Employee.nama).all()
+    if employment_status:
+        q = q.filter(models.Employee.employment_status == employment_status.upper())
 
+    employees = q.order_by(models.Employee.nama).all()
+    for emp in employees:
+        _enrich_employee_data(emp)
+    return employees
+
+
+@router.get("/contracts/expiring")
+def get_expiring_contracts(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    """
+    Mengambil daftar karyawan PKWT yang kontraknya berakhir dalam H-10 (atau sudah lewat)
+    dan belum diperpanjang / belum diangkat menjadi TETAP.
+    Diurutkan dari yang paling dekat tanggal berakhirnya.
+    """
+    pkwt_emps = (
+        db.query(models.Employee)
+        .filter(models.Employee.employment_status == "PKWT", models.Employee.active == True)
+        .all()
+    )
+
+    expiring_list = []
+    for emp in pkwt_emps:
+        _enrich_employee_data(emp)
+        rem = emp.contract_reminder_status
+        if rem and (rem["is_expiring"] or rem["is_expired"]):
+            expiring_list.append({
+                "employee_id": emp.id,
+                "nama": emp.nama,
+                "cabang": emp.cabang,
+                "profile_code": emp.profile_code,
+                "join_date": emp.join_date,
+                "tenure_display": emp.tenure_display,
+                "contract_id": rem["contract_id"],
+                "contract_number": rem["contract_number"],
+                "start_date": rem["start_date"],
+                "end_date": rem["end_date"],
+                "days_left": rem["days_left"],
+                "status_label": rem["status_label"],
+                "is_expired": rem["is_expired"],
+                "message": rem["message"],
+            })
+
+    expiring_list.sort(key=lambda x: x["days_left"])
+    return {
+        "reminder_days_config": CONTRACT_REMINDER_DAYS,
+        "total": len(expiring_list),
+        "data": expiring_list,
+    }
+
+
+# ─────────────────────────────────────────────────────────────
+# Employee Adjustments (Bonus Lain / Potongan Lain)
+# ─────────────────────────────────────────────────────────────
 
 @router.get("/adjustments", response_model=list[schemas.EmployeeAdjustmentOut])
 def list_adjustments(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.get_current_user),
 ):
-    """Melihat semua daftar penyesuaian tentatif (bonus/potongan lain-lain) per karyawan."""
-    return db.query(models.EmployeeAdjustment).all()
+    """Mendapatkan semua data penyesuaian (bonus/potongan lain-lain) karyawan."""
+    return db.query(models.EmployeeAdjustment).order_by(models.EmployeeAdjustment.nama).all()
 
 
 @router.patch("/adjustments", response_model=schemas.EmployeeAdjustmentOut)
-def update_adjustment(
+def upsert_adjustment(
     payload: schemas.EmployeeAdjustmentUpdate,
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.get_current_user),
 ):
-    """
-    Mengisi / Mengubah Total Bonus Lain-lain (Rp) & Total Potongan Lain-lain (Rp) per karyawan.
-    HANYA HR Master yang diperbolehkan mengubah.
-    """
-    nama_clean = payload.nama.strip()
-    adj = db.query(models.EmployeeAdjustment).filter(models.EmployeeAdjustment.nama.ilike(nama_clean)).first()
-    if not adj:
+    """Membuat atau memperbarui data penyesuaian karyawan (upsert by nama)."""
+    nama_key = payload.nama.strip()
+    if not nama_key:
+        raise HTTPException(status_code=400, detail="Nama karyawan wajib diisi.")
+
+    adj = db.query(models.EmployeeAdjustment).filter(
+        models.EmployeeAdjustment.nama == nama_key
+    ).first()
+
+    if adj is None:
         adj = models.EmployeeAdjustment(
-            nama=nama_clean,
-            bonus_lain=payload.bonus_lain or 0.0,
-            potongan_lain=payload.potongan_lain or 0.0,
+            nama=nama_key,
+            bonus_lain=payload.bonus_lain if payload.bonus_lain is not None else 0.0,
+            potongan_lain=payload.potongan_lain if payload.potongan_lain is not None else 0.0,
             catatan=payload.catatan,
         )
         db.add(adj)
@@ -63,6 +168,125 @@ def update_adjustment(
     return adj
 
 
+# ─────────────────────────────────────────────────────────────
+# Absen Manual (Hari Kerja Manual per Periode)
+# ─────────────────────────────────────────────────────────────
+
+@router.put("/absen-manual", response_model=schemas.AbsenManualOut)
+def upsert_absen_manual(
+    payload: schemas.AbsenManualUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    """Membuat atau memperbarui jumlah hari absen manual karyawan untuk periode tertentu (upsert)."""
+    nama_key = payload.nama.strip()
+    if not nama_key:
+        raise HTTPException(status_code=400, detail="Nama karyawan wajib diisi.")
+
+    record = db.query(models.AbsenManual).filter(
+        models.AbsenManual.nama == nama_key,
+        models.AbsenManual.tahun == payload.tahun,
+        models.AbsenManual.bulan == payload.bulan,
+    ).first()
+
+    if record is None:
+        record = models.AbsenManual(
+            nama=nama_key,
+            tahun=payload.tahun,
+            bulan=payload.bulan,
+            jumlah=payload.jumlah,
+        )
+        db.add(record)
+    else:
+        record.jumlah = payload.jumlah
+
+    db.commit()
+    db.refresh(record)
+    return record
+
+
+# ─────────────────────────────────────────────────────────────
+# Template Karyawan
+# ─────────────────────────────────────────────────────────────
+
+@router.get("/template")
+def download_employee_template(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    """Mengunduh file Excel template untuk import master karyawan."""
+    import io
+    import pandas as pd
+    from fastapi.responses import Response
+
+    # Ambil semua kode profil yang aktif untuk referensi
+    profiles = db.query(models.Profile).order_by(models.Profile.code).all()
+
+    # Template data contoh — format IDENTIK dengan file data-uangmakan-posisi.xlsx
+    # Kolom: Status, Nama, Uang Makan, Gaji Pokok
+    data = [
+        {"Status": "Office A",          "Nama": "Budi Santoso",          "Uang Makan": 100000, "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Gudang A",          "Nama": "Siti Aminah",           "Uang Makan": 80000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Gudang C",          "Nama": "Ahmad Fauzi",           "Uang Makan": 45000,  "BPJS Kesehatan": 67980, "BPJS TK": 203850, "Gaji Pokok": ""},
+        {"Status": "Gudang Bandung",    "Nama": "Reni Kusuma",           "Uang Makan": 50000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Office C",          "Nama": "Dewi Rahayu",           "Uang Makan": 75000,  "BPJS Kesehatan": 72000, "BPJS TK": 216000, "Gaji Pokok": ""},
+        {"Status": "Office Bandung",    "Nama": "Irfan Wijaya",          "Uang Makan": 75000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko GLC",          "Nama": "Bagus Setiawan",        "Uang Makan": 40000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko Tanjung Duren","Nama": "Agung Nugroho",         "Uang Makan": "",     "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko IDD/PIK",      "Nama": "Aulia Putri",           "Uang Makan": 65000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko Reef Plus/PIK","Nama": "Andry Saputra",         "Uang Makan": 55000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Toko Ciledug",      "Nama": "Edi Kuswanto",          "Uang Makan": "",     "BPJS Kesehatan": 73000, "BPJS TK": 219000, "Gaji Pokok": ""},
+        {"Status": "Content Marketing", "Nama": "Fahrul Azi",            "Uang Makan": 100000, "BPJS Kesehatan": 76000, "BPJS TK": 228000, "Gaji Pokok": ""},
+        {"Status": "Host Live Streaming","Nama": "Intan Melani",          "Uang Makan": 60000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Setup",             "Nama": "Karlina",               "Uang Makan": 60000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
+        {"Status": "Staff Stock Opname","Nama": "Hamdani",               "Uang Makan": 90000,  "BPJS Kesehatan": 55550, "BPJS TK": 166650, "Gaji Pokok": ""},
+        {"Status": "Driver Java Cipulir","Nama": "Harry",                "Uang Makan": "",     "BPJS Kesehatan": 57299, "BPJS TK": 171896, "Gaji Pokok": ""},
+    ]
+    df = pd.DataFrame(data)
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="HO")
+        # Sheet referensi pemetaan Status → Profil DB
+        mapping_data = [
+            {"Nilai Status di File": "Gudang A / Gudang C / Gudang Bandung", "Profil di Database": "GUDANG",               "Keterangan": "Semua varian Gudang"},
+            {"Nilai Status di File": "Office A / Office C / Office Bandung",  "Profil di Database": "OFFICE",               "Keterangan": "Semua varian Office"},
+            {"Nilai Status di File": "Toko GLC / Toko Tanjung Duren / Toko IDD/PIK / Toko Reef Plus/PIK / Toko Ciledug", "Profil di Database": "JAVAPETCO", "Keterangan": "Semua varian Toko"},
+            {"Nilai Status di File": "Content Marketing",                     "Profil di Database": "ANAK_KONTEN_MARKETING","Keterangan": ""},
+            {"Nilai Status di File": "Host Live Streaming",                   "Profil di Database": "ANAK_KONTEN_LIVE",    "Keterangan": ""},
+            {"Nilai Status di File": "Setup",                                 "Profil di Database": "SETUP_BLOK_C",        "Keterangan": ""},
+            {"Nilai Status di File": "Staff Stock Opname",                    "Profil di Database": "GUDANG",               "Keterangan": "Diperlakukan sbg Gudang"},
+            {"Nilai Status di File": "Driver Java Cipulir",                   "Profil di Database": "DRIVER",               "Keterangan": ""},
+        ]
+        df_mapping = pd.DataFrame(mapping_data)
+        df_mapping.to_excel(writer, index=False, sheet_name="Mapping Status ke Profil")
+        # Sheet daftar profil tersedia di DB
+        df_profil = pd.DataFrame([{"Kode Profil": p.code, "Nama Profil": p.nama} for p in profiles])
+        df_profil.to_excel(writer, index=False, sheet_name="Daftar Profil DB")
+
+    output.seek(0)
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="template_karyawan.xlsx"'
+        },
+    )
+
+
+@router.get("/{employee_id}", response_model=schemas.EmployeeOut)
+def get_employee_detail(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    emp = db.query(models.Employee).filter(models.Employee.id == employee_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan.")
+    _enrich_employee_data(emp)
+    return emp
+
+
 @router.post("", response_model=schemas.EmployeeOut)
 def create_employee(
     payload: schemas.EmployeeCreate,
@@ -74,10 +298,54 @@ def create_employee(
     if not profile:
         raise HTTPException(status_code=400, detail=f"Profil '{payload.profile_code}' tidak ditemukan.")
 
-    emp = models.Employee(**payload.dict())
+    emp_status = (payload.employment_status or "TETAP").upper().strip()
+    if emp_status not in ("TETAP", "PKWT"):
+        raise HTTPException(status_code=400, detail="Status kepegawaian harus 'TETAP' atau 'PKWT'.")
+
+    # Validasi join_date: Wajib untuk semua karyawan baru
+    if not payload.join_date:
+        raise HTTPException(status_code=400, detail="Tanggal masuk / bergabung (join_date) wajib diisi untuk semua karyawan.")
+
+    # Validasi & Handling Kontrak untuk karyawan PKWT
+    contract_data = None
+    if emp_status == "PKWT":
+        if not payload.contract_start_date or not payload.contract_end_date:
+            raise HTTPException(
+                status_code=400,
+                detail="Untuk karyawan PKWT, Tanggal Mulai Kontrak & Tanggal Selesai Kontrak wajib diisi."
+            )
+        if payload.contract_end_date <= payload.contract_start_date:
+            raise HTTPException(
+                status_code=400,
+                detail="Tanggal selesai kontrak (contract_end_date) harus setelah tanggal mulai kontrak (contract_start_date)."
+            )
+        contract_data = {
+            "start_date": payload.contract_start_date,
+            "end_date": payload.contract_end_date,
+            "keterangan": payload.contract_keterangan or "Kontrak Pertama (PKWT-1)",
+        }
+
+    emp_dict = payload.dict(exclude={"contract_start_date", "contract_end_date", "contract_keterangan"})
+    emp_dict["employment_status"] = emp_status
+    emp = models.Employee(**emp_dict)
     db.add(emp)
     db.commit()
     db.refresh(emp)
+
+    if contract_data:
+        contract = models.EmploymentContract(
+            employee_id=emp.id,
+            contract_number=1,
+            start_date=contract_data["start_date"],
+            end_date=contract_data["end_date"],
+            status="ACTIVE",
+            keterangan=contract_data["keterangan"],
+        )
+        db.add(contract)
+        db.commit()
+        db.refresh(emp)
+
+    _enrich_employee_data(emp)
     return emp
 
 
@@ -96,11 +364,96 @@ def update_employee(
     if not profile:
         raise HTTPException(status_code=400, detail=f"Profil '{payload.profile_code}' tidak ditemukan.")
 
-    for field, value in payload.dict().items():
+    new_status = (payload.employment_status or "TETAP").upper().strip()
+    if new_status not in ("TETAP", "PKWT"):
+        raise HTTPException(status_code=400, detail="Status kepegawaian harus 'TETAP' atau 'PKWT'.")
+
+    # Jika diubah dari PKWT ke TETAP (Pengangkatan Karyawan Tetap)
+    if emp.employment_status == "PKWT" and new_status == "TETAP":
+        for c in emp.contracts:
+            if c.status == "ACTIVE":
+                c.status = "PROMOTED_TO_PERMANENT"
+                c.keterangan = (c.keterangan or "") + " [Diangkat menjadi Karyawan Tetap]"
+
+    # Jika status PKWT & ada input tanggal kontrak baru/update
+    if new_status == "PKWT":
+        if payload.contract_start_date and payload.contract_end_date:
+            if payload.contract_end_date <= payload.contract_start_date:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Tanggal selesai kontrak (contract_end_date) harus setelah tanggal mulai kontrak."
+                )
+            active_c = next((c for c in emp.contracts if c.status == "ACTIVE"), None)
+            if active_c:
+                active_c.start_date = payload.contract_start_date
+                active_c.end_date = payload.contract_end_date
+                if payload.contract_keterangan:
+                    active_c.keterangan = payload.contract_keterangan
+            else:
+                next_num = len(emp.contracts) + 1
+                new_c = models.EmploymentContract(
+                    employee_id=emp.id,
+                    contract_number=next_num,
+                    start_date=payload.contract_start_date,
+                    end_date=payload.contract_end_date,
+                    status="ACTIVE",
+                    keterangan=payload.contract_keterangan or f"Kontrak PKWT #{next_num}",
+                )
+                db.add(new_c)
+
+    emp_dict = payload.dict(exclude={"contract_start_date", "contract_end_date", "contract_keterangan"})
+    for field, value in emp_dict.items():
         setattr(emp, field, value)
+
     db.commit()
     db.refresh(emp)
+    _enrich_employee_data(emp)
     return emp
+
+
+@router.post("/{employee_id}/contracts", response_model=schemas.EmploymentContractOut)
+def add_contract_renewal(
+    employee_id: int,
+    payload: schemas.EmploymentContractCreate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    """
+    Menambahkan perpanjangan kontrak baru (Kontrak ke-2, ke-3, dst.) untuk karyawan PKWT.
+    Kontrak lama akan ditandai RENEWED, dan kontrak baru dibuat dengan status ACTIVE.
+    """
+    emp = db.query(models.Employee).filter(models.Employee.id == employee_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan.")
+
+    if payload.end_date <= payload.start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Tanggal selesai kontrak (end_date) harus setelah tanggal mulai kontrak (start_date)."
+        )
+
+    # Tandai kontrak aktif sebelumnya sebagai RENEWED
+    for c in emp.contracts:
+        if c.status == "ACTIVE":
+            c.status = "RENEWED"
+
+    next_number = max([c.contract_number for c in emp.contracts], default=0) + 1
+
+    # Pastikan status kepegawaian PKWT
+    emp.employment_status = "PKWT"
+
+    new_contract = models.EmploymentContract(
+        employee_id=emp.id,
+        contract_number=next_number,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        status="ACTIVE",
+        keterangan=payload.keterangan or f"Perpanjangan Kontrak ke-{next_number}",
+    )
+    db.add(new_contract)
+    db.commit()
+    db.refresh(new_contract)
+    return new_contract
 
 
 @router.delete("/{employee_id}")
@@ -185,71 +538,6 @@ def _extract_cabang_from_status(status_raw: str) -> str | None:
     if "driver" in s:               return None
 
     return None
-
-
-@router.get("/template")
-def download_employee_template(
-    db: Session = Depends(get_db),
-    _: models.User = Depends(auth.require_hr_master),
-):
-    """Mengunduh file Excel template untuk import master karyawan."""
-    import io
-    import pandas as pd
-    from fastapi.responses import Response
-
-    # Ambil semua kode profil yang aktif untuk referensi
-    profiles = db.query(models.Profile).order_by(models.Profile.code).all()
-
-    # Template data contoh — format IDENTIK dengan file data-uangmakan-posisi.xlsx
-    # Kolom: Status, Nama, Uang Makan, Gaji Pokok
-    data = [
-        {"Status": "Office A",          "Nama": "Budi Santoso",          "Uang Makan": 100000, "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Gudang A",          "Nama": "Siti Aminah",           "Uang Makan": 80000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Gudang C",          "Nama": "Ahmad Fauzi",           "Uang Makan": 45000,  "BPJS Kesehatan": 67980, "BPJS TK": 203850, "Gaji Pokok": ""},
-        {"Status": "Gudang Bandung",    "Nama": "Reni Kusuma",           "Uang Makan": 50000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Office C",          "Nama": "Dewi Rahayu",           "Uang Makan": 75000,  "BPJS Kesehatan": 72000, "BPJS TK": 216000, "Gaji Pokok": ""},
-        {"Status": "Office Bandung",    "Nama": "Irfan Wijaya",          "Uang Makan": 75000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko GLC",          "Nama": "Bagus Setiawan",        "Uang Makan": 40000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko Tanjung Duren","Nama": "Agung Nugroho",         "Uang Makan": "",     "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko IDD/PIK",      "Nama": "Aulia Putri",           "Uang Makan": 65000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko Reef Plus/PIK","Nama": "Andry Saputra",         "Uang Makan": 55000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Toko Ciledug",      "Nama": "Edi Kuswanto",          "Uang Makan": "",     "BPJS Kesehatan": 73000, "BPJS TK": 219000, "Gaji Pokok": ""},
-        {"Status": "Content Marketing", "Nama": "Fahrul Azi",            "Uang Makan": 100000, "BPJS Kesehatan": 76000, "BPJS TK": 228000, "Gaji Pokok": ""},
-        {"Status": "Host Live Streaming","Nama": "Intan Melani",          "Uang Makan": 60000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Setup",             "Nama": "Karlina",               "Uang Makan": 60000,  "BPJS Kesehatan": 53994, "BPJS TK": 161982, "Gaji Pokok": ""},
-        {"Status": "Staff Stock Opname","Nama": "Hamdani",               "Uang Makan": 90000,  "BPJS Kesehatan": 55550, "BPJS TK": 166650, "Gaji Pokok": ""},
-        {"Status": "Driver Java Cipulir","Nama": "Harry",                "Uang Makan": "",     "BPJS Kesehatan": 57299, "BPJS TK": 171896, "Gaji Pokok": ""},
-    ]
-    df = pd.DataFrame(data)
-
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="HO")
-        # Sheet referensi pemetaan Status → Profil DB
-        mapping_data = [
-            {"Nilai Status di File": "Gudang A / Gudang C / Gudang Bandung", "Profil di Database": "GUDANG",               "Keterangan": "Semua varian Gudang"},
-            {"Nilai Status di File": "Office A / Office C / Office Bandung",  "Profil di Database": "OFFICE",               "Keterangan": "Semua varian Office"},
-            {"Nilai Status di File": "Toko GLC / Toko Tanjung Duren / Toko IDD/PIK / Toko Reef Plus/PIK / Toko Ciledug", "Profil di Database": "JAVAPETCO", "Keterangan": "Semua varian Toko"},
-            {"Nilai Status di File": "Content Marketing",                     "Profil di Database": "ANAK_KONTEN_MARKETING","Keterangan": ""},
-            {"Nilai Status di File": "Host Live Streaming",                   "Profil di Database": "ANAK_KONTEN_LIVE",    "Keterangan": ""},
-            {"Nilai Status di File": "Setup",                                 "Profil di Database": "SETUP_BLOK_C",        "Keterangan": ""},
-            {"Nilai Status di File": "Staff Stock Opname",                    "Profil di Database": "GUDANG",               "Keterangan": "Diperlakukan sbg Gudang"},
-            {"Nilai Status di File": "Driver Java Cipulir",                   "Profil di Database": "DRIVER",               "Keterangan": ""},
-        ]
-        df_mapping = pd.DataFrame(mapping_data)
-        df_mapping.to_excel(writer, index=False, sheet_name="Mapping Status ke Profil")
-        # Sheet daftar profil tersedia di DB
-        df_profil = pd.DataFrame([{"Kode Profil": p.code, "Nama Profil": p.nama} for p in profiles])
-        df_profil.to_excel(writer, index=False, sheet_name="Daftar Profil DB")
-
-    output.seek(0)
-    return Response(
-        content=output.getvalue(),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": 'attachment; filename="template_karyawan.xlsx"'
-        },
-    )
 
 
 @router.post("/import")
@@ -472,4 +760,3 @@ async def import_employees(
         "errors": errors,
         "pesan": f"Berhasil memproses {total_rows} karyawan: {inserted} baru, {updated} diperbarui.",
     }
-

@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export type Role = "hr_master" | "hr_staff";
 
@@ -57,7 +57,13 @@ async function request(path: string, options: RequestInit = {}) {
     let detail = `Error ${res.status}`;
     try {
       const data = await res.json();
-      detail = data.detail || detail;
+      if (Array.isArray(data.detail)) {
+        detail = data.detail.map((d: any) => (d.msg ? `${d.loc ? d.loc.join('.') + ': ' : ''}${d.msg}` : JSON.stringify(d))).join("; ");
+      } else if (typeof data.detail === "object" && data.detail !== null) {
+        detail = JSON.stringify(data.detail);
+      } else if (data.detail) {
+        detail = data.detail;
+      }
     } catch {
       // ignore
     }
@@ -140,6 +146,24 @@ export const api = {
     await request(`/employees/${id}`, { method: "DELETE" });
   },
 
+  async getEmployeeDetail(id: number) {
+    const res = await request(`/employees/${id}`);
+    return res.json();
+  },
+
+  async getExpiringContracts() {
+    const res = await request("/employees/contracts/expiring");
+    return res.json();
+  },
+
+  async addContractRenewal(employeeId: number, payload: { start_date: string; end_date: string; keterangan?: string }) {
+    const res = await request(`/employees/${employeeId}/contracts`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  },
+
   async getAdjustments() {
     const res = await request("/employees/adjustments");
     return res.json();
@@ -147,6 +171,11 @@ export const api = {
 
   async updateAdjustment(payload: { nama: string; bonus_lain?: number; potongan_lain?: number; catatan?: string }) {
     const res = await request("/employees/adjustments", { method: "PATCH", body: JSON.stringify(payload) });
+    return res.json();
+  },
+
+  async updateAbsenManual(payload: { nama: string; tahun: number; bulan: number; jumlah: number }) {
+    const res = await request("/employees/absen-manual", { method: "PUT", body: JSON.stringify(payload) });
     return res.json();
   },
 
@@ -251,6 +280,49 @@ export const api = {
   async deleteLeave(id: number) {
     await request(`/leaves/${id}`, { method: "DELETE" });
   },
+
+  async getRemoteAttendances(params?: { status?: string; cabang?: string }) {
+    const query = new URLSearchParams({ kategori: "WORK_FROM_LOCATION" });
+    if (params?.status) query.set("status", params.status);
+    if (params?.cabang) query.set("cabang", params.cabang);
+    const res = await request(`/leaves?${query.toString()}`);
+    return res.json();
+  },
+
+  async getAnnualLeaveBalances(year?: number) {
+    const qs = year ? `?year=${year}` : "";
+    const res = await request(`/leaves/annual-balance${qs}`);
+    return res.json();
+  },
+
+  async getEmployeeLeaveDetail(nama: string, year?: number) {
+    const query = new URLSearchParams({ nama });
+    if (year) query.set("year", year.toString());
+    const res = await request(`/leaves/employee-detail?${query.toString()}`);
+    return res.json();
+  },
+
+  async getLeaveBalanceInfo(nama: string, year?: number) {
+    const query = new URLSearchParams({ nama });
+    if (year) query.set("year", year.toString());
+    const res = await request(`/leaves/balance-info?${query.toString()}`);
+    return res.json();
+  },
+
+  async getLeaveLedger(nama: string, year?: number) {
+    const query = new URLSearchParams({ nama });
+    if (year) query.set("year", year.toString());
+    const res = await request(`/leaves/ledger?${query.toString()}`);
+    return res.json();
+  },
+
+  async runLeaveQuotaJob(simulateDate?: string) {
+    const qs = simulateDate ? `?simulate_date=${simulateDate}` : "";
+    const res = await request(`/leaves/admin/run-quota-job${qs}`, { method: "POST" });
+    return res.json();
+  },
+
+
 
   async chatWithAI(
     fileId: string,

@@ -37,6 +37,7 @@ interface ProcessResult {
   sheets: SheetInfo[];
   cabang_list: string[];
   profil_list: string[];
+  periode?: { tahun: number; bulan: number } | null;
 }
 
 /* ===================================================================
@@ -150,6 +151,73 @@ function EditableAdjCell({
             : "bg-white border-amber-300 text-slate-800 hover:border-amber-400 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 shadow-2xs"
         }`}
         title="Ketik nominal lalu tekan Enter atau klik di luar kotak untuk menyimpan."
+      />
+      {status === "saved" && <span className="text-[10px] text-emerald-600 font-bold">✓</span>}
+      {status === "saving" && <span className="text-[10px] text-amber-600 font-bold">...</span>}
+    </div>
+  );
+}
+
+function EditableAbsenManualCell({
+  nama,
+  tahun,
+  bulan,
+  initialVal,
+  onSave,
+}: {
+  nama: string;
+  tahun: number;
+  bulan: number;
+  initialVal: number;
+  onSave?: (newVal: number) => void;
+}) {
+  const [val, setVal] = useState<string>(initialVal ? String(initialVal) : "");
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  useEffect(() => {
+    setVal(initialVal ? String(initialVal) : "");
+  }, [initialVal]);
+
+  const handleSave = async (newStr: string) => {
+    const num = Math.max(0, Math.min(31, Math.round(parseFloat(newStr) || 0)));
+    setStatus("saving");
+    try {
+      await api.updateAbsenManual({ nama, tahun, bulan, jumlah: num });
+      setStatus("saved");
+      if (onSave) onSave(num);
+      setTimeout(() => setStatus("idle"), 1500);
+    } catch (err: any) {
+      console.error("Gagal menyimpan absen manual:", err);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div className="relative inline-flex items-center gap-1 justify-end">
+      <input
+        type="number"
+        min="0"
+        max="31"
+        step="1"
+        value={val}
+        placeholder="0"
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={(e) => handleSave(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+          }
+        }}
+        className={`w-16 text-right px-2 py-1 text-xs font-semibold rounded border transition-all ${
+          status === "saving"
+            ? "bg-amber-100 border-amber-400 text-amber-900"
+            : status === "saved"
+            ? "bg-emerald-50 border-emerald-400 text-emerald-900"
+            : status === "error"
+            ? "bg-rose-50 border-rose-400 text-rose-900"
+            : "bg-white border-amber-300 text-slate-800 hover:border-amber-400 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 shadow-2xs"
+        }`}
+        title="Jumlah hari absen manual pada periode ini. Nilai ditambahkan ke Hari Kerja Valid (saja) saat pipeline diproses ulang."
       />
       {status === "saved" && <span className="text-[10px] text-emerald-600 font-bold">✓</span>}
       {status === "saving" && <span className="text-[10px] text-amber-600 font-bold">...</span>}
@@ -451,13 +519,17 @@ function SheetTable({
   search,
   cabangFilter,
   profilFilter,
+  periode,
   onClickNama,
+  onRowUpdate,
 }: {
   sheet: SheetInfo;
   search: string;
   cabangFilter: string;
   profilFilter: string;
+  periode?: { tahun: number; bulan: number } | null;
   onClickNama?: (nama: string) => void;
+  onRowUpdate?: () => void;
 }) {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(25);
@@ -550,7 +622,7 @@ function SheetTable({
               {visibleHeaders.map((h) => {
                 const isSorted = sortCol === h;
                 const isNumeric = types[h] === "number" || types[h] === "currency";
-                const isEditable = (h === "Total Bonus Lain-lain (Rp)" || h === "Total Potongan Lain-lain (Rp)");
+                const isEditable = (h === "Total Bonus Lain-lain (Rp)" || h === "Total Potongan Lain-lain (Rp)" || h === "Absen Manual");
                 return (
                   <th
                     key={h}
@@ -610,6 +682,37 @@ function SheetTable({
                               initialVal={valNum}
                               onSave={(newVal) => {
                                 row[h] = newVal;
+                              }}
+                            />
+                          </td>
+                        );
+                      }
+
+                      if (h === "Absen Manual") {
+                        if (!periode) {
+                          return (
+                            <td key={h} className={`px-3 py-1.5 whitespace-nowrap tabular text-slate-700 ${isNumeric ? "text-right" : "text-left"}`}>
+                              {formatCell(row[h], types[h] || "text")}
+                            </td>
+                          );
+                        }
+                        return (
+                          <td key={h} className="px-2 py-1 whitespace-nowrap text-right bg-amber-50/40 border-x border-amber-200/40">
+                            <EditableAbsenManualCell
+                              nama={row["Nama"]}
+                              tahun={periode.tahun}
+                              bulan={periode.bulan}
+                              initialVal={row[h] ?? 0}
+                              onSave={(newVal) => {
+                                const oldVal = row[h] ?? 0;
+                                const diff = newVal - oldVal;
+                                row[h] = newVal;
+                                // Real-time: update Hari Kerja Valid di row yang sama
+                                if (diff !== 0 && row["Hari Kerja Valid"] != null) {
+                                  row["Hari Kerja Valid"] = (row["Hari Kerja Valid"] ?? 0) + diff;
+                                }
+                                // Trigger re-render ke parent agar tampilan tabel ikut refresh
+                                if (onRowUpdate) onRowUpdate();
                               }}
                             />
                           </td>
@@ -1733,9 +1836,11 @@ export default function ProsesPage() {
                 search={search}
                 cabangFilter={cabangFilter}
                 profilFilter={profilFilter}
+                periode={result.periode}
                 onClickNama={
                   activeSheet.data.headers.includes("Nama") ? handleClickNama : undefined
                 }
+                onRowUpdate={() => setResult((prev) => prev ? { ...prev } : prev)}
               />
               {activeSheet.key === "perbandingan" && <SimpleBarChart sheet={activeSheet} />}
             </>
