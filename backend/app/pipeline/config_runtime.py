@@ -89,6 +89,44 @@ def normalisasi_nama(nama):
     return str(nama).strip().lower()
 
 
+def get_periode_boundary(tahun: int, bulan: int, tanggal_merah_set: set) -> tuple:
+    """
+    Hitung batas (start_date, end_date) untuk periode absensi HR Analyst.
+
+    Periode dimulai tanggal 25 bulan awal SORE hingga tanggal 25 bulan
+    berikutnya PAGI. Dalam konteks filter per hari (inklusif):
+
+    start_date:
+        Selalu tanggal 26 bulan awal, karena tanggal 25 bulan awal masih
+        milik periode SEBELUMNYA (dihitung s.d. pagi tanggal 25).
+        Jika tanggal 25 bulan awal libur, periode baru dimulai sore tgl 26
+        — tetap start_date = 26 bulan awal (tidak berubah).
+
+    end_date:
+        Tanggal 25 bulan berikutnya (inklusif — pagi hari masih masuk).
+        Jika tanggal 25 bulan berikutnya adalah hari libur, geser ke tgl 26.
+
+    Return:
+        (start_date, end_date) sebagai datetime.date inklusif.
+    """
+    # start_date: tanggal 26 bulan awal (konstan, libur maupun tidak)
+    start_date = datetime.date(tahun, bulan, 26)
+
+    # end_date: tanggal 25 bulan berikutnya, geser ke 26 jika libur
+    if bulan == 12:
+        bulan_akhir, tahun_akhir = 1, tahun + 1
+    else:
+        bulan_akhir, tahun_akhir = bulan + 1, tahun
+
+    tgl_25_akhir = datetime.date(tahun_akhir, bulan_akhir, 25)
+    if tgl_25_akhir in tanggal_merah_set:
+        end_date = datetime.date(tahun_akhir, bulan_akhir, 26)
+    else:
+        end_date = tgl_25_akhir
+
+    return start_date, end_date
+
+
 def _parse_time(value):
     """Terima 'HH:MM' (str) atau datetime.time atau None -> datetime.time atau None."""
     if value is None:

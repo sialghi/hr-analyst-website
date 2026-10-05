@@ -80,17 +80,48 @@ def _load_absen_manual_dict(db: Session, tahun: int, bulan: int) -> dict:
 def _derive_periode(df_prep) -> tuple | None:
     """
     Tentukan periode (tahun, bulan) data absensi dari kolom Tanggal df_prep.
-    Pakai bulan kalender yang paling banyak muncul (mode) supaya aman kalau
-    file mentah menjelang bulan berikutnya. None kalau tidak ada tanggal sama sekali.
+
+    Logika periode 25-ke-25:
+    - get_periode_boundary(tahun, bulan) menghasilkan [26 bulan-X, 25 bulan-(X+1)].
+    - Contoh: boundary(2026, 8) = 26 Agust → 25 Sept.
+
+    Algoritma Robust:
+    Membuat kandidat (tahun, bulan) dari tanggal min dan max data, lalu memilih
+    kandidat yang mencakup jumlah baris data terbanyak di df_prep.
+    Ini menjamin data tidak akan terbuang karena salah tebak boundary.
     """
     if df_prep is None or df_prep.empty or "Tanggal" not in df_prep.columns:
         return None
     tgl = pd.to_datetime(df_prep["Tanggal"], errors="coerce").dropna()
     if tgl.empty:
         return None
-    mode = tgl.dt.to_period("M").mode()
-    periode = mode.iloc[0] if not mode.empty else tgl.dt.to_period("M").iloc[0]
-    return int(periode.year), int(periode.month)
+
+    from .config_runtime import get_periode_boundary
+    tgl_dates = tgl.dt.date
+    min_d = tgl_dates.min()
+    max_d = tgl_dates.max()
+
+    candidates = set()
+    for d in [min_d, max_d]:
+        y, m = d.year, d.month
+        candidates.add((y, m))
+        prev_m = 12 if m == 1 else m - 1
+        prev_y = y - 1 if m == 1 else y
+        candidates.add((prev_y, prev_m))
+        next_m = 1 if m == 12 else m + 1
+        next_y = y + 1 if m == 12 else y
+        candidates.add((next_y, next_m))
+
+    best_cand = None
+    max_count = -1
+    for y, m in candidates:
+        s, e = get_periode_boundary(y, m, set())
+        cnt = int(((tgl_dates >= s) & (tgl_dates <= e)).sum())
+        if cnt > max_count:
+            max_count = cnt
+            best_cand = (y, m)
+
+    return best_cand if best_cand else (int(min_d.year), int(min_d.month))
 
 
 def jalankan_pipeline_db(
@@ -164,6 +195,21 @@ def jalankan_pipeline_db(
     periode = _derive_periode(df_prep)
     absen_manual_dict = _load_absen_manual_dict(db, *periode) if periode else {}
 
+    # --- Filter df_prep ke rentang periode absensi 25→25 ---
+    if periode:
+        from .config_runtime import get_periode_boundary
+        periode_start, periode_end = get_periode_boundary(periode[0], periode[1], tanggal_merah_set)
+        df_prep_full = df_prep.copy()  # simpan data mentah lengkap untuk ditampilkan
+        mask_periode = (
+            (pd.to_datetime(df_prep["Tanggal"]).dt.date >= periode_start) &
+            (pd.to_datetime(df_prep["Tanggal"]).dt.date <= periode_end)
+        )
+        df_prep = df_prep[mask_periode].reset_index(drop=True)
+        log(f"      -> Periode: {periode_start} s.d. {periode_end} ({mask_periode.sum()} baris setelah filter).")
+    else:
+        periode_start = periode_end = None
+        df_prep_full = df_prep.copy()
+
     log("[4/5] Data Process (telat/lembur/uang makan/tidak masuk)...")
     df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]
     df_telat = hitung_telat(df_lengkap, approved_leaves=approved_leaves)
@@ -172,7 +218,10 @@ def jalankan_pipeline_db(
     df_uang_makan = hitung_uang_makan(df_lengkap, master_dict=master_dict, tanggal_merah=tanggal_merah_set, approved_leaves=approved_leaves)
     df_profil_exclude = hitung_rekap_profil_exclude(df_lengkap)
 
-    df_tidak_masuk = hitung_rekap_tidak_masuk(df_prep, approved_leaves=approved_leaves)
+    df_tidak_masuk = hitung_rekap_tidak_masuk(
+        df_prep, approved_leaves=approved_leaves,
+        periode_start=periode_start, periode_end=periode_end,
+    )
     df_alpa_berulang = hitung_rekap_alpa_berulang(df_tidak_masuk)
 
     df_tidak_masuk_export = df_tidak_masuk.drop(columns=["_senin_minggu"], errors="ignore")
@@ -520,6 +569,21 @@ def jalankan_pipeline_db_json(
     periode = _derive_periode(df_prep)
     absen_manual_dict = _load_absen_manual_dict(db, *periode) if periode else {}
 
+    # --- Filter df_prep ke rentang periode absensi 25→25 ---
+    if periode:
+        from .config_runtime import get_periode_boundary
+        periode_start, periode_end = get_periode_boundary(periode[0], periode[1], tanggal_merah_set)
+        df_prep_full = df_prep.copy()  # simpan data mentah lengkap untuk ditampilkan
+        mask_periode = (
+            (pd.to_datetime(df_prep["Tanggal"]).dt.date >= periode_start) &
+            (pd.to_datetime(df_prep["Tanggal"]).dt.date <= periode_end)
+        )
+        df_prep = df_prep[mask_periode].reset_index(drop=True)
+        log(f"      -> Periode: {periode_start} s.d. {periode_end} ({mask_periode.sum()} baris setelah filter).")
+    else:
+        periode_start = periode_end = None
+        df_prep_full = df_prep.copy()
+
     log("[4/5] Data Process...")
     df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]
     df_telat = hitung_telat(df_lengkap, approved_leaves=approved_leaves)
@@ -527,7 +591,10 @@ def jalankan_pipeline_db_json(
     df_pulang_duluan = hitung_pulang_duluan(df_lengkap, approved_leaves=approved_leaves)
     df_uang_makan = hitung_uang_makan(df_lengkap, master_dict=master_dict, tanggal_merah=tanggal_merah_set, approved_leaves=approved_leaves)
     df_profil_exclude = hitung_rekap_profil_exclude(df_lengkap)
-    df_tidak_masuk = hitung_rekap_tidak_masuk(df_prep, approved_leaves=approved_leaves)
+    df_tidak_masuk = hitung_rekap_tidak_masuk(
+        df_prep, approved_leaves=approved_leaves,
+        periode_start=periode_start, periode_end=periode_end,
+    )
     df_alpa_berulang = hitung_rekap_alpa_berulang(df_tidak_masuk)
     df_tidak_masuk_export = df_tidak_masuk.drop(columns=["_senin_minggu"], errors="ignore")
 
@@ -709,7 +776,11 @@ def jalankan_pipeline_db_json(
             "jml_perlu_dicek": jml_perlu_dicek,
             "total_baris_scan": len(df_mentah),
         },
-        "periode": {"tahun": periode[0], "bulan": periode[1]} if periode else None,
+        "periode": {
+            "tahun": periode[0], "bulan": periode[1],
+            "start_date": str(periode_start) if periode_start else None,
+            "end_date": str(periode_end) if periode_end else None,
+        } if periode else None,
         "sheets": sheets,
         "cabang_list": cabang_list,
         "profil_list": profil_list,

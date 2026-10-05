@@ -505,7 +505,8 @@ def _label_minggu(tanggal, hari_terakhir_offset=4):
     return label, senin.date()
 
 
-def hitung_rekap_tidak_masuk(df_preprocessing_semua, approved_leaves=None):
+def hitung_rekap_tidak_masuk(df_preprocessing_semua, approved_leaves=None,
+                              periode_start=None, periode_end=None):
     """
     Aturan #2, #3, #3.3.4 — REVISI v2: hari kandidat dan kuota diambil dari
     profil. Hanya proses karyawan dengan ikut_kuota_hari_kerja=True.
@@ -513,6 +514,13 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua, approved_leaves=None):
     df_preprocessing_semua: hasil agregasi harian SEBELUM filter #11 (perlu
     tahu Status_Data utk membedakan Lengkap vs Tidak Lengkap vs tidak ada
     scan sama sekali).
+
+    periode_start / periode_end: datetime.date inklusif — batas periode absensi
+    25→25. Hari kandidat yang jatuh DI LUAR rentang ini akan di-skip (tidak
+    dihitung sebagai hari yang seharusnya masuk, sehingga tidak dianggap alpa).
+    Ini menangani kasus minggu pertama periode (hari sebelum tgl 26 bulan awal)
+    dan minggu terakhir periode (hari sesudah tgl 25 bulan akhir).
+    Jika None, tidak ada trimming (kompatibilitas mundur).
 
     REVISI v3 (Fitur Cuti & Izin):
     Jika karyawan memiliki pengajuan cuti resmi (CUTI_TAHUNAN, SAKIT, LAINNYA) yang APPROVED
@@ -569,7 +577,14 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua, approved_leaves=None):
             ["Label_Minggu", "Senin_Minggu"]
         ):
             hari_lengkap = grup_minggu[grup_minggu["Status_Data"] == "Lengkap"]
-            tanggal_lengkap_set = set(hari_lengkap["Tanggal"].dt.date.unique())
+            # Filter tanggal_lengkap_set ke dalam rentang periode agar hari di luar
+            # periode (mis. scan pada tgl 25 bulan awal) tidak ikut dihitung sebagai
+            # hari valid minggu ini
+            tanggal_lengkap_set = set(
+                d for d in hari_lengkap["Tanggal"].dt.date.unique()
+                if (periode_start is None or d >= periode_start)
+                and (periode_end is None or d <= periode_end)
+            )
 
             cabang_dominan = grup_minggu["Cabang"].value_counts().idxmax()
             tanggal_senin = pd.Timestamp(senin_minggu)
@@ -585,7 +600,17 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua, approved_leaves=None):
                 if offset < 0:
                     continue
                 tgl_hari_itu = (tanggal_senin + pd.Timedelta(days=offset)).date()
-                
+
+                # --- PERIODE BOUNDARY CHECK ---
+                # Hari yang jatuh di luar rentang periode [start, end] tidak dihitung
+                # sebagai hari kandidat kerja → tidak dianggap alpa jika absen.
+                # Ini menangani trimming minggu pertama (sebelum tgl 26 bulan awal)
+                # dan minggu terakhir (setelah tgl 25/26 bulan akhir).
+                if periode_start is not None and tgl_hari_itu < periode_start:
+                    continue  # Hari ini belum masuk periode baru, skip
+                if periode_end is not None and tgl_hari_itu > periode_end:
+                    continue  # Hari ini sudah melewati akhir periode, skip
+
                 format_tgl = f"{tgl_hari_itu.day} {bulan_id[tgl_hari_itu.month - 1]}"
                 nama_hari_tgl = f"{nama_hari_k} ({format_tgl})"
                 
@@ -610,6 +635,7 @@ def hitung_rekap_tidak_masuk(df_preprocessing_semua, approved_leaves=None):
                         keterangan_detail.append(
                             f"*{nama_hari_tgl}: ada scan tapi data tidak lengkap -> dihitung tidak masuk"
                         )
+
 
             # Total hari valid = hari dengan scan lengkap + hari dengan cuti/sakit resmi
             jml_hari_valid = len(tanggal_lengkap_set) + hari_cuti_resmi
