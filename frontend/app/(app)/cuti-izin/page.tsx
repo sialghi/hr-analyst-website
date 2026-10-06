@@ -636,7 +636,7 @@ export default function CutiIzinPage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
                   <tr>
                     <th className="px-4 py-3">Nama Karyawan</th>
                     <th className="px-4 py-3">Kategori</th>
@@ -851,7 +851,7 @@ export default function CutiIzinPage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
+                <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
                   <tr>
                     <th className="px-4 py-3">Nama Karyawan</th>
                     <th className="px-4 py-3">Mulai Kerja &amp; 1 Thn</th>
@@ -1361,12 +1361,17 @@ export default function CutiIzinPage() {
                         <span className="text-[10px] text-slate-400 block mt-0.5">Izin masuk terlambat</span>
                       </div>
 
-                      <div className="p-3 rounded-xl border border-indigo-200 bg-indigo-50/50">
-                        <span className="text-indigo-700 block text-[11px]">Absensi Jarak Jauh</span>
-                        <span className="font-extrabold text-indigo-950 text-base mt-0.5 block">
-                          {employeeDetailData.breakdown.absensi_jarak_jauh.count} Hari
+                      <div className="p-3 rounded-xl border border-rose-200 bg-rose-50/70">
+                        <span className="text-rose-700 block text-[11px]">Unpaid Leave</span>
+                        <span className="font-extrabold text-rose-950 text-base mt-0.5 block">
+                          {Math.max(
+                            0,
+                            Number(employeeDetailData.used_days || 0) - Number(employeeDetailData.total_quota || 0)
+                          ).toFixed(1)} Hari
                         </span>
-                        <span className="text-[10px] text-indigo-500 block mt-0.5">Hari kerja valid</span>
+                        <span className="text-[10px] text-rose-600 block mt-0.5">
+                          Kelebihan cuti dari jatah kuota
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -1381,7 +1386,7 @@ export default function CutiIzinPage() {
                     ) : (
                       <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
                         <table className="w-full text-[11px] text-left">
-                          <thead className="bg-slate-50 border-b border-slate-200 font-semibold text-slate-600 uppercase tracking-wider text-[10px]">
+                          <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 font-semibold text-slate-600 uppercase tracking-wider text-[10px]">
                             <tr>
                               <th className="px-3.5 py-2.5">Tanggal</th>
                               <th className="px-3.5 py-2.5">Kategori</th>
