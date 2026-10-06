@@ -214,6 +214,7 @@ class LeaveRequest(Base):
     Kategori:
       - CUTI_TAHUNAN       (full day cuti tahunan — memotong 1 hari kuota)
       - CUTI_SETENGAH_HARI (setengah hari cuti — memotong 0.5 hari kuota, kode "CS" di Excel)
+      - UNPAID_LEAVE       (bagian cuti yang melebihi saldo; tidak memotong kuota)
       - SAKIT              (full day sakit — tidak memotong kuota cuti)
       - IZIN_PULANG_CEPAT  (izin keluar lebih awal, jam_izin = misal 14:00)
       - IZIN_TELAT         (izin datang terlambat, jam_izin = misal 09:30)
@@ -233,6 +234,7 @@ class LeaveRequest(Base):
     # jumlah_hari: Jumlah hari cuti yang dipakai. Biasanya (tanggal_selesai - tanggal_mulai).days + 1,
     # tapi untuk CUTI_SETENGAH_HARI nilainya 0.5. Null berarti dihitung otomatis dari rentang tanggal.
     jumlah_hari = Column(Float, nullable=True)
+    unpaid_leave_days = Column(Float, nullable=False, default=0.0)
     jam_izin = Column(String, nullable=True)  # Format HH:MM untuk izin jam kerja
     alasan = Column(String, nullable=True)
     status = Column(String, nullable=False, default="PENDING")  # PENDING, APPROVED, REJECTED

@@ -44,6 +44,7 @@ interface AnnualBalanceItem {
 const KATEGORI_MAP: Record<string, { label: string; badge: string }> = {
   CUTI_TAHUNAN:      { label: "Cuti Tahunan",            badge: "bg-slate-50 text-slate-700 border-slate-200" },
   CUTI_SETENGAH_HARI:{ label: "Cuti 1/2 Hari (CS)",       badge: "bg-amber-50 text-amber-700 border-amber-200" },
+  UNPAID_LEAVE:      { label: "Unpaid Leave",             badge: "bg-rose-50 text-rose-700 border-rose-200" },
   SAKIT:             { label: "Sakit (SKD)",              badge: "bg-slate-50 text-slate-700 border-slate-200" },
   IZIN_PULANG_CEPAT: { label: "Izin Pulang Cepat",       badge: "bg-slate-50 text-slate-700 border-slate-200" },
   IZIN_TELAT:        { label: "Izin Datang Terlambat",   badge: "bg-slate-50 text-slate-700 border-slate-200" },

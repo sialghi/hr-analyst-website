@@ -8,6 +8,7 @@ yang berubah hanya SUMBER config, master karyawan, dan tanggal merah:
 sekarang dari database (bisa diedit HR Master), bukan file statis.
 """
 import os
+import datetime
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -295,19 +296,20 @@ def _df_to_records(df, kolom_map=None, kolom_types=None):
 def _hitung_cuti_sakit_periode(approved_leaves_dict, nama, periode_start, periode_end):
     """Hitung total hari cuti dan sakit per karyawan dalam rentang periode.
 
-    Return: (total_cuti, total_sakit)
+    Return: (total_cuti, total_sakit, total_unpaid)
     - CUTI_TAHUNAN: hitung jumlah hari overlap dengan periode
     - CUTI_SETENGAH_HARI: 0.5 per entry jika tanggalnya dalam periode
     - SAKIT: hitung jumlah hari overlap dengan periode
     """
     if not approved_leaves_dict or not periode_start or not periode_end:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
 
     norm_name = config.normalisasi_nama(nama)
     daftar = approved_leaves_dict.get(norm_name, [])
 
     total_cuti = 0.0
     total_sakit = 0.0
+    total_unpaid = 0.0
 
     for item in daftar:
         kat = item["kategori"]
@@ -322,15 +324,34 @@ def _hitung_cuti_sakit_periode(approved_leaves_dict, nama, periode_start, period
             continue  # Tidak ada overlap dengan periode
 
         if kat == "CUTI_SETENGAH_HARI":
-            total_cuti += 0.5
+            unpaid = min(0.5, float(item.get("unpaid_leave_days") or 0.0))
+            total_unpaid += unpaid
+            total_cuti += 0.5 - unpaid
         elif kat == "CUTI_TAHUNAN":
+            total_days = (t_selesai - t_mulai).days + 1
+            unpaid_days = min(total_days, max(0.0, float(item.get("unpaid_leave_days") or 0.0)))
+            paid_days = total_days - unpaid_days
+
+            paid_end = t_mulai + datetime.timedelta(days=max(0, int(paid_days) - 1))
+            unpaid_start = t_mulai + datetime.timedelta(days=int(paid_days))
+
+            paid_overlap_start = max(t_mulai, periode_start)
+            paid_overlap_end = min(paid_end, periode_end)
+            if paid_overlap_start <= paid_overlap_end and paid_days > 0:
+                total_cuti += (paid_overlap_end - paid_overlap_start).days + 1
+
+            unpaid_overlap_start = max(unpaid_start, periode_start)
+            unpaid_overlap_end = min(t_selesai, periode_end)
+            if unpaid_overlap_start <= unpaid_overlap_end and unpaid_days > 0:
+                total_unpaid += (unpaid_overlap_end - unpaid_overlap_start).days + 1
+        elif kat == "UNPAID_LEAVE":
             days = (overlap_end - overlap_start).days + 1
-            total_cuti += days
+            total_unpaid += days
         elif kat == "SAKIT":
             days = (overlap_end - overlap_start).days + 1
             total_sakit += days
 
-    return total_cuti, total_sakit
+    return total_cuti, total_sakit, total_unpaid
 
 
 def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_duluan,
@@ -427,7 +448,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         bpjs_tk = bpjs_info.get("bpjs_tk", 0)
 
         # Hitung cuti & sakit dalam periode file yang diupload
-        emp_cuti, emp_sakit = _hitung_cuti_sakit_periode(
+        emp_cuti, emp_sakit, emp_unpaid = _hitung_cuti_sakit_periode(
             approved_leaves, nama, periode_start, periode_end
         )
 
@@ -443,6 +464,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
             "Masuk Tanggal Merah": masuk_tgl_merah,
             "Cuti": emp_cuti,
             "Sakit": emp_sakit,
+            "Unpaid Leave": emp_unpaid,
             "Jml Telat": jml_telat,
             "Total Durasi Telat": _fmt_durasi(total_durasi_telat),
             "Jml Lembur": jml_lembur,
@@ -466,7 +488,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
     headers = [
         "Cabang", "Nama", "Profil", "Absensi In", "Absensi Out", "Hari Kerja Valid",
         "Absensi Jarak Jauh", "Absen Manual",
-        "Masuk Tanggal Merah", "Cuti", "Sakit",
+        "Masuk Tanggal Merah", "Cuti", "Sakit", "Unpaid Leave",
         "Jml Telat", "Total Durasi Telat", "Jml Lembur",
         "Jam Lembur (Bulat)", "Jml Pulang Duluan",
         "Total Durasi Pulang Duluan", "Minggu Bermasalah", "Jumlah Hari Tidak Masuk",
@@ -482,7 +504,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         "Hari Kerja Valid": "number", "Absensi Jarak Jauh": "number",
         "Absen Manual": "number",
         "Masuk Tanggal Merah": "number",
-        "Cuti": "number", "Sakit": "number",
+        "Cuti": "number", "Sakit": "number", "Unpaid Leave": "number",
         "Jml Telat": "number", "Total Durasi Telat": "text",
         "Jml Lembur": "number", "Jam Lembur (Bulat)": "number",
         "Jml Pulang Duluan": "number", "Total Durasi Pulang Duluan": "text",

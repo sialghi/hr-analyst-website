@@ -16,6 +16,7 @@ from ..leave_logic import (
     get_ledger_granted,
     get_leave_balance_info,
     get_leave_request_days,
+    get_paid_leave_days,
     ENTRY_USED,
     ENTRY_REVERSED,
     KATEGORI_POTONG_CUTI_MAP,
@@ -449,7 +450,7 @@ def create_leave_request(
     - Asumsi A2: Pemotongan dari kuota tahun tanggal_mulai.
     """
     kategori_norm = payload.kategori.upper().strip()
-    valid_kategori = {"CUTI_TAHUNAN", "CUTI_SETENGAH_HARI", "SAKIT", "IZIN_PULANG_CEPAT", "IZIN_TELAT", "LAINNYA", "WORK_FROM_LOCATION"}
+    valid_kategori = {"CUTI_TAHUNAN", "CUTI_SETENGAH_HARI", "UNPAID_LEAVE", "SAKIT", "IZIN_PULANG_CEPAT", "IZIN_TELAT", "LAINNYA", "WORK_FROM_LOCATION"}
     if kategori_norm not in valid_kategori:
         kategori_norm = "LAINNYA"
 
@@ -489,8 +490,18 @@ def create_leave_request(
         if emp:
             ok, err_msg = validate_annual_leave_request(db, emp, tgl_m, requested_days)
             if not ok:
-                raise HTTPException(status_code=400, detail=err_msg)
+                if "Saldo cuti tahunan" not in err_msg:
+                    raise HTTPException(status_code=400, detail=err_msg)
         # Jika employee tidak ditemukan (data lama/bot), lewati validasi anniversary
+
+    unpaid_days = 0.0
+    if kategori_norm in KATEGORI_POTONG_CUTI_MAP:
+        emp = _get_employee_by_nama(db, payload.nama)
+        if emp:
+            balance = max(0.0, get_ledger_balance(db, emp.id, tgl_m.year))
+            unpaid_days = max(0.0, requested_days - balance)
+            if unpaid_days >= requested_days:
+                kategori_norm = "UNPAID_LEAVE"
 
     leave = models.LeaveRequest(
         nama=payload.nama.strip(),
@@ -500,6 +511,7 @@ def create_leave_request(
         tanggal_mulai=payload.tanggal_mulai,
         tanggal_selesai=payload.tanggal_selesai,
         jumlah_hari=payload.jumlah_hari,
+        unpaid_leave_days=unpaid_days,
         jam_izin=payload.jam_izin,
         alasan=payload.alasan,
         catatan_hr=payload.catatan_hr,
@@ -560,8 +572,14 @@ async def update_leave_status(
     if leave.kategori in KATEGORI_POTONG_CUTI_MAP:
         emp = _get_employee_by_nama(db, leave.nama)
         if emp:
-            days = get_leave_request_days(leave)
             year = leave.tanggal_mulai.year
+            days = get_paid_leave_days(leave)
+            if new_status == "APPROVED" and leave.kategori in KATEGORI_POTONG_CUTI_MAP:
+                current_balance = max(0.0, get_ledger_balance(db, emp.id, year))
+                unpaid_days = max(0.0, get_leave_request_days(leave) - current_balance)
+                leave.unpaid_leave_days = unpaid_days
+                db.commit()
+                days = get_paid_leave_days(leave)
             desc = f"{leave.kategori} {leave.tanggal_mulai} s/d {leave.tanggal_selesai}"
 
             if new_status == "APPROVED" and prev_status != "APPROVED":

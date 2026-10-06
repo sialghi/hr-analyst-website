@@ -440,6 +440,12 @@ function EmployeeModal({
                 <span className="font-bold text-amber-600">{summaryRow["Sakit"]} hari</span>
               </div>
             )}
+            {summaryRow["Unpaid Leave"] != null && summaryRow["Unpaid Leave"] > 0 && (
+              <div>
+                <span className="text-slate-500 font-medium">Unpaid Leave: </span>
+                <span className="font-bold text-rose-600">{summaryRow["Unpaid Leave"]} hari</span>
+              </div>
+            )}
             <div className="bg-white px-3.5 py-1.5 rounded-lg border border-slate-200 text-xs">
               <span className="text-slate-500 font-medium">Jml Telat: </span>
               <span className={`font-bold ${summaryRow["Jml Telat"] > 0 ? "text-rose-600" : "text-slate-900"}`}>

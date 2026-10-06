@@ -244,6 +244,7 @@ class LeaveRequestOut(LeaveRequestBase):
     tipe_absensi: Optional[str] = "normal"
     location_cabang: Optional[str] = None
     jumlah_hari: Optional[float] = None
+    unpaid_leave_days: float = 0.0
     foto_bukti: Optional[str] = None
     created_at: datetime
     updated_at: datetime

@@ -293,6 +293,11 @@ def get_leave_request_days(leave_request: LeaveRequest) -> float:
     return float(date_range * weight)
 
 
+def get_paid_leave_days(leave_request: LeaveRequest) -> float:
+    """Hari yang benar-benar memotong kuota setelah bagian unpaid dipisahkan."""
+    return max(0.0, get_leave_request_days(leave_request) - float(leave_request.unpaid_leave_days or 0.0))
+
+
 def reconcile_approved_leave_ledger(db: Session) -> int:
     """
     Backfill pemakaian untuk pengajuan approved yang dibuat sebelum ledger aktif.
@@ -329,7 +334,7 @@ def reconcile_approved_leave_ledger(db: Session) -> int:
             db,
             employee.id,
             leave.tanggal_mulai.year,
-            get_leave_request_days(leave),
+            get_paid_leave_days(leave),
             leave.id,
             f"{leave.kategori} {leave.tanggal_mulai} s/d {leave.tanggal_selesai} (rekonsiliasi)",
             commit=False,

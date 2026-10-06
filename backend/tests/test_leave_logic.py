@@ -41,6 +41,7 @@ from app.leave_logic import (
     ENTRY_EXPIRED,
 )
 from app.config import ANNUAL_LEAVE_QUOTA
+from app.pipeline.service import _hitung_cuti_sakit_periode
 
 
 def make_employee(db, nama: str, join_date: datetime.date) -> Employee:
@@ -307,6 +308,42 @@ class TestValidateLeaveRequest(BaseDBTestCase):
         ok, msg = validate_annual_leave_request(self.db, emp, datetime.date(2026, 1, 1), 1.0)
         self.assertFalse(ok)
         self.assertIn("join_date", msg.lower())
+
+
+class TestUnpaidLeaveSummary(unittest.TestCase):
+    def test_partial_unpaid_leave_is_split_into_paid_and_unpaid(self):
+        leaves = {
+            "andi": [{
+                "kategori": "CUTI_TAHUNAN",
+                "tanggal_mulai": datetime.date(2026, 1, 5),
+                "tanggal_selesai": datetime.date(2026, 1, 8),
+                "unpaid_leave_days": 2.0,
+            }]
+        }
+        cuti, sakit, unpaid = _hitung_cuti_sakit_periode(
+            leaves,
+            "Andi",
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 31),
+        )
+        self.assertEqual((cuti, sakit, unpaid), (2.0, 0.0, 2.0))
+
+    def test_unpaid_leave_only_appears_in_unpaid_summary(self):
+        leaves = {
+            "andi": [{
+                "kategori": "UNPAID_LEAVE",
+                "tanggal_mulai": datetime.date(2026, 2, 10),
+                "tanggal_selesai": datetime.date(2026, 2, 12),
+                "unpaid_leave_days": 3.0,
+            }]
+        }
+        cuti, sakit, unpaid = _hitung_cuti_sakit_periode(
+            leaves,
+            "Andi",
+            datetime.date(2026, 2, 1),
+            datetime.date(2026, 2, 28),
+        )
+        self.assertEqual((cuti, sakit, unpaid), (0.0, 0.0, 3.0))
 
 
 class TestSchedulerIdempotency(BaseDBTestCase):

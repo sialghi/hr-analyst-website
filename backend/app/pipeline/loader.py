@@ -259,6 +259,7 @@ def build_approved_leaves_from_db(leaves):
        normalisasi_nama(nama): [
            {
                "kategori": leave.kategori,
+               "unpaid_leave_days": leave.unpaid_leave_days or 0.0,
                "tanggal_mulai": leave.tanggal_mulai,
                "tanggal_selesai": leave.tanggal_selesai,
                "jam_izin": leave.jam_izin,
@@ -279,6 +280,7 @@ def build_approved_leaves_from_db(leaves):
             lookup[norm_name] = []
         lookup[norm_name].append({
             "kategori": lv.kategori,
+            "unpaid_leave_days": lv.unpaid_leave_days or 0.0,
             "tanggal_mulai": lv.tanggal_mulai,
             "tanggal_selesai": lv.tanggal_selesai,
             "jam_izin": lv.jam_izin,
