@@ -39,7 +39,7 @@ interface Employee {
   bpjs_tk: number | null;
   active: boolean;
   // Status kepegawaian
-  employment_status: string;           // "TETAP" | "PKWT"
+  employment_status: string;           // "PKWTT" | "PKWT" | "PHL"
   join_date: string | null;
   tenure_display: string | null;
   contracts: EmploymentContract[];
@@ -59,6 +59,28 @@ interface Profile {
   jam_keluar: { default: string; [key: string]: string } | null;
 }
 
+interface WhatsAppIdentity {
+  id: number;
+  phone_number: string;
+  employee_id: number;
+  employee_name: string | null;
+  employee_nik_last4: string | null;
+  status: string;
+  verified_at: string | null;
+  last_seen_at: string | null;
+  failed_attempts: number;
+}
+
+interface WhatsAppAudit {
+  id: number;
+  phone_number: string;
+  employee_id: number | null;
+  employee_name: string | null;
+  event_type: string;
+  detail: string | null;
+  created_at: string;
+}
+
 interface ImportResult {
   status: string;
   total: number;
@@ -69,7 +91,39 @@ interface ImportResult {
   pesan: string;
 }
 
+interface MasterUpdateResult {
+  dry_run: boolean;
+  total_updated: number;
+  total_skipped: number;
+  total_not_found: number;
+  total_nik_conflict: number;
+  total_invalid_nik: number;
+  total_invalid_status: number;
+  total_unmapped_branch: number;
+  detail: {
+    updated: { nama: string; fields: string }[];
+    skipped: string[];
+    not_found: string[];
+    nik_conflict: { nama: string; nik: string; konflik_dengan: string }[];
+    invalid_nik: { nama: string; nik_raw: string }[];
+    invalid_status: { nama: string; status: string }[];
+    unmapped_branch: { nama: string; lokasi: string }[];
+  };
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const normalizeEmploymentStatus = (status?: string | null) => {
+  const normalized = (status || "PKWTT").toUpperCase().trim();
+  const aliases: Record<string, string> = {
+    TETAP: "PKWTT",
+    KARYAWAN_TETAP: "PKWTT",
+    PKWTT: "PKWTT",
+    PKWT: "PKWT",
+    PHL: "PHL",
+  };
+  return aliases[normalized] || normalized;
+};
 
 const BLANK_FORM = {
   nama: "",
@@ -77,12 +131,12 @@ const BLANK_FORM = {
   id_mesin: "",
   profile_code: "",
   cabang: "",
-  uang_makan_override: "",
+  uang_makan_override: "0",
   bpjs_kesehatan: "",
   bpjs_tk: "",
   active: true,
   // Status kepegawaian & kontrak
-  employment_status: "TETAP",
+  employment_status: "PKWTT",
   join_date: "",
   contract_start_date: "",
   contract_end_date: "",
@@ -104,12 +158,12 @@ function empToForm(emp: Employee) {
     id_mesin: emp.id_mesin || "",
     profile_code: emp.profile_code,
     cabang: emp.cabang || "",
-    uang_makan_override: emp.uang_makan_override?.toString() || "",
+    uang_makan_override: emp.uang_makan_override?.toString() || "0",
     bpjs_kesehatan: emp.bpjs_kesehatan != null ? emp.bpjs_kesehatan.toString() : "",
     bpjs_tk: emp.bpjs_tk != null ? emp.bpjs_tk.toString() : "",
     active: emp.active,
     // Status kepegawaian & kontrak
-    employment_status: emp.employment_status || "TETAP",
+    employment_status: normalizeEmploymentStatus(emp.employment_status),
     join_date: emp.join_date || "",
     contract_start_date: activeContract?.start_date || "",
     contract_end_date: activeContract?.end_date || "",
@@ -124,19 +178,20 @@ function empToForm(emp: Employee) {
 }
 
 function formToPayload(form: typeof BLANK_FORM) {
-  const isPKWT = form.employment_status === "PKWT";
+  const normalizedStatus = normalizeEmploymentStatus(form.employment_status || "PKWTT");
+  const isPKWT = normalizedStatus === "PKWT";
   return {
     nama: form.nama,
     nik: form.nik || null,
     id_mesin: form.id_mesin || null,
     profile_code: form.profile_code,
     cabang: form.cabang || null,
-    uang_makan_override: form.uang_makan_override ? parseInt(form.uang_makan_override) : null,
+    uang_makan_override: form.uang_makan_override.trim() === "" ? 0 : parseInt(form.uang_makan_override, 10) || 0,
     bpjs_kesehatan: form.bpjs_kesehatan ? parseInt(form.bpjs_kesehatan) : 0,
     bpjs_tk: form.bpjs_tk ? parseInt(form.bpjs_tk) : 0,
     active: form.active,
     // Status kepegawaian & kontrak
-    employment_status: form.employment_status || "TETAP",
+    employment_status: normalizedStatus,
     join_date: form.join_date || null,
     contract_start_date: isPKWT && form.contract_start_date ? form.contract_start_date : null,
     contract_end_date: isPKWT && form.contract_end_date ? form.contract_end_date : null,
@@ -244,7 +299,7 @@ function InheritancePreviewCard({ profile, globalRules }: { profile: Profile | u
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function KaryawanPage() {
-  const master = isHrMaster();
+  const [master, setMaster] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [globalRules, setGlobalRules] = useState<any>(null);
@@ -255,6 +310,12 @@ export default function KaryawanPage() {
   const [activeTab, setActiveTab] = useState<"data" | "kontrak" | "aturan">("data");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [renewalForm, setRenewalForm] = useState({
+    start_date: "",
+    end_date: "",
+    keterangan: "",
+  });
+  const [renewing, setRenewing] = useState(false);
 
   // Import modal state (import karyawan baru dari Excel)
   const [showImport, setShowImport] = useState(false);
@@ -265,19 +326,40 @@ export default function KaryawanPage() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const masterUpdateInputRef = useRef<HTMLInputElement>(null);
+  const [masterUpdateFile, setMasterUpdateFile] = useState<File | null>(null);
+  const [masterUpdatePreview, setMasterUpdatePreview] = useState<MasterUpdateResult | null>(null);
+  const [masterUpdateLoading, setMasterUpdateLoading] = useState(false);
+  const [masterUpdateError, setMasterUpdateError] = useState<string | null>(null);
+  const [whatsappIdentities, setWhatsappIdentities] = useState<WhatsAppIdentity[]>([]);
+  const [whatsappLoading, setWhatsappLoading] = useState(false);
+  const [whatsappError, setWhatsappError] = useState<string | null>(null);
+  const [whatsappAudit, setWhatsappAudit] = useState<WhatsAppAudit[]>([]);
 
-
+  useEffect(() => {
+    setMaster(isHrMaster());
+  }, []);
 
   function load() {
-
     api.getEmployees().then(setEmployees).catch((e) => setError(e.message));
     api.getProfiles().then(setProfiles).catch(() => {});
     api.getRules().then(setGlobalRules).catch(() => {});
+    if (master) {
+      setWhatsappLoading(true);
+      api.getWhatsAppIdentities()
+        .then(setWhatsappIdentities)
+        .catch((e) => setWhatsappError(e.message))
+        .finally(() => setWhatsappLoading(false));
+      api.getWhatsAppAudit()
+        .then(setWhatsappAudit)
+        .catch((e) => setWhatsappError(e.message));
+    }
   }
-  useEffect(load, []);
+  useEffect(load, [master]);
 
   const profileName = (code: string) => profiles.find((p) => p.code === code)?.nama || code;
   const activeProfile = profiles.find((p) => p.code === form.profile_code);
+  const editingEmployee = editingId ? employees.find((emp) => emp.id === editingId) : undefined;
 
   function startCreate() {
     setEditingId(null);
@@ -285,6 +367,55 @@ export default function KaryawanPage() {
     setActiveTab("data");
     setShowForm(true);
     setError(null);
+    setRenewalForm({ start_date: "", end_date: "", keterangan: "" });
+  }
+
+  async function revokeWhatsAppIdentity(identity: WhatsAppIdentity) {
+    if (!confirm(`Cabut linking WhatsApp ${identity.phone_number} dari ${identity.employee_name || "karyawan ini"}?`)) return;
+    try {
+      await api.revokeWhatsAppIdentity(identity.id);
+      setWhatsappIdentities((items) =>
+        items.map((item) => item.id === identity.id ? { ...item, status: "REVOKED" } : item)
+      );
+    } catch (e: any) {
+      setWhatsappError(e.message || "Gagal mencabut linking WhatsApp.");
+    }
+  }
+
+  async function moveWhatsAppIdentity(identity: WhatsAppIdentity) {
+    const candidates = employees
+      .filter((employee) => employee.active && employee.id !== identity.employee_id)
+      .map((employee) => `${employee.id}: ${employee.nama}${employee.nik ? ` (${employee.nik})` : ""}`)
+      .join("\n");
+    if (!candidates) {
+      setWhatsappError("Tidak ada karyawan aktif lain sebagai tujuan linking.");
+      return;
+    }
+    const employeeIdInput = window.prompt(`Masukkan ID karyawan tujuan:\n\n${candidates}`);
+    if (!employeeIdInput) return;
+    const employeeId = Number(employeeIdInput.trim());
+    if (!Number.isInteger(employeeId)) {
+      setWhatsappError("ID karyawan tujuan tidak valid.");
+      return;
+    }
+    const reason = window.prompt("Alasan pemindahan linking (wajib):");
+    if (!reason?.trim()) return;
+    try {
+      const updated = await api.moveWhatsAppIdentity(identity.id, employeeId, reason.trim());
+      const target = employees.find((employee) => employee.id === employeeId);
+      setWhatsappIdentities((items) =>
+        items.map((item) => item.id === identity.id ? {
+          ...item,
+          employee_id: updated.employee_id,
+          employee_name: target?.nama || item.employee_name,
+          employee_nik_last4: target?.nik ? target.nik.slice(-4) : null,
+          status: updated.new_status,
+        } : item)
+      );
+      setWhatsappAudit(await api.getWhatsAppAudit());
+    } catch (e: any) {
+      setWhatsappError(e.message || "Gagal memindahkan linking WhatsApp.");
+    }
   }
 
   // Helper: format date string YYYY-MM-DD dari ISO string API
@@ -299,6 +430,7 @@ export default function KaryawanPage() {
     setActiveTab("data");
     setShowForm(true);
     setError(null);
+    setRenewalForm({ start_date: "", end_date: "", keterangan: "" });
   }
 
   function handleResetOverrides() {
@@ -309,7 +441,7 @@ export default function KaryawanPage() {
       jam_keluar_override: "",
       toleransi_telat_menit_override: "",
       bonus_lembur_per_jam_override: "",
-      uang_makan_override: "",
+      uang_makan_override: "0",
     }));
   }
 
@@ -327,6 +459,25 @@ export default function KaryawanPage() {
       setError(err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleAddRenewal() {
+    if (!editingId) return;
+    if (!renewalForm.start_date || !renewalForm.end_date) {
+      setError("Tanggal mulai dan tanggal selesai kontrak wajib diisi.");
+      return;
+    }
+    setRenewing(true);
+    setError(null);
+    try {
+      await api.addContractRenewal(editingId, renewalForm);
+      setRenewalForm({ start_date: "", end_date: "", keterangan: "" });
+      load();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setRenewing(false);
     }
   }
 
@@ -373,6 +524,45 @@ export default function KaryawanPage() {
     }
   }
 
+  async function handleMasterUpdateSelect(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) return;
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    if (!["xlsx", "xls"].includes(ext || "")) {
+      setMasterUpdateError("File pembaruan master harus berformat Excel (.xlsx atau .xls).");
+      return;
+    }
+
+    setMasterUpdateFile(file);
+    setMasterUpdatePreview(null);
+    setMasterUpdateError(null);
+    setMasterUpdateLoading(true);
+    try {
+      const preview = await api.importNikData(file, true);
+      setMasterUpdatePreview(preview);
+    } catch (err: any) {
+      setMasterUpdateError(err.message);
+      setMasterUpdateFile(null);
+    } finally {
+      setMasterUpdateLoading(false);
+    }
+  }
+
+  async function confirmMasterUpdate() {
+    if (!masterUpdateFile) return;
+    setMasterUpdateLoading(true);
+    setMasterUpdateError(null);
+    try {
+      await api.importNikData(masterUpdateFile, false);
+      setMasterUpdateFile(null);
+      setMasterUpdatePreview(null);
+      load();
+    } catch (err: any) {
+      setMasterUpdateError(err.message);
+    } finally {
+      setMasterUpdateLoading(false);
+    }
+  }
 
   function handleFileSelect(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -413,6 +603,19 @@ export default function KaryawanPage() {
         action={
           master && (
             <div className="flex items-center gap-2.5">
+              <input
+                ref={masterUpdateInputRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(e) => handleMasterUpdateSelect(e.target.files)}
+              />
+              <Button
+                variant="secondary"
+                onClick={() => masterUpdateInputRef.current?.click()}
+              >
+                Update Master Excel
+              </Button>
               <Button
                 variant="secondary"
                 onClick={() => {
@@ -431,6 +634,202 @@ export default function KaryawanPage() {
       />
 
       {error && <Banner kind="error">{error}</Banner>}
+
+      {master && (
+        <Card className="mt-4 p-4">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div>
+              <h3 className="text-sm font-semibold" style={{ color: "var(--ink)" }}>
+                Linking WhatsApp Karyawan
+              </h3>
+              <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                Satu nomor WhatsApp hanya dapat terhubung ke satu NIK. Cabut linking jika nomor perlu diverifikasi ulang.
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setWhatsappLoading(true);
+                api.getWhatsAppIdentities()
+                  .then(setWhatsappIdentities)
+                  .catch((e) => setWhatsappError(e.message))
+                  .finally(() => setWhatsappLoading(false));
+                api.getWhatsAppAudit()
+                  .then(setWhatsappAudit)
+                  .catch((e) => setWhatsappError(e.message));
+              }}
+              disabled={whatsappLoading}
+            >
+              Muat Ulang
+            </Button>
+          </div>
+          {whatsappError && <Banner kind="error">{whatsappError}</Banner>}
+          {whatsappLoading ? (
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>Memuat linking WhatsApp...</p>
+          ) : whatsappIdentities.length === 0 ? (
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>Belum ada nomor WhatsApp yang tertaut.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b text-left" style={{ borderColor: "var(--line)", color: "var(--text-muted)" }}>
+                    <th className="py-2 pr-3 font-medium">Nomor</th>
+                    <th className="py-2 pr-3 font-medium">Karyawan</th>
+                    <th className="py-2 pr-3 font-medium">NIK</th>
+                    <th className="py-2 pr-3 font-medium">Status</th>
+                    <th className="py-2 pr-3 font-medium">Aktif Terakhir</th>
+                    <th className="py-2 font-medium">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {whatsappIdentities.map((identity) => (
+                    <tr key={identity.id} className="border-b" style={{ borderColor: "var(--line)" }}>
+                      <td className="py-2 pr-3" style={{ color: "var(--ink)" }}>{identity.phone_number}</td>
+                      <td className="py-2 pr-3" style={{ color: "var(--ink)" }}>{identity.employee_name || "-"}</td>
+                      <td className="py-2 pr-3" style={{ color: "var(--text-muted)" }}>
+                        {identity.employee_nik_last4 ? `••••${identity.employee_nik_last4}` : "-"}
+                      </td>
+                      <td className="py-2 pr-3" style={{ color: identity.status === "ACTIVE" ? "var(--success)" : "var(--text-muted)" }}>
+                        {identity.status}
+                      </td>
+                      <td className="py-2 pr-3" style={{ color: "var(--text-muted)" }}>
+                        {identity.last_seen_at ? new Date(identity.last_seen_at).toLocaleString("id-ID") : "-"}
+                      </td>
+                      <td className="py-2">
+                        {identity.status === "ACTIVE" && (
+                          <div className="flex gap-3">
+                            <button
+                              type="button"
+                              className="text-xs underline"
+                              style={{ color: "var(--ink)", background: "none", border: "none", cursor: "pointer" }}
+                              onClick={() => moveWhatsAppIdentity(identity)}
+                            >
+                              Pindahkan
+                            </button>
+                            <button
+                              type="button"
+                              className="text-xs underline"
+                              style={{ color: "var(--clay)", background: "none", border: "none", cursor: "pointer" }}
+                              onClick={() => revokeWhatsAppIdentity(identity)}
+                            >
+                              Cabut Linking
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {whatsappAudit.length > 0 && (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-xs font-medium" style={{ color: "var(--ink)" }}>
+                Lihat histori audit WhatsApp ({whatsappAudit.length})
+              </summary>
+              <div className="overflow-x-auto mt-3">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b text-left" style={{ borderColor: "var(--line)", color: "var(--text-muted)" }}>
+                      <th className="py-2 pr-3 font-medium">Waktu</th>
+                      <th className="py-2 pr-3 font-medium">Nomor</th>
+                      <th className="py-2 pr-3 font-medium">Event</th>
+                      <th className="py-2 font-medium">Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {whatsappAudit.map((audit) => (
+                      <tr key={audit.id} className="border-b" style={{ borderColor: "var(--line)" }}>
+                        <td className="py-2 pr-3" style={{ color: "var(--text-muted)" }}>
+                          {new Date(audit.created_at).toLocaleString("id-ID")}
+                        </td>
+                        <td className="py-2 pr-3" style={{ color: "var(--ink)" }}>{audit.phone_number}</td>
+                        <td className="py-2 pr-3" style={{ color: "var(--ink)" }}>{audit.event_type}</td>
+                        <td className="py-2" style={{ color: "var(--text-muted)" }}>{audit.detail || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+        </Card>
+      )}
+
+      {(masterUpdateLoading || masterUpdateError || masterUpdatePreview) && (
+        <Card className="mt-4 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold" style={{ color: "var(--ink)" }}>
+                Preview Pembaruan Master
+              </h3>
+              {masterUpdateFile && (
+                <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                  {masterUpdateFile.name}
+                </p>
+              )}
+            </div>
+            {!masterUpdateLoading && (
+              <button
+                type="button"
+                className="text-xs underline"
+                style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}
+                onClick={() => {
+                  setMasterUpdateFile(null);
+                  setMasterUpdatePreview(null);
+                  setMasterUpdateError(null);
+                }}
+              >
+                Tutup
+              </button>
+            )}
+          </div>
+          {masterUpdateLoading && (
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>Menganalisis file...</p>
+          )}
+          {masterUpdateError && <Banner kind="error">{masterUpdateError}</Banner>}
+          {masterUpdatePreview && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs" style={{ color: "var(--ink)" }}>
+                <div>Diubah: <strong>{masterUpdatePreview.total_updated}</strong></div>
+                <div>Tidak ditemukan: <strong>{masterUpdatePreview.total_not_found}</strong></div>
+                <div>Konflik NIK: <strong>{masterUpdatePreview.total_nik_conflict}</strong></div>
+                <div>Cabang perlu review: <strong>{masterUpdatePreview.total_unmapped_branch}</strong></div>
+              </div>
+              {(masterUpdatePreview.total_not_found > 0 ||
+                masterUpdatePreview.total_nik_conflict > 0 ||
+                masterUpdatePreview.total_invalid_status > 0 ||
+                masterUpdatePreview.total_unmapped_branch > 0) && (
+                <div className="text-xs space-y-1" style={{ color: "var(--clay)" }}>
+                  <strong>Perhatian sebelum menerapkan:</strong>
+                  {masterUpdatePreview.total_not_found > 0 && <div>• Ada nama yang tidak ditemukan di master.</div>}
+                  {masterUpdatePreview.total_nik_conflict > 0 && <div>• Ada NIK yang sudah digunakan karyawan lain.</div>}
+                  {masterUpdatePreview.total_invalid_status > 0 && <div>• Ada status kepegawaian yang tidak valid.</div>}
+                  {masterUpdatePreview.total_unmapped_branch > 0 && <div>• Ada nama cabang yang belum memiliki mapping baku.</div>}
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setMasterUpdateFile(null);
+                    setMasterUpdatePreview(null);
+                  }}
+                >
+                  Batalkan
+                </Button>
+                <Button
+                  onClick={confirmMasterUpdate}
+                  disabled={masterUpdateLoading || masterUpdatePreview.total_updated === 0}
+                >
+                  Terapkan Pembaruan
+                </Button>
+              </div>
+            </>
+          )}
+        </Card>
+      )}
 
       <input
         placeholder="Cari nama karyawan..."
@@ -522,12 +921,24 @@ export default function KaryawanPage() {
                     <span
                       className="px-2 py-0.5 rounded text-xs font-semibold border w-fit"
                       style={{
-                        background: emp.employment_status === "PKWT" ? "#eff6ff" : "var(--paper)",
-                        borderColor: emp.employment_status === "PKWT" ? "#bfdbfe" : "var(--line)",
-                        color: emp.employment_status === "PKWT" ? "#1e40af" : "var(--text-muted)",
+                        background: normalizeEmploymentStatus(emp.employment_status) === "PKWT"
+                          ? "#eff6ff"
+                          : normalizeEmploymentStatus(emp.employment_status) === "PHL"
+                            ? "#fff7ed"
+                            : "var(--paper)",
+                        borderColor: normalizeEmploymentStatus(emp.employment_status) === "PKWT"
+                          ? "#bfdbfe"
+                          : normalizeEmploymentStatus(emp.employment_status) === "PHL"
+                            ? "#fdba74"
+                            : "var(--line)",
+                        color: normalizeEmploymentStatus(emp.employment_status) === "PKWT"
+                          ? "#1e40af"
+                          : normalizeEmploymentStatus(emp.employment_status) === "PHL"
+                            ? "#c2410c"
+                            : "var(--text-muted)",
                       }}
                     >
-                      {emp.employment_status || "TETAP"}
+                      {normalizeEmploymentStatus(emp.employment_status)}
                     </span>
                     {emp.contract_reminder_status?.is_expired && (
                       <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-700 border border-red-200 w-fit">
@@ -785,6 +1196,21 @@ export default function KaryawanPage() {
                     </Field>
                   </div>
 
+                  <Field
+                    label="Uang Makan (Rp/hari)"
+                    hint="Isi 0 jika karyawan tidak menerima uang makan."
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      className={inputCls}
+                      style={inputStyle}
+                      placeholder="0"
+                      value={form.uang_makan_override}
+                      onChange={(e) => setForm({ ...form, uang_makan_override: e.target.value })}
+                    />
+                  </Field>
+
                   <label className="flex items-center gap-2 text-sm" style={{ color: "var(--ink)" }}>
                     <input
                       type="checkbox"
@@ -809,8 +1235,9 @@ export default function KaryawanPage() {
                       value={form.employment_status}
                       onChange={(e) => setForm({ ...form, employment_status: e.target.value })}
                     >
-                      <option value="TETAP">TETAP — Karyawan Tetap</option>
+                      <option value="PKWTT">PKWTT — Karyawan Tetap</option>
                       <option value="PKWT">PKWT — Karyawan Kontrak</option>
+                      <option value="PHL">PHL — Pekerja Harian Lapangan</option>
                     </select>
                   </Field>
 
@@ -869,6 +1296,97 @@ export default function KaryawanPage() {
                         />
                       </Field>
                     </>
+                  )}
+
+                  {editingId && (editingEmployee?.contracts?.length ?? 0) > 0 && (
+                    <div
+                      className="rounded-lg p-3 space-y-3"
+                      style={{ background: "var(--paper)", border: "1px solid var(--line)" }}
+                    >
+                      <div>
+                        <p className="text-xs font-semibold" style={{ color: "var(--ink)" }}>
+                          Rekapan Histori Kontrak PKWT
+                        </p>
+                        <p className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>
+                          Setiap perpanjangan tersimpan sebagai kontrak terpisah dengan nomor, periode, status, dan catatan.
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        {editingEmployee?.contracts.map((contract) => (
+                          <div
+                            key={contract.id}
+                            className="rounded-md border px-3 py-2 text-xs"
+                            style={{ borderColor: "var(--line)", background: "var(--surface, #fff)" }}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <strong style={{ color: "var(--ink)" }}>
+                                Kontrak #{contract.contract_number}
+                              </strong>
+                              <span style={{ color: contract.status === "ACTIVE" ? "var(--moss)" : "var(--text-muted)" }}>
+                                {contract.status}
+                              </span>
+                            </div>
+                            <div className="mt-1" style={{ color: "var(--text-muted)" }}>
+                              {fmtDate(contract.start_date)} s/d {fmtDate(contract.end_date)}
+                            </div>
+                            {contract.keterangan && (
+                              <div className="mt-1" style={{ color: "var(--ink)" }}>
+                                Catatan: {contract.keterangan}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {editingId && form.employment_status === "PKWT" && (
+                    <div
+                      className="rounded-lg p-3 space-y-3"
+                      style={{ background: "#eff6ff", border: "1px solid #bfdbfe" }}
+                    >
+                      <div>
+                        <p className="text-xs font-semibold" style={{ color: "#1e40af" }}>
+                          Tambah Perpanjangan PKWT
+                        </p>
+                        <p className="text-[11px] mt-0.5" style={{ color: "#1e40af" }}>
+                          Kontrak aktif sebelumnya akan disimpan sebagai histori dan ditandai RENEWED.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <Field label="Tanggal Mulai">
+                          <input
+                            type="date"
+                            className={inputCls}
+                            style={inputStyle}
+                            value={renewalForm.start_date}
+                            onChange={(e) => setRenewalForm({ ...renewalForm, start_date: e.target.value })}
+                          />
+                        </Field>
+                        <Field label="Tanggal Selesai">
+                          <input
+                            type="date"
+                            className={inputCls}
+                            style={inputStyle}
+                            value={renewalForm.end_date}
+                            onChange={(e) => setRenewalForm({ ...renewalForm, end_date: e.target.value })}
+                          />
+                        </Field>
+                      </div>
+                      <Field label="Catatan Tertulis" hint='Contoh: "Perpanjangan PKWT ke-2"'>
+                        <input
+                          className={inputCls}
+                          style={inputStyle}
+                          value={renewalForm.keterangan}
+                          onChange={(e) => setRenewalForm({ ...renewalForm, keterangan: e.target.value })}
+                        />
+                      </Field>
+                      <div className="flex justify-end">
+                        <Button type="button" onClick={handleAddRenewal} disabled={renewing}>
+                          {renewing ? "Menyimpan..." : "Simpan Perpanjangan"}
+                        </Button>
+                      </div>
+                    </div>
                   )}
 
                   {/* Info masa kerja saat edit */}
@@ -969,19 +1487,6 @@ export default function KaryawanPage() {
                           Kompensasi
                         </p>
                         <div className="grid grid-cols-2 gap-3">
-                          <Field
-                            label="Uang Makan (Rp/hari)"
-                            hint={`Default global: Rp ${(globalRules?.uang_makan_default ?? 100000).toLocaleString("id-ID")}`}
-                          >
-                            <input
-                              type="number"
-                              className={inputCls}
-                              style={inputStyle}
-                              placeholder="Kosong = ikut global"
-                              value={form.uang_makan_override}
-                              onChange={(e) => setForm({ ...form, uang_makan_override: e.target.value })}
-                            />
-                          </Field>
                           <Field
                             label="Bonus Lembur (Rp/jam)"
                             hint={`Default global: Rp ${(globalRules?.bonus_lembur_per_jam ?? 10000).toLocaleString("id-ID")}`}

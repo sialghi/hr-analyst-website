@@ -21,7 +21,8 @@ export function clearSession() {
 
 export function getRole(): Role | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem("hr_role") as Role | null;
+  const role = localStorage.getItem("hr_role")?.trim().toLowerCase();
+  return role === "hr_master" || role === "hr_staff" ? role : null;
 }
 
 export function getNama(): string | null {
@@ -151,6 +152,29 @@ export const api = {
     return res.json();
   },
 
+  async getWhatsAppIdentities() {
+    const res = await request("/employees/whatsapp-identities");
+    return res.json();
+  },
+
+  async revokeWhatsAppIdentity(id: number) {
+    const res = await request(`/employees/whatsapp-identities/${id}/revoke`, { method: "PATCH" });
+    return res.json();
+  },
+
+  async getWhatsAppAudit() {
+    const res = await request("/employees/whatsapp-audit");
+    return res.json();
+  },
+
+  async moveWhatsAppIdentity(id: number, employeeId: number, reason: string) {
+    const res = await request(`/employees/whatsapp-identities/${id}/move`, {
+      method: "PATCH",
+      body: JSON.stringify({ employee_id: employeeId, reason }),
+    });
+    return res.json();
+  },
+
   async getExpiringContracts() {
     const res = await request("/employees/contracts/expiring");
     return res.json();
@@ -196,10 +220,11 @@ export const api = {
     return res.blob();
   },
 
-  async importNikData(file: File): Promise<any> {
+  async importNikData(file: File, dryRun = false): Promise<any> {
     const form = new FormData();
     form.append("file", file);
-    const res = await request("/employees/import/nik", { method: "POST", body: form });
+    const query = dryRun ? "?dry_run=true" : "";
+    const res = await request(`/employees/import/nik${query}`, { method: "POST", body: form });
     return res.json();
   },
 

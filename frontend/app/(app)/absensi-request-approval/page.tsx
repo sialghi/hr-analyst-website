@@ -136,30 +136,30 @@ export default function AbsensiRequestApprovalPage() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-        <div className="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs">
-          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Permohonan</p>
+        <div className="p-4 rounded-lg bg-white border border-slate-200">
+          <p className="text-[11px] font-medium text-slate-500">Total Permohonan</p>
           <p className="text-2xl font-bold text-slate-900 mt-1">{leaves.length}</p>
           <p className="text-[11px] text-slate-400 mt-0.5">Absensi Jarak Jauh</p>
         </div>
-        <div className="p-4 rounded-xl bg-white border border-amber-200/90 shadow-2xs bg-amber-50/20">
-          <p className="text-[11px] font-semibold text-amber-600 uppercase tracking-wider">Menunggu Approval</p>
-          <p className="text-2xl font-bold text-amber-900 mt-1">{countPending}</p>
-          <p className="text-[11px] text-amber-600/80 mt-0.5">Perlu verifikasi HR</p>
+        <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+          <p className="text-[11px] font-medium text-slate-600">Menunggu Approval</p>
+          <p className="text-2xl font-bold text-slate-900 mt-1">{countPending}</p>
+          <p className="text-[11px] text-slate-500 mt-0.5">Perlu verifikasi HR</p>
         </div>
-        <div className="p-4 rounded-xl bg-white border border-emerald-200/90 shadow-2xs bg-emerald-50/20">
-          <p className="text-[11px] font-semibold text-emerald-600 uppercase tracking-wider">Telah Disetujui</p>
-          <p className="text-2xl font-bold text-emerald-900 mt-1">{countApproved}</p>
-          <p className="text-[11px] text-emerald-600/80 mt-0.5">Masuk ke Hari Kerja Valid</p>
+        <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+          <p className="text-[11px] font-medium text-slate-600">Telah Disetujui</p>
+          <p className="text-2xl font-bold text-slate-900 mt-1">{countApproved}</p>
+          <p className="text-[11px] text-slate-500 mt-0.5">Masuk ke Hari Kerja Valid</p>
         </div>
-        <div className="p-4 rounded-xl bg-white border border-rose-200/90 shadow-2xs bg-rose-50/20">
-          <p className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider">Ditolak</p>
-          <p className="text-2xl font-bold text-rose-900 mt-1">{countRejected}</p>
-          <p className="text-[11px] text-rose-600/80 mt-0.5">Tidak menambah Hari Kerja Valid</p>
+        <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+          <p className="text-[11px] font-medium text-slate-600">Ditolak</p>
+          <p className="text-2xl font-bold text-slate-900 mt-1">{countRejected}</p>
+          <p className="text-[11px] text-slate-500 mt-0.5">Tidak menambah Hari Kerja Valid</p>
         </div>
       </div>
 
       {/* Filter Bar */}
-      <div className="p-3.5 rounded-xl bg-white border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+      <div className="p-3.5 rounded-lg bg-white border border-slate-200 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2 flex-1">
           <input
             type="text"
@@ -194,7 +194,7 @@ export default function AbsensiRequestApprovalPage() {
       </div>
 
       {/* Table */}
-      <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-2xs">
+      <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
         {loading ? (
           <div className="p-8 text-center text-xs text-slate-400">Memuat data absensi jarak jauh...</div>
         ) : error ? (
@@ -289,20 +289,20 @@ export default function AbsensiRequestApprovalPage() {
                       </td>
                       <td className="px-4 py-3">
                         {item.status === "PENDING" && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
                             Pending
                           </span>
                         )}
                         {item.status === "APPROVED" && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
                             Disetujui
                           </span>
                         )}
                         {item.status === "REJECTED" && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
                             Ditolak
                           </span>
                         )}

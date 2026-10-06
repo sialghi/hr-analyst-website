@@ -197,6 +197,31 @@ export default function CutiIzinPage() {
 
   const currentYear = new Date().getFullYear();
 
+  function formatQuotaNumber(value: number) {
+    if (!Number.isFinite(value)) return "0";
+    return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+  }
+
+  function getAnnualLeaveQuotaText(nama: string) {
+    const item = balanceData.find((b) => b.nama.trim().toLowerCase() === nama.trim().toLowerCase());
+    if (!item || !item.total_quota || item.total_quota <= 0) {
+      return { text: "—", used: null, total: null, remaining: null, tone: "slate" as const };
+    }
+
+    const used = Number.isFinite(item.used_days) ? item.used_days : 0;
+    const total = Number.isFinite(item.total_quota) ? item.total_quota : 0;
+    const remaining = Math.max(0, total - used);
+    const tone = remaining <= 3 ? "amber" : item.is_exceeded ? "rose" : "emerald";
+
+    return {
+      text: `${formatQuotaNumber(used)}/${formatQuotaNumber(total)}`,
+      used,
+      total,
+      remaining,
+      tone,
+    };
+  }
+
   const selectedUserQuota = useMemo(() => {
     if (!formNama) return null;
     const nameClean = formNama.trim().toLowerCase();
@@ -432,25 +457,25 @@ export default function CutiIzinPage() {
         <>
           {/* KPI Cards LOG */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs">
-              <p className="text-[11px] font-semibold text-amber-600 uppercase tracking-wider">Menunggu Persetujuan</p>
+            <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+              <p className="text-[11px] font-medium text-slate-600">Menunggu Persetujuan</p>
               <p className="text-2xl font-bold text-slate-900 mt-1">{countPending}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">Perlu konfirmasi HR Master</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Perlu konfirmasi HR Master</p>
             </div>
-            <div className="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs">
-              <p className="text-[11px] font-semibold text-emerald-600 uppercase tracking-wider">Telah Disetujui</p>
+            <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+              <p className="text-[11px] font-medium text-slate-600">Telah Disetujui</p>
               <p className="text-2xl font-bold text-slate-900 mt-1">{countApproved}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">Otomatis diakui saat proses absensi</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Otomatis diakui saat proses absensi</p>
             </div>
-            <div className="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs">
-              <p className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider">Ditolak</p>
+            <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+              <p className="text-[11px] font-medium text-slate-600">Ditolak</p>
               <p className="text-2xl font-bold text-slate-900 mt-1">{countRejected}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">Tetap dihitung sesuai aturan biasa</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Tetap dihitung sesuai aturan biasa</p>
             </div>
-            <div className="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs">
-              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Pengajuan</p>
+            <div className="p-4 rounded-lg bg-white border border-slate-200">
+              <p className="text-[11px] font-medium text-slate-600">Total Pengajuan</p>
               <p className="text-2xl font-bold text-slate-900 mt-1">{countPending + countApproved + countRejected}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">Cuti &amp; izin (tanpa Absen Jarak Jauh)</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Cuti &amp; izin (tanpa Absen Jarak Jauh)</p>
             </div>
           </div>
         </>
@@ -460,27 +485,27 @@ export default function CutiIzinPage() {
         <>
           {/* KPI Cards BALANCE */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs">
-              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Total Karyawan</p>
+            <div className="p-4 rounded-lg bg-white border border-slate-200">
+              <p className="text-[11px] font-medium text-slate-600">Total Karyawan</p>
               <p className="text-2xl font-bold text-slate-900 mt-1">{balanceData.length}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">Tahun {balanceYear}</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Tahun {balanceYear}</p>
             </div>
-            <div className="p-4 rounded-xl bg-white border border-indigo-200/90 shadow-2xs bg-indigo-50/20">
-              <p className="text-[11px] font-semibold text-indigo-600 uppercase tracking-wider">Hak Cuti Aktif (&ge; 1 Thn)</p>
-              <p className="text-2xl font-bold text-indigo-900 mt-1">
+            <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+              <p className="text-[11px] font-medium text-slate-600">Hak Cuti Aktif (&ge; 1 Thn)</p>
+              <p className="text-2xl font-bold text-slate-900 mt-1">
                 {countEligible} <span className="text-xs font-normal text-slate-400">/ {balanceData.length}</span>
               </p>
               <p className="text-[11px] text-slate-500 mt-0.5">{countNotEligible} belum 1 tahun kerja</p>
             </div>
-            <div className="p-4 rounded-xl bg-white border border-amber-200/90 shadow-2xs bg-amber-50/20">
-              <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wider">Sisa Kritis (&le; 3 Hari)</p>
-              <p className="text-2xl font-bold text-amber-700 mt-1">{countCriticalBalance}</p>
-              <p className="text-[11px] text-amber-600/80 mt-0.5">{countExceededBalance} karyawan kelebihan cuti</p>
+            <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+              <p className="text-[11px] font-medium text-slate-600">Sisa Kritis (&le; 3 Hari)</p>
+              <p className="text-2xl font-bold text-slate-900 mt-1">{countCriticalBalance}</p>
+              <p className="text-[11px] text-slate-500 mt-0.5">{countExceededBalance} karyawan kelebihan cuti</p>
             </div>
-            <div className="p-4 rounded-xl bg-white border border-emerald-200/90 shadow-2xs bg-emerald-50/20">
-              <p className="text-[11px] font-semibold text-emerald-600 uppercase tracking-wider">Total Cuti Terpakai</p>
-              <p className="text-2xl font-bold text-emerald-700 mt-1">{totalLeaveDaysUsedAll.toFixed(1)} <span className="text-xs font-normal">Hari</span></p>
-              <p className="text-[11px] text-emerald-500 mt-0.5">Akumulasi seluruh tim ({balanceYear})</p>
+            <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
+              <p className="text-[11px] font-medium text-slate-600">Total Cuti Terpakai</p>
+              <p className="text-2xl font-bold text-slate-900 mt-1">{totalLeaveDaysUsedAll.toFixed(1)} <span className="text-xs font-normal">Hari</span></p>
+              <p className="text-[11px] text-slate-500 mt-0.5">Akumulasi seluruh tim ({balanceYear})</p>
             </div>
           </div>
         </>
@@ -489,7 +514,7 @@ export default function CutiIzinPage() {
 
       {/* Filter Bar LOG */}
       {activeTab === "LOG" && (
-        <div className="p-3.5 rounded-xl bg-white border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+        <div className="p-3.5 rounded-lg bg-white border border-slate-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2 flex-1">
             <input
               type="text"
@@ -536,7 +561,7 @@ export default function CutiIzinPage() {
 
       {/* Filter Bar BALANCE */}
       {activeTab === "BALANCE" && (
-        <div className="p-3.5 rounded-xl bg-white border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+        <div className="p-3.5 rounded-lg bg-white border border-slate-200 flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2 flex-1">
             <input
               type="text"
@@ -598,7 +623,7 @@ export default function CutiIzinPage() {
 
       {/* Table LOG */}
       {activeTab === "LOG" && (
-        <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-2xs">
+        <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
           {loading ? (
             <div className="p-8 text-center text-xs text-slate-400">Memuat data permohonan cuti & izin...</div>
           ) : error ? (
@@ -610,7 +635,7 @@ export default function CutiIzinPage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
                   <tr>
                     <th className="px-4 py-3">Nama Karyawan</th>
                     <th className="px-4 py-3">Kategori</th>
@@ -621,6 +646,7 @@ export default function CutiIzinPage() {
                     <th className="px-4 py-3 text-center">Foto Bukti / SKD</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Verifikator</th>
+                    <th className="px-4 py-3">Kuota Cuti Tahunan</th>
                     <th className="px-4 py-3 text-right">Aksi</th>
                 </tr>
               </thead>
@@ -631,6 +657,13 @@ export default function CutiIzinPage() {
                   const tglDisplay = isSameDay
                     ? item.tanggal_mulai
                     : `${item.tanggal_mulai} s/d ${item.tanggal_selesai}`;
+                  const quotaInfo = getAnnualLeaveQuotaText(item.nama);
+                  const quotaToneClasses = {
+                    slate: "bg-slate-100 text-slate-700 border-slate-200",
+                    amber: "bg-amber-50 text-amber-700 border-amber-200",
+                    emerald: "bg-emerald-50 text-emerald-700 border-emerald-200",
+                    rose: "bg-rose-50 text-rose-700 border-rose-200",
+                  }[quotaInfo.tone];
 
                   return (
                     <tr key={item.id} className={`hover:bg-slate-50/80 transition-colors ${item.kategori === "WORK_FROM_LOCATION" ? "bg-indigo-50/30" : ""}`}>
@@ -715,20 +748,20 @@ export default function CutiIzinPage() {
                       </td>
                       <td className="px-4 py-3">
                         {item.status === "PENDING" && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
                             Pending
                           </span>
                         )}
                         {item.status === "APPROVED" && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
                             Disetujui
                           </span>
                         )}
                         {item.status === "REJECTED" && (
-                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
                             Ditolak
                           </span>
                         )}
@@ -745,6 +778,18 @@ export default function CutiIzinPage() {
                           </div>
                         ) : (
                           "-"
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-[11px]">
+                        {quotaInfo.text === "—" ? (
+                          <span className="text-slate-300">—</span>
+                        ) : (
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border font-semibold ${quotaToneClasses}`}
+                            title={quotaInfo.remaining !== null ? `Sisa ${formatQuotaNumber(quotaInfo.remaining)} hari` : "Kuota cuti tahunan"}
+                          >
+                            {quotaInfo.text}
+                          </span>
                         )}
                       </td>
                       <td className="px-4 py-3 text-right">
@@ -805,7 +850,7 @@ export default function CutiIzinPage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
                   <tr>
                     <th className="px-4 py-3">Nama Karyawan</th>
                     <th className="px-4 py-3">Mulai Kerja &amp; 1 Thn</th>
@@ -826,9 +871,7 @@ export default function CutiIzinPage() {
                     return (
                       <tr
                         key={idx}
-                        className={`hover:bg-slate-50/80 transition-colors ${
-                          isExceeded ? "bg-rose-50/40" : isCritical ? "bg-amber-50/30" : ""
-                        }`}
+                        className="hover:bg-slate-50/80 transition-colors"
                       >
                         <td className="px-4 py-3 font-semibold text-slate-900">
                           <button
@@ -1017,10 +1060,10 @@ export default function CutiIzinPage() {
                     return (
                       <div className={`mt-2 p-2.5 rounded-lg text-[11px] border ${
                         !isFormEmpEligible
-                          ? "bg-amber-50 text-amber-900 border-amber-200"
+                          ? "bg-slate-50 text-slate-700 border-slate-200"
                           : selectedUserQuota.remaining > 0
-                          ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                          : "bg-rose-50 text-rose-800 border-rose-200"
+                          ? "bg-slate-50 text-slate-700 border-slate-200"
+                          : "bg-slate-50 text-slate-700 border-slate-200"
                       }`}>
                         <div className="flex items-center justify-between">
                           <span className="font-semibold">
@@ -1035,7 +1078,7 @@ export default function CutiIzinPage() {
                           </span>
                         </div>
                         {!isFormEmpEligible ? (
-                          <p className="mt-1 text-[10px] text-amber-700 leading-tight">
+                          <p className="mt-1 text-[10px] text-slate-600 leading-tight">
                             {selectedUserQuota.join_date
                               ? `Mulai kerja: ${selectedUserQuota.join_date}. Genap 1 tahun pada ${selectedUserQuota.eligible_from}. Cuti tahunan belum dapat diajukan.`
                               : "Karyawan belum memiliki data Tanggal Masuk (join_date). Lengkapi data di menu Karyawan."}
@@ -1070,12 +1113,12 @@ export default function CutiIzinPage() {
                   <option value="WORK_FROM_LOCATION">Absensi Jarak Jauh</option>
                 </select>
                 {formKategori === "CUTI_SETENGAH_HARI" && (
-                  <p className="text-[10px] text-amber-700 mt-1.5 bg-amber-50 rounded px-2 py-1 border border-amber-200">
+                  <p className="text-[10px] text-slate-600 mt-1.5 bg-slate-50 rounded px-2 py-1 border border-slate-200">
                     Cuti Setengah Hari (CS) memotong <strong>0.5 hari</strong> dari kuota cuti tahunan.
                   </p>
                 )}
                 {formKategori === "WORK_FROM_LOCATION" && (
-                  <p className="text-[10px] text-indigo-600 mt-1.5 bg-indigo-50 rounded px-2 py-1 border border-indigo-100">
+                  <p className="text-[10px] text-slate-600 mt-1.5 bg-slate-50 rounded px-2 py-1 border border-slate-200">
                     Hari ini akan dihitung sebagai <strong>Hari Kerja Valid</strong> setelah disetujui HR Master. Pilih cabang karyawan di atas.
                   </p>
                 )}

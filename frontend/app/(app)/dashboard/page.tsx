@@ -217,7 +217,7 @@ export default function Dashboard() {
         />
         <ActionCard
           title="Kelola Master Karyawan"
-          desc="Sinkronisasi status TETAP/PKWT, tanggal join, perpanjangan kontrak, dan penugasan profil kerja."
+          desc="Sinkronisasi status PKWTT/PKWT/PHL, tanggal join, perpanjangan kontrak, dan penugasan profil kerja."
           href="/karyawan"
         />
         <ActionCard
