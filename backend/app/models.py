@@ -185,6 +185,8 @@ class WhatsAppAuditLog(Base):
     detail = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
 
+    employee = relationship("Employee")
+
 
 class WhatsAppProcessedMessage(Base):
     """ID pesan Meta yang sudah diterima agar webhook idempotent."""
