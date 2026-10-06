@@ -634,7 +634,7 @@ export default function CutiIzinPage() {
               Tidak ada permohonan cuti/izin yang sesuai filter.
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="max-h-[calc(100vh-18rem)] overflow-x-auto overflow-y-auto">
               <table className="w-full text-left text-xs">
                 <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
                   <tr>
@@ -849,7 +849,7 @@ export default function CutiIzinPage() {
               Tidak ada data saldo cuti karyawan yang sesuai filter.
             </div>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="max-h-[calc(100vh-18rem)] overflow-x-auto overflow-y-auto">
               <table className="w-full text-left text-xs">
                 <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-600">
                   <tr>
@@ -1388,7 +1388,7 @@ export default function CutiIzinPage() {
                     {employeeDetailData.history.length === 0 ? (
                       <p className="text-xs text-slate-400 py-3 text-center border border-dashed rounded-lg">Belum ada riwayat permohonan di tahun ini.</p>
                     ) : (
-                      <div className="max-h-56 overflow-y-auto border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+                      <div className="max-h-56 overflow-x-auto overflow-y-auto border border-slate-200 rounded-xl shadow-2xs">
                         <table className="w-full text-[11px] text-left">
                           <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 font-semibold text-slate-600 uppercase tracking-wider text-[10px]">
                             <tr>
@@ -1445,7 +1445,7 @@ export default function CutiIzinPage() {
                       Belum ada entri mutasi ledger kuota cuti untuk karyawan ini di tahun {balanceYear}.
                     </div>
                   ) : (
-                    <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs max-h-72 overflow-y-auto">
+                    <div className="border border-slate-200 rounded-xl shadow-2xs max-h-72 overflow-x-auto overflow-y-auto">
                       <table className="w-full text-left text-[11px]">
                         <thead className="bg-slate-50 border-b border-slate-200 text-[10px] font-semibold text-slate-600 uppercase tracking-wider sticky top-0">
                           <tr>
