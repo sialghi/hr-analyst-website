@@ -104,8 +104,8 @@ class Employee(Base):
     active = Column(Boolean, default=True)
 
     # ── Status Kepegawaian & Data Kontrak ────────────────────────────────────
-    # employment_status: "TETAP" (karyawan tetap) atau "PKWT" (karyawan kontrak)
-    employment_status = Column(String, nullable=False, default="TETAP")
+    # employment_status: "PKWTT" (karyawan tetap), "PKWT" (karyawan kontrak), atau "PHL" (pekerja harian lapangan)
+    employment_status = Column(String, nullable=False, default="PKWTT")
     # join_date: Tanggal mulai bergabung / masuk perusahaan (Wajib diisi untuk hitungan kompensasi PHK)
     join_date = Column(Date, nullable=True)
 
@@ -137,7 +137,7 @@ class EmploymentContract(Base):
     Status:
       - ACTIVE: Kontrak berjalan
       - EXPIRED: Masa kontrak telah habis
-      - PROMOTED_TO_PERMANENT: Karyawan diangkat menjadi Karyawan Tetap
+      - PROMOTED_TO_PERMANENT: Karyawan diangkat menjadi PKWTT
       - RENEWED: Kontrak telah diperpanjang ke periode berikutnya
     """
     __tablename__ = "employment_contracts"

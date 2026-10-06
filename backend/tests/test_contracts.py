@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import datetime
+import io
 import unittest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -10,8 +11,10 @@ from app.main import app
 from app.models import User, Employee, EmploymentContract, Profile, RoleEnum
 from app.config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
 from app.auth import get_current_user, require_hr_master
+from app.pipeline.loader import build_master_df_from_db
 
 from sqlalchemy.pool import StaticPool
+from openpyxl import Workbook
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -137,21 +140,21 @@ class TestContractManagement(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         emp_id = res.json()["id"]
 
-        # Promote to TETAP
+        # Promote to PKWTT
         update_res = client.put(f"/employees/{emp_id}", json={
             "nama": "Reno Promosi",
             "profile_code": "OFFICE",
-            "employment_status": "TETAP",
+            "employment_status": "PKWTT",
             "join_date": "2026-01-01",
         })
         self.assertEqual(update_res.status_code, 200)
         updated_emp = update_res.json()
 
-        self.assertEqual(updated_emp["employment_status"], "TETAP")
-        # Kontrak lama TETAP tersimpan di riwayat dengan status PROMOTED_TO_PERMANENT
+        self.assertEqual(updated_emp["employment_status"], "PKWTT")
+        # Kontrak lama PKWT tersimpan di riwayat dengan status PROMOTED_TO_PERMANENT
         self.assertEqual(len(updated_emp["contracts"]), 1)
         self.assertEqual(updated_emp["contracts"][0]["status"], "PROMOTED_TO_PERMANENT")
-        self.assertIn("Diangkat menjadi Karyawan Tetap", updated_emp["contracts"][0]["keterangan"])
+        self.assertIn("Diangkat menjadi PKWTT", updated_emp["contracts"][0]["keterangan"])
 
     def test_5_contract_renewal(self):
         today = get_today_jakarta()
@@ -190,6 +193,112 @@ class TestContractManagement(unittest.TestCase):
         statuses = {c["contract_number"]: c["status"] for c in emp_data["contracts"]}
         self.assertEqual(statuses[1], "RENEWED")
         self.assertEqual(statuses[2], "ACTIVE")
+
+    def test_6_master_workbook_dry_run_and_apply(self):
+        employee = Employee(
+            nama="Rina Cabang",
+            profile_code="OFFICE",
+            employment_status="TETAP",
+            active=True,
+        )
+        db = TestingSessionLocal()
+        db.add(employee)
+        db.commit()
+        db.close()
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Hasil Merge"
+        sheet.append([
+            "No",
+            "Nama (Summary)",
+            "NIK",
+            "Status Kepegawaian",
+            "Tanggal Join",
+            "Lokasi Kerja Valid",
+            "Status Aktif (Master)",
+        ])
+        sheet.append([
+            1,
+            "Rina Cabang",
+            "3201010101010001",
+            "PKWTT",
+            datetime.date(2024, 1, 15),
+            "Cab. Bandung",
+            "Aktif",
+        ])
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        dry_run = client.post(
+            "/employees/import/nik?dry_run=true",
+            files={"file": ("master.xlsx", output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        self.assertEqual(dry_run.status_code, 200)
+        self.assertTrue(dry_run.json()["dry_run"])
+        self.assertEqual(dry_run.json()["total_updated"], 1)
+
+        db = TestingSessionLocal()
+        unchanged = db.query(Employee).filter(Employee.nama == "Rina Cabang").one()
+        self.assertIsNone(unchanged.cabang)
+        self.assertIsNone(unchanged.nik)
+        self.assertEqual(unchanged.employment_status, "TETAP")
+        db.close()
+
+        output.seek(0)
+        applied = client.post(
+            "/employees/import/nik",
+            files={"file": ("master.xlsx", output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        self.assertEqual(applied.status_code, 200)
+        self.assertFalse(applied.json()["dry_run"])
+
+        db = TestingSessionLocal()
+        updated = db.query(Employee).filter(Employee.nama == "Rina Cabang").one()
+        self.assertEqual(updated.cabang, "BANDUNG")
+        self.assertEqual(updated.nik, "3201010101010001")
+        self.assertEqual(updated.join_date, datetime.date(2024, 1, 15))
+        self.assertEqual(updated.employment_status, "PKWTT")
+        db.close()
+
+    def test_7_meal_allowance_blank_is_zero_and_zero_does_not_fallback(self):
+        db = TestingSessionLocal()
+        db.add_all([
+            Employee(nama="Andi Makan", profile_code="OFFICE", uang_makan_override=100000, active=True),
+            Employee(nama="Budi Tanpa Makan", profile_code="OFFICE", uang_makan_override=None, active=True),
+        ])
+        db.commit()
+        db.close()
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "HO"
+        sheet.append(["Status", "Nama", "Uang Makan ", "Gaji Pokok "])
+        sheet.append(["Office A", "Andi Makan", 0, None])
+        sheet.append(["Office A", "Budi Tanpa Makan", None, None])
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+
+        response = client.post(
+            "/employees/import",
+            files={"file": ("data-uangmakan-posisi.xlsx", output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["updated"], 2)
+
+        db = TestingSessionLocal()
+        employees = {
+            e.nama: e
+            for e in db.query(Employee).filter(Employee.nama.in_(["Andi Makan", "Budi Tanpa Makan"])).all()
+        }
+        self.assertEqual(employees["Andi Makan"].uang_makan_override, 0)
+        self.assertEqual(employees["Budi Tanpa Makan"].uang_makan_override, 0)
+        master = build_master_df_from_db(list(employees.values()))
+        self.assertEqual(master.loc[master["Nama_Asli"] == "Andi Makan", "Uang_Makan"].iloc[0], 0)
+        self.assertEqual(master.loc[master["Nama_Asli"] == "Budi Tanpa Makan", "Uang_Makan"].iloc[0], 0)
+        db.close()
 
 
 if __name__ == "__main__":

@@ -12,8 +12,22 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 from ..config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
 
 
+def _normalize_employment_status(value: Optional[str]) -> str:
+    """Normalisasi status kepegawaian agar label baru aman untuk data lama."""
+    normalized = (value or "PKWTT").upper().strip()
+    aliases = {
+        "TETAP": "PKWTT",
+        "KARYAWAN_TETAP": "PKWTT",
+        "PKWTT": "PKWTT",
+        "PKWT": "PKWT",
+        "PHL": "PHL",
+    }
+    return aliases.get(normalized, normalized)
+
+
 def _enrich_employee_data(emp: models.Employee) -> models.Employee:
     """Helper untuk menghitung tenure & contract_reminder_status pada objek Employee."""
+    emp.employment_status = _normalize_employment_status(emp.employment_status)
     emp.tenure_display = calculate_tenure(emp.join_date)["display"]
 
     today = get_today_jakarta()
@@ -65,7 +79,7 @@ def list_employees(
     if profile_code:
         q = q.filter(models.Employee.profile_code == profile_code)
     if employment_status:
-        q = q.filter(models.Employee.employment_status == employment_status.upper())
+        q = q.filter(models.Employee.employment_status == _normalize_employment_status(employment_status))
 
     employees = q.order_by(models.Employee.nama).all()
     for emp in employees:
@@ -428,18 +442,21 @@ def download_nik_import_template(
 @router.post("/import/nik")
 def import_nik_from_excel(
     file: UploadFile = File(...),
+    dry_run: bool = Query(default=False),
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_hr_master),
 ):
     """
-    Upload file Excel hasil isi template NIK untuk update massal:
-    NIK, Join Date, dan Waktu Berakhir Kontrak karyawan.
+    Upload file Excel untuk update massal master karyawan:
+    cabang, NIK, Join Date, status kepegawaian, dan Waktu Berakhir Kontrak.
 
     Aturan:
     - Match karyawan berdasarkan nama (case-insensitive, strip whitespace).
-    - Hanya kolom yang diisi yang diupdate (kolom kosong dilewati).
+    - Hanya kolom yang diisi yang diupdate (kolom kosong tidak menghapus data lama).
+    - Status harus PKWTT, PKWT, atau PHL.
+    - Nilai cabang workbook dinormalisasi ke nomenklatur database.
     - Waktu Berakhir hanya diproses jika karyawan berstatus PKWT.
-    - Mengembalikan ringkasan hasil: diupdate, dilewati, tidak ditemukan.
+    - dry_run=true hanya mengembalikan preview tanpa commit.
     """
     import io
     import openpyxl
@@ -461,8 +478,26 @@ def import_nik_from_excel(
     )
     ws = wb[sheet_name]
 
-    # Baca header dari baris ke-3 (baris 1-2 adalah judul & catatan)
-    header_row = [str(c.value or "").strip().lower() for c in ws[3]]
+    # Template lama memiliki header di baris ke-3, sedangkan workbook master
+    # baru memiliki header di baris pertama. Cari baris header secara adaptif.
+    header_row_idx = None
+    header_row = []
+    for candidate_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=min(ws.max_row, 10)), start=1):
+        candidate = [str(c.value or "").strip().lower() for c in row]
+        if any("nama" in h for h in candidate) and (
+            any("nik" in h for h in candidate)
+            or any("status kepegawaian" in h for h in candidate)
+            or any("tanggal join" in h for h in candidate)
+        ):
+            header_row_idx = candidate_idx
+            header_row = candidate
+            break
+
+    if header_row_idx is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Format file tidak dikenali. Pastikan file memiliki kolom Nama, NIK, Status Kepegawaian, atau Tanggal Join.",
+        )
     
     def col_idx(keyword: str) -> int:
         """Cari indeks kolom berdasarkan keyword (0-based)."""
@@ -474,12 +509,18 @@ def import_nik_from_excel(
     idx_nama   = col_idx("nama")
     idx_nik    = col_idx("nik")
     idx_join   = col_idx("join")
+    if idx_join < 0:
+        idx_join = col_idx("tanggal join")
     idx_end    = col_idx("berakhir")
+    idx_status = col_idx("status kepegawaian")
+    idx_cabang = col_idx("lokasi kerja")
+    if idx_cabang < 0:
+        idx_cabang = col_idx("cabang")
 
     if idx_nama < 0 or idx_nik < 0:
         raise HTTPException(
             status_code=400,
-            detail="Format file tidak dikenali. Pastikan menggunakan template resmi yang diunduh dari sistem."
+            detail="Format file tidak dikenali. Pastikan file memiliki kolom Nama dan NIK."
         )
 
     def parse_date(val) -> Optional[date_type]:
@@ -517,11 +558,28 @@ def import_nik_from_excel(
         "not_found": [],  # nama tidak cocok
         "nik_conflict": [],  # NIK sudah dipakai karyawan lain
         "invalid_nik": [],   # format NIK salah
+        "invalid_status": [],
+        "unmapped_branch": [],
     }
 
-    for row in ws.iter_rows(min_row=4):
+    branch_mapping = {
+        "gudang a": "BLOK A",
+        "gudang c": "BLOK C",
+        "kebayoran lama": "KEBAYORAN LAMA",
+        "reef plus": "REEF+/PIK",
+        "cab. bandung": "BANDUNG",
+        "cab bandung": "BANDUNG",
+        "bandung": "BANDUNG",
+        "glc": "GREENLAKE CITY",
+        "tj. duren": "TANJUNG DUREN",
+        "tj duren": "TANJUNG DUREN",
+        "tanjung duren": "TANJUNG DUREN",
+    }
+
+    for row in ws.iter_rows(min_row=header_row_idx + 1):
         vals = [cell.value for cell in row]
-        if len(vals) <= max(idx_nama, idx_nik):
+        required_indexes = [idx_nama, idx_nik, idx_join, idx_status, idx_cabang, idx_end]
+        if len(vals) <= max(required_indexes):
             continue
 
         nama_raw = vals[idx_nama]
@@ -529,12 +587,14 @@ def import_nik_from_excel(
             continue
 
         nama_key = str(nama_raw).strip()
-        nik_raw  = vals[idx_nik]  if idx_nik  >= 0 else None
+        nik_raw = vals[idx_nik] if idx_nik >= 0 else None
         join_raw = vals[idx_join] if idx_join >= 0 else None
-        end_raw  = vals[idx_end]  if idx_end  >= 0 else None
+        end_raw = vals[idx_end] if idx_end >= 0 else None
+        status_raw = vals[idx_status] if idx_status >= 0 else None
+        branch_raw = vals[idx_cabang] if idx_cabang >= 0 else None
 
         # Skip jika semua kolom yang perlu diisi kosong
-        if not nik_raw and not join_raw and not end_raw:
+        if not any(value not in (None, "") for value in (nik_raw, join_raw, end_raw, status_raw, branch_raw)):
             results["skipped"].append(nama_key)
             continue
 
@@ -548,6 +608,34 @@ def import_nik_from_excel(
             continue
 
         updated_fields = []
+        pending_updates = {}
+
+        # -- Update Cabang --
+        if branch_raw not in (None, ""):
+            branch_key = str(branch_raw).strip().lower()
+            branch_value = branch_mapping.get(branch_key)
+            if branch_value:
+                pending_updates["cabang"] = branch_value
+                updated_fields.append(f"Cabang → {branch_value}")
+            else:
+                results["unmapped_branch"].append({
+                    "nama": nama_key,
+                    "lokasi": str(branch_raw).strip(),
+                })
+
+        # -- Update Status Kepegawaian --
+        if status_raw not in (None, ""):
+            status_value = str(status_raw).strip().upper()
+            if status_value == "TETAP":
+                status_value = "PKWTT"
+            if status_value not in ("PKWTT", "PKWT", "PHL"):
+                results["invalid_status"].append({
+                    "nama": nama_key,
+                    "status": str(status_raw).strip(),
+                })
+            else:
+                pending_updates["employment_status"] = status_value
+                updated_fields.append(f"Status → {status_value}")
 
         # -- Update NIK --
         if nik_raw:
@@ -567,17 +655,18 @@ def import_nik_from_excel(
                         "konflik_dengan": conflict.nama,
                     })
                 else:
-                    emp.nik = clean
+                    pending_updates["nik"] = clean
                     updated_fields.append("NIK")
 
         # -- Update Join Date --
         join_date_parsed = parse_date(join_raw)
         if join_date_parsed:
-            emp.join_date = join_date_parsed
+            pending_updates["join_date"] = join_date_parsed
             updated_fields.append("Join Date")
 
         # -- Update Waktu Berakhir Kontrak (hanya PKWT) --
-        if end_raw and emp.employment_status == "PKWT":
+        effective_status = pending_updates.get("employment_status", _normalize_employment_status(emp.employment_status))
+        if end_raw and effective_status == "PKWT":
             end_date_parsed = parse_date(end_raw)
             if end_date_parsed:
                 active_c = next(
@@ -588,20 +677,29 @@ def import_nik_from_excel(
                     updated_fields.append("Waktu Berakhir Kontrak")
 
         if updated_fields:
+            if not dry_run:
+                for field, value in pending_updates.items():
+                    setattr(emp, field, value)
             results["updated"].append({
                 "nama": emp.nama,
                 "fields": ", ".join(updated_fields),
             })
 
-    db.commit()
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
 
     return {
         "message": "Import selesai.",
+        "dry_run": dry_run,
         "total_updated": len(results["updated"]),
         "total_skipped": len(results["skipped"]),
         "total_not_found": len(results["not_found"]),
         "total_nik_conflict": len(results["nik_conflict"]),
         "total_invalid_nik": len(results["invalid_nik"]),
+        "total_invalid_status": len(results["invalid_status"]),
+        "total_unmapped_branch": len(results["unmapped_branch"]),
         "detail": results,
     }
 
@@ -630,9 +728,9 @@ def create_employee(
     if not profile:
         raise HTTPException(status_code=400, detail=f"Profil '{payload.profile_code}' tidak ditemukan.")
 
-    emp_status = (payload.employment_status or "TETAP").upper().strip()
-    if emp_status not in ("TETAP", "PKWT"):
-        raise HTTPException(status_code=400, detail="Status kepegawaian harus 'TETAP' atau 'PKWT'.")
+    emp_status = _normalize_employment_status(payload.employment_status)
+    if emp_status not in ("PKWTT", "PKWT", "PHL"):
+        raise HTTPException(status_code=400, detail="Status kepegawaian harus 'PKWTT', 'PKWT', atau 'PHL'.")
 
     # Validasi join_date: Wajib untuk semua karyawan baru
     if not payload.join_date:
@@ -696,16 +794,17 @@ def update_employee(
     if not profile:
         raise HTTPException(status_code=400, detail=f"Profil '{payload.profile_code}' tidak ditemukan.")
 
-    new_status = (payload.employment_status or "TETAP").upper().strip()
-    if new_status not in ("TETAP", "PKWT"):
-        raise HTTPException(status_code=400, detail="Status kepegawaian harus 'TETAP' atau 'PKWT'.")
+    emp.employment_status = _normalize_employment_status(emp.employment_status)
+    new_status = _normalize_employment_status(payload.employment_status)
+    if new_status not in ("PKWTT", "PKWT", "PHL"):
+        raise HTTPException(status_code=400, detail="Status kepegawaian harus 'PKWTT', 'PKWT', atau 'PHL'.")
 
-    # Jika diubah dari PKWT ke TETAP (Pengangkatan Karyawan Tetap)
-    if emp.employment_status == "PKWT" and new_status == "TETAP":
+    # Jika diubah dari PKWT ke PKWTT (Pengangkatan Karyawan Tetap)
+    if emp.employment_status == "PKWT" and new_status == "PKWTT":
         for c in emp.contracts:
             if c.status == "ACTIVE":
                 c.status = "PROMOTED_TO_PERMANENT"
-                c.keterangan = (c.keterangan or "") + " [Diangkat menjadi Karyawan Tetap]"
+                c.keterangan = (c.keterangan or "") + " [Diangkat menjadi PKWTT]"
 
     # Jika status PKWT & ada input tanggal kontrak baru/update
     if new_status == "PKWT":
@@ -734,6 +833,8 @@ def update_employee(
                 db.add(new_c)
 
     emp_dict = payload.dict(exclude={"contract_start_date", "contract_end_date", "contract_keterangan"})
+    if "employment_status" in emp_dict:
+        emp_dict["employment_status"] = _normalize_employment_status(emp_dict["employment_status"])
     for field, value in emp_dict.items():
         setattr(emp, field, value)
 
@@ -1002,6 +1103,12 @@ async def import_employees(
         # Buang baris yang terlihat seperti header atau placeholder
         if nama.lower() in ("live stream", "nama", "nama karyawan"):
             skipped += 1
+            if nama.lower() == "live stream":
+                errors.append({
+                    "row": row_num,
+                    "nama": nama,
+                    "reason": "Nama tidak ditemukan di master karyawan",
+                })
             continue
 
         total_rows += 1
@@ -1045,15 +1152,20 @@ async def import_employees(
 
         # Uang Makan Override
         uang_makan_override = None
-        if "uang_makan" in col_map and pd.notna(row.get(col_map["uang_makan"])):
-            raw_um = str(row[col_map["uang_makan"]]).strip()
-            raw_um_clean = raw_um.replace(",", "").replace(".", "").replace(" ", "")
+        if "uang_makan" in col_map:
+            raw_um = row.get(col_map["uang_makan"])
+            raw_um_text = "" if pd.isna(raw_um) else str(raw_um).strip()
             try:
-                val = int(float(raw_um_clean)) if raw_um_clean else None
-                if val is not None and val >= 0:
-                    uang_makan_override = val
+                if not raw_um_text:
+                    val = 0
+                elif raw_um_text.endswith(".0"):
+                    val = int(float(raw_um_text))
+                else:
+                    raw_um_clean = raw_um_text.replace(",", "").replace(".", "").replace(" ", "")
+                    val = int(float(raw_um_clean))
+                uang_makan_override = val if val >= 0 else 0
             except (ValueError, OverflowError):
-                uang_makan_override = None
+                uang_makan_override = 0
 
         # BPJS Kesehatan & BPJS TK
         bpjs_kesehatan = None
@@ -1142,7 +1254,7 @@ async def import_employees(
                 bpjs_tk=bpjs_tk or 0,
                 nik=nik_val,
                 join_date=join_date_val,
-                employment_status="PKWT" if contract_end_val else "TETAP",
+                employment_status="PKWT" if contract_end_val else "PKWTT",
                 active=active,
             )
             db.add(new_emp)

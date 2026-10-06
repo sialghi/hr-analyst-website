@@ -194,7 +194,7 @@ def load_master_karyawan(path):
     # Uang makan override
     if "Uang_Makan_Override" in col_map:
         raw_uang = df[col_map["Uang_Makan_Override"]]
-        hasil["Uang_Makan"] = pd.to_numeric(raw_uang, errors="coerce").fillna(config.UANG_MAKAN_DEFAULT).astype(int)
+        hasil["Uang_Makan"] = pd.to_numeric(raw_uang, errors="coerce").fillna(0).astype(int)
     else:
         hasil["Uang_Makan"] = config.UANG_MAKAN_DEFAULT
 
@@ -230,7 +230,11 @@ def build_master_df_from_db(employees):
             "Nama_Normal": config.normalisasi_nama(nama_asli),
             "Profil": emp.profile_code,
             "Status_Raw": emp.profile_code,
-            "Uang_Makan": emp.uang_makan_override if emp.uang_makan_override else config.UANG_MAKAN_DEFAULT,
+            "Uang_Makan": (
+                emp.uang_makan_override
+                if emp.uang_makan_override is not None
+                else config.UANG_MAKAN_DEFAULT
+            ),
             "BPJS_Kesehatan": getattr(emp, "bpjs_kesehatan", 0) or 0,
             "BPJS_TK": getattr(emp, "bpjs_tk", 0) or 0,
         })

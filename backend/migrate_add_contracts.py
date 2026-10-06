@@ -16,8 +16,8 @@ cols = [row[1] for row in cur.fetchall()]
 print("Kolom employees saat ini:", cols)
 
 if "employment_status" not in cols:
-    cur.execute("ALTER TABLE employees ADD COLUMN employment_status VARCHAR DEFAULT 'TETAP'")
-    print("[OK] Kolom employment_status berhasil ditambahkan (default: TETAP)")
+    cur.execute("ALTER TABLE employees ADD COLUMN employment_status VARCHAR DEFAULT 'PKWTT'")
+    print("[OK] Kolom employment_status berhasil ditambahkan (default: PKWTT)")
 else:
     print("[INFO] Kolom employment_status sudah ada")
 

@@ -78,7 +78,7 @@ async def check_and_send_contract_reminders():
             )
 
         lines.append("\n━━━━━━━━━━━━━━━━━━")
-        lines.append("Buka Website HR pada menu *Karyawan* atau *Dashboard* untuk perpanjangan kontrak / pengangkatan Karyawan Tetap.")
+        lines.append("Buka Website HR pada menu *Karyawan* atau *Dashboard* untuk perpanjangan kontrak / pengangkatan PKWTT.")
 
         message_text = "\n".join(lines)
         print(f"[Scheduler] Mengirim notifikasi reminder {len(expiring_items)} kontrak ke WhatsApp HR: {hr_phone}")

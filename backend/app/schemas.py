@@ -149,7 +149,7 @@ class EmployeeBase(BaseModel):
     active: bool = True
 
     # Status Kepegawaian & Data Kontrak
-    employment_status: str = "TETAP"  # "TETAP" atau "PKWT"
+    employment_status: str = "PKWTT"  # "PKWTT", "PKWT", atau "PHL"
     join_date: Optional[date] = None   # Tanggal masuk / bergabung
 
     # Input helper saat membuat/mengubah karyawan PKWT

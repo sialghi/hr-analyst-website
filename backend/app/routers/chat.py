@@ -239,7 +239,11 @@ def _get_employee_detail(result_data: dict, nama_cari: str, db: Session | None =
         try:
             emp = db.query(models.Employee).filter(models.Employee.nama.ilike(f"%{nama_cari}%")).first()
             if emp:
-                um_info = _rupiah(emp.uang_makan_override) if emp.uang_makan_override else "Mengikuti Aturan Global"
+                um_info = (
+                    _rupiah(emp.uang_makan_override)
+                    if emp.uang_makan_override is not None
+                    else "Mengikuti Aturan Global"
+                )
                 detail_parts.append(
                     f"Master Karyawan: Nama={emp.nama}, Cabang={emp.cabang or 'Standar'}, "
                     f"Profil Jadwal={emp.profile_code}, Uang Makan Base={um_info}"
