@@ -1324,7 +1324,11 @@ export default function CutiIzinPage() {
                       <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/60">
                         <span className="text-slate-500 block text-[11px]">Cuti Tahunan (1.0)</span>
                         <span className="font-extrabold text-slate-900 text-base mt-0.5 block">
-                          {employeeDetailData.breakdown.cuti_tahunan.days.toFixed(1)} Hari
+                          {(
+                            Number(employeeDetailData.used_days || 0) > Number(employeeDetailData.total_quota || 0)
+                              ? Number(employeeDetailData.total_quota || 0)
+                              : Number(employeeDetailData.breakdown.cuti_tahunan.days || 0)
+                          ).toFixed(1)} Hari
                         </span>
                         <span className="text-[10px] text-slate-400 block mt-0.5">({employeeDetailData.breakdown.cuti_tahunan.count} kali pengajuan)</span>
                       </div>
