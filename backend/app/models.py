@@ -156,6 +156,45 @@ class EmploymentContract(Base):
     employee = relationship("Employee", back_populates="contracts")
 
 
+class WhatsAppIdentity(Base):
+    """Link persisten nomor WhatsApp ke satu karyawan."""
+    __tablename__ = "whatsapp_identities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    phone_number = Column(String, nullable=False, unique=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String, nullable=False, default="ACTIVE")
+    verified_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    employee = relationship("Employee")
+
+
+class WhatsAppAuditLog(Base):
+    """Audit minimal untuk proses login dan perubahan linking WhatsApp."""
+    __tablename__ = "whatsapp_audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    phone_number = Column(String, nullable=False, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    detail = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+
+
+class WhatsAppProcessedMessage(Base):
+    """ID pesan Meta yang sudah diterima agar webhook idempotent."""
+    __tablename__ = "whatsapp_processed_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(String, nullable=False, unique=True, index=True)
+    processed_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+
+
 class Holiday(Base):
     """Pengganti template_tanggal_merah.xlsx — daftar tanggal merah nasional."""
     __tablename__ = "holidays"

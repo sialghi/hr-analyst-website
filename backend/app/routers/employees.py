@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
+import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy.orm import Session
 
 from .. import models, schemas, auth
@@ -10,6 +11,121 @@ router = APIRouter(prefix="/employees", tags=["employees"])
 
 
 from ..config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
+
+
+@router.get("/whatsapp-identities")
+def list_whatsapp_identities(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    """Daftar linking nomor WhatsApp untuk ditinjau HR."""
+    rows = db.query(models.WhatsAppIdentity).order_by(models.WhatsAppIdentity.updated_at.desc()).all()
+    return [{
+        "id": row.id,
+        "phone_number": row.phone_number,
+        "employee_id": row.employee_id,
+        "employee_name": row.employee.nama if row.employee else None,
+        "employee_nik_last4": row.employee.nik[-4:] if row.employee and row.employee.nik else None,
+        "status": row.status,
+        "verified_at": row.verified_at,
+        "last_seen_at": row.last_seen_at,
+        "failed_attempts": row.failed_attempts,
+    } for row in rows]
+
+
+@router.patch("/whatsapp-identities/{identity_id}/revoke")
+def revoke_whatsapp_identity(
+    identity_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_hr_master),
+):
+    """Cabut linking WhatsApp; nomor dapat login ulang setelah proses verifikasi."""
+    identity = db.query(models.WhatsAppIdentity).filter(models.WhatsAppIdentity.id == identity_id).first()
+    if not identity:
+        raise HTTPException(status_code=404, detail="Linking WhatsApp tidak ditemukan.")
+    identity.status = "REVOKED"
+    db.add(models.WhatsAppAuditLog(
+        phone_number=identity.phone_number,
+        employee_id=identity.employee_id,
+        event_type="HR_REVOKE",
+        detail=f"Linking dicabut oleh {current_user.nama or 'HR Master'}",
+    ))
+    db.commit()
+    return {"status": "sukses", "identity_id": identity.id, "new_status": identity.status}
+
+
+@router.get("/whatsapp-audit")
+def list_whatsapp_audit(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    """Histori login, logout, kegagalan, dan perubahan linking WhatsApp."""
+    rows = (
+        db.query(models.WhatsAppAuditLog)
+        .order_by(models.WhatsAppAuditLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [{
+        "id": row.id,
+        "phone_number": row.phone_number,
+        "employee_id": row.employee_id,
+        "employee_name": row.employee.nama if row.employee else None,
+        "event_type": row.event_type,
+        "detail": row.detail,
+        "created_at": row.created_at,
+    } for row in rows]
+
+
+@router.patch("/whatsapp-identities/{identity_id}/move")
+def move_whatsapp_identity(
+    identity_id: int,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_hr_master),
+):
+    """Pindahkan linking ke karyawan lain setelah verifikasi manual oleh HR."""
+    target_employee_id = payload.get("employee_id")
+    reason = str(payload.get("reason") or "").strip()
+    if not isinstance(target_employee_id, int) or not reason:
+        raise HTTPException(status_code=400, detail="employee_id dan alasan pemindahan wajib diisi.")
+
+    identity = db.query(models.WhatsAppIdentity).filter(models.WhatsAppIdentity.id == identity_id).first()
+    target = db.query(models.Employee).filter(
+        models.Employee.id == target_employee_id,
+        models.Employee.active == True,
+    ).first()
+    if not identity:
+        raise HTTPException(status_code=404, detail="Linking WhatsApp tidak ditemukan.")
+    if not target:
+        raise HTTPException(status_code=404, detail="Karyawan tujuan tidak ditemukan atau tidak aktif.")
+
+    conflict = db.query(models.WhatsAppIdentity).filter(
+        models.WhatsAppIdentity.employee_id == target.id,
+        models.WhatsAppIdentity.status == "ACTIVE",
+        models.WhatsAppIdentity.id != identity.id,
+    ).first()
+    if conflict:
+        raise HTTPException(status_code=409, detail="Karyawan tujuan sudah memiliki linking WhatsApp aktif.")
+
+    previous_employee_id = identity.employee_id
+    identity.employee_id = target.id
+    identity.status = "ACTIVE"
+    identity.verified_at = datetime.datetime.utcnow()
+    identity.failed_attempts = 0
+    identity.locked_until = None
+    db.add(models.WhatsAppAuditLog(
+        phone_number=identity.phone_number,
+        employee_id=target.id,
+        event_type="HR_MOVE",
+        detail=(
+            f"Linking dipindahkan dari employee_id={previous_employee_id} "
+            f"ke employee_id={target.id} oleh {current_user.nama or 'HR Master'}: {reason}"
+        ),
+    ))
+    db.commit()
+    return {"status": "sukses", "identity_id": identity.id, "employee_id": target.id, "new_status": identity.status}
 
 
 def _normalize_employment_status(value: Optional[str]) -> str:

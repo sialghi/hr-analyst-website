@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import datetime
 import io
+import asyncio
 import unittest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -12,6 +13,7 @@ from app.models import User, Employee, EmploymentContract, Profile, RoleEnum
 from app.config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
 from app.auth import get_current_user, require_hr_master
 from app.pipeline.loader import build_master_df_from_db
+from app.routers import whatsapp
 
 from sqlalchemy.pool import StaticPool
 from openpyxl import Workbook
@@ -300,6 +302,159 @@ class TestContractManagement(unittest.TestCase):
         self.assertEqual(master.loc[master["Nama_Asli"] == "Budi Tanpa Makan", "Uang_Makan"].iloc[0], 0)
         db.close()
 
+    def test_8_whatsapp_login_links_phone_to_nik_after_confirmation(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            nama="Karyawan WhatsApp",
+            nik="3201010101010001",
+            profile_code="OFFICE",
+            active=True,
+        )
+        db.add(employee)
+        db.commit()
+        db.refresh(employee)
+
+        sent = []
+
+        async def fake_send(to_number, message):
+            sent.append((to_number, message))
+            return {"mocked": True}
+
+        original_send = whatsapp.send_whatsapp_text
+        whatsapp.send_whatsapp_text = fake_send
+        whatsapp.user_states.pop("628123456789", None)
+        try:
+            asyncio.run(whatsapp.process_whatsapp_incoming("08123456789", "login", None, db))
+            self.assertEqual(whatsapp.user_states["08123456789"]["step"], "login_waiting_nik")
+
+            asyncio.run(whatsapp.process_whatsapp_incoming("08123456789", "3201010101010001", None, db))
+            self.assertEqual(whatsapp.user_states["08123456789"]["step"], "login_confirmation")
+
+            asyncio.run(whatsapp.process_whatsapp_incoming("08123456789", "YaKiN Dan SaDaR", None, db))
+            identity = db.query(whatsapp.models.WhatsAppIdentity).one()
+            self.assertEqual(identity.phone_number, "628123456789")
+            self.assertEqual(identity.employee_id, employee.id)
+            self.assertEqual(identity.status, "ACTIVE")
+            self.assertTrue(any("Login berhasil" in message for _, message in sent))
+        finally:
+            whatsapp.send_whatsapp_text = original_send
+            whatsapp.user_states.pop("08123456789", None)
+            db.close()
+
+    def test_9_whatsapp_locks_all_messages_before_login(self):
+        db = TestingSessionLocal()
+        sent = []
+
+        async def fake_send(to_number, message):
+            sent.append(message)
+            return {"mocked": True}
+
+        original_send = whatsapp.send_whatsapp_text
+        whatsapp.send_whatsapp_text = fake_send
+        try:
+            asyncio.run(whatsapp.process_whatsapp_incoming("081111111111", "menu", None, db))
+            self.assertIn("belum login", sent[-1])
+            self.assertNotIn("step", whatsapp.user_states.get("081111111111", {}))
+
+            sent.clear()
+            asyncio.run(whatsapp.process_whatsapp_incoming("081111111111", "cuti", None, db))
+            self.assertIn("belum login", sent[-1])
+
+            sent.clear()
+            asyncio.run(whatsapp.process_whatsapp_incoming("081111111111", "login", None, db))
+            self.assertEqual(whatsapp.user_states["081111111111"]["step"], "login_waiting_nik")
+        finally:
+            whatsapp.send_whatsapp_text = original_send
+            whatsapp.user_states.pop("081111111111", None)
+            db.close()
+
+    def test_10_whatsapp_message_claim_is_idempotent(self):
+        db = TestingSessionLocal()
+        self.assertTrue(whatsapp.claim_whatsapp_message(db, "wamid.TEST-001"))
+        self.assertFalse(whatsapp.claim_whatsapp_message(db, "wamid.TEST-001"))
+        self.assertTrue(whatsapp.claim_whatsapp_message(db, "wamid.TEST-002"))
+        self.assertEqual(db.query(whatsapp.models.WhatsAppProcessedMessage).count(), 2)
+        db.commit()
+        db.close()
+
+    def test_11_whatsapp_conversation_state_expires(self):
+        db = TestingSessionLocal()
+        sent = []
+
+        async def fake_send(to_number, message):
+            sent.append(message)
+            return {"mocked": True}
+
+        original_send = whatsapp.send_whatsapp_text
+        whatsapp.send_whatsapp_text = fake_send
+        whatsapp.user_states["628199999999"] = {
+            "step": "login_waiting_nik",
+            "data": {},
+            "expires_at": datetime.datetime.utcnow() - datetime.timedelta(minutes=1),
+        }
+        try:
+            asyncio.run(whatsapp.process_whatsapp_incoming("628199999999", "123", None, db))
+            self.assertIn("belum login", sent[-1])
+            self.assertNotIn("628199999999", whatsapp.user_states)
+        finally:
+            whatsapp.send_whatsapp_text = original_send
+            whatsapp.user_states.pop("628199999999", None)
+            db.close()
+
+    def test_12_hr_can_audit_revoke_and_move_whatsapp_linking(self):
+        db = TestingSessionLocal()
+        first = Employee(
+            nama="Karyawan Link Satu",
+            nik="3201010101010002",
+            profile_code="OFFICE",
+            active=True,
+        )
+        second = Employee(
+            nama="Karyawan Link Dua",
+            nik="3201010101010003",
+            profile_code="OFFICE",
+            active=True,
+        )
+        db.add_all([first, second])
+        db.commit()
+        db.refresh(first)
+        db.refresh(second)
+        first_id = first.id
+        second_id = second.id
+        identity = whatsapp.models.WhatsAppIdentity(
+            phone_number="628122233344",
+            employee_id=first_id,
+            status="ACTIVE",
+        )
+        db.add(identity)
+        db.commit()
+        db.refresh(identity)
+        identity_id = identity.id
+        db.close()
+
+        audit_res = client.get("/employees/whatsapp-audit")
+        self.assertEqual(audit_res.status_code, 200)
+        self.assertIsInstance(audit_res.json(), list)
+
+        move_res = client.patch(
+            f"/employees/whatsapp-identities/{identity_id}/move",
+            json={"employee_id": second_id, "reason": "Nomor dikonfirmasi HR sebagai milik karyawan kedua"},
+        )
+        self.assertEqual(move_res.status_code, 200)
+        self.assertEqual(move_res.json()["employee_id"], second_id)
+
+        revoke_res = client.patch(f"/employees/whatsapp-identities/{identity_id}/revoke")
+        self.assertEqual(revoke_res.status_code, 200)
+        self.assertEqual(revoke_res.json()["new_status"], "REVOKED")
+
+        db = TestingSessionLocal()
+        events = {
+            row.event_type
+            for row in db.query(whatsapp.models.WhatsAppAuditLog).all()
+        }
+        self.assertIn("HR_MOVE", events)
+        self.assertIn("HR_REVOKE", events)
+        db.close()
 
 if __name__ == "__main__":
     unittest.main()

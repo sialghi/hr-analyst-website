@@ -201,7 +201,8 @@ class TestLedgerOperations(BaseDBTestCase):
 
 class TestExpireBalance(BaseDBTestCase):
     def test_expire_remaining_balance(self):
-        join = datetime.date(2024, 1, 1)
+        # Sudah melewati anniversary pertama sebelum reset tahun 2025.
+        join = datetime.date(2023, 1, 1)
         emp = make_employee(self.db, "Gita", join)
         # Beri 12 hari kuota 2025
         grant_annual_reset_quota(self.db, emp, 2025)

@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, List
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from pathlib import Path
 from dotenv import load_dotenv
@@ -40,6 +41,89 @@ GRAPH_API_VERSION = "v21.0"
 # State percakapan in-memory untuk form karyawan
 # Format: user_states[phone_number] = {"step": str, "data": dict}
 user_states: Dict[str, Dict[str, Any]] = {}
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCK_MINUTES = 15
+STATE_TTL_MINUTES = 30
+
+
+def normalize_whatsapp_number(value: str) -> str:
+    """Normalisasi nomor WhatsApp ke format digit internasional tanpa tanda plus."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    if digits.startswith("0"):
+        digits = "62" + digits[1:]
+    elif digits.startswith("8"):
+        digits = "62" + digits
+    return digits
+
+
+def make_user_state(step: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "step": step,
+        "data": data or {},
+        "expires_at": datetime.datetime.utcnow() + datetime.timedelta(minutes=STATE_TTL_MINUTES),
+    }
+
+
+def clear_expired_user_state(phone_number: str) -> Optional[Dict[str, Any]]:
+    state = user_states.get(phone_number)
+    if not state:
+        return None
+    expires_at = state.get("expires_at")
+    if expires_at and expires_at <= datetime.datetime.utcnow():
+        user_states.pop(phone_number, None)
+        return None
+    state["expires_at"] = datetime.datetime.utcnow() + datetime.timedelta(minutes=STATE_TTL_MINUTES)
+    return state
+
+
+def _audit_whatsapp(db: Session, phone_number: str, event_type: str, employee_id: Optional[int] = None, detail: str = ""):
+    db.add(models.WhatsAppAuditLog(
+        phone_number=phone_number,
+        employee_id=employee_id,
+        event_type=event_type,
+        detail=detail[:500] if detail else None,
+    ))
+
+
+def claim_whatsapp_message(db: Session, message_id: Optional[str]) -> bool:
+    """Claim message Meta sekali saja; false berarti event duplikat."""
+    if not message_id:
+        return True
+    try:
+        with db.begin_nested():
+            db.add(models.WhatsAppProcessedMessage(message_id=str(message_id)))
+            db.flush()
+        return True
+    except IntegrityError:
+        return False
+
+
+def get_active_whatsapp_employee(db: Session, phone_number: str) -> Optional[models.Employee]:
+    identity = (
+        db.query(models.WhatsAppIdentity)
+        .filter(
+            models.WhatsAppIdentity.phone_number == normalize_whatsapp_number(phone_number),
+            models.WhatsAppIdentity.status == "ACTIVE",
+        )
+        .first()
+    )
+    if not identity or not identity.employee or not identity.employee.active:
+        return None
+    identity.last_seen_at = datetime.datetime.utcnow()
+    return identity.employee
+
+
+async def require_whatsapp_login(to_number: str, db: Session) -> Optional[models.Employee]:
+    employee = get_active_whatsapp_employee(db, to_number)
+    if employee:
+        db.commit()
+        return employee
+    await send_whatsapp_text(
+        to_number,
+        "🔐 Nomor WhatsApp ini belum login.\n\n"
+        "Ketik *login* untuk menghubungkan nomor ini dengan NIK Anda."
+    )
+    return None
 
 KATEGORI_MAP = {
     "1": ("CUTI_TAHUNAN", "🏖️ Cuti Tahunan (Full Day)"),
@@ -468,9 +552,16 @@ async def send_help_guide(to_number: str):
     await send_whatsapp_text(to_number, guide_text)
 
 
-async def start_cuti_flow(to_number: str):
+async def start_cuti_flow(to_number: str, db: Session):
     """Langkah 1: Pilih Kategori Cuti / Izin."""
-    user_states[to_number] = {"step": "pilih_kategori", "data": {}}
+    employee = await require_whatsapp_login(to_number, db)
+    if not employee:
+        return
+    user_states[to_number] = make_user_state("pilih_kategori", {
+        "employee_id": employee.id,
+        "nama": employee.nama,
+        "cabang": employee.cabang,
+    })
 
     body = (
         "Langkah 1 dari 5:\n"
@@ -507,14 +598,17 @@ async def start_cuti_flow(to_number: str):
 
 async def start_wfl_flow(to_number: str, db: Session):
     """Mulai alur Absensi Jarak Jauh (WORK_FROM_LOCATION)."""
-    user_states[to_number] = {
-        "step": "wfl_pilih_cabang",
-        "data": {
-            "kategori": "WORK_FROM_LOCATION",
-            "tipe_absensi": "remote_work",
-        },
-    }
-    await prompt_pilih_cabang(to_number, db, is_wfl=True)
+    employee = await require_whatsapp_login(to_number, db)
+    if not employee:
+        return
+    user_states[to_number] = make_user_state("wfl_input_tgl", {
+        "kategori": "WORK_FROM_LOCATION",
+        "tipe_absensi": "remote_work",
+        "employee_id": employee.id,
+        "nama": employee.nama,
+        "cabang": employee.cabang,
+    })
+    await check_quota_and_prompt_date(to_number, employee.nama, db, is_wfl=True)
 
 
 async def prompt_pilih_cabang(to_number: str, db: Session, is_wfl: bool = False, page: int = 1):
@@ -861,6 +955,7 @@ async def process_whatsapp_incoming(
     Mendukung interaksi tombol/list (interactive_id) MAUPUN ketikan teks langsung.
     """
     from .leaves import check_leave_overlap, get_annual_leave_stats
+    clear_expired_user_state(from_number)
 
     # Utamakan interactive_id dari tombol/list jika ada, fallback ke teks
     action_key = (interactive_id or "").strip()
@@ -870,6 +965,69 @@ async def process_whatsapp_incoming(
     # -----------------------------------------------------------------------
     # PERINTAH GLOBAL (Dapat dipanggil kapan saja)
     # -----------------------------------------------------------------------
+    if lower_text in ("login", "/login"):
+        user_states.pop(from_number, None)
+        phone_number = normalize_whatsapp_number(from_number)
+        identity = db.query(models.WhatsAppIdentity).filter(
+            models.WhatsAppIdentity.phone_number == phone_number
+        ).first()
+        if identity and identity.status == "ACTIVE":
+            identity.last_seen_at = datetime.datetime.utcnow()
+            db.commit()
+            await send_whatsapp_text(
+                from_number,
+                "✅ Nomor WhatsApp ini sudah login ke sistem HR.\n"
+                "Ketik *Cuti*, *Izin*, atau *Absen Luar* untuk melanjutkan."
+            )
+            return
+        user_states[from_number] = make_user_state("login_waiting_nik")
+        await send_whatsapp_text(
+            from_number,
+            "🔐 *Login Chatbot HR*\n\n"
+            "Silakan ketik NIK Anda lengkap 16 digit.\n"
+            "Jangan kirim NIK milik orang lain."
+        )
+        return
+
+    if lower_text in ("logout", "/logout"):
+        phone_number = normalize_whatsapp_number(from_number)
+        identity = db.query(models.WhatsAppIdentity).filter(
+            models.WhatsAppIdentity.phone_number == phone_number,
+            models.WhatsAppIdentity.status == "ACTIVE",
+        ).first()
+        if identity:
+            identity.status = "REVOKED"
+            _audit_whatsapp(db, phone_number, "LOGOUT", identity.employee_id)
+            db.commit()
+            user_states.pop(from_number, None)
+            await send_whatsapp_text(from_number, "✅ Nomor WhatsApp berhasil logout. Ketik *login* untuk masuk kembali.")
+        else:
+            await send_whatsapp_text(from_number, "ℹ️ Nomor WhatsApp ini belum memiliki login aktif.")
+        return
+
+    if lower_text in ("reset", "/reset"):
+        await send_whatsapp_text(
+            from_number,
+            "🔒 Perubahan atau pemindahan NIK tidak dapat dilakukan lewat chatbot.\n"
+            "Silakan hubungi HR Master untuk proses reset linking nomor WhatsApp."
+        )
+        return
+
+    # Semua pesan lain dikunci sampai nomor memiliki identity aktif atau sedang
+    # menyelesaikan flow login. Ini mencegah akses menu melalui teks bebas.
+    pending_login = user_states.get(from_number, {}).get("step") in (
+        "login_waiting_nik",
+        "login_confirmation",
+    )
+    if not get_active_whatsapp_employee(db, from_number) and not pending_login:
+        user_states.pop(from_number, None)
+        await send_whatsapp_text(
+            from_number,
+            "🔐 Akses chatbot terkunci karena nomor ini belum login.\n\n"
+            "Ketik *login* terlebih dahulu untuk menghubungkan nomor WhatsApp dengan NIK Anda."
+        )
+        return
+
     if action_key == "menu_help" or lower_text in ("/help", "help", "bantuan"):
         await send_help_guide(from_number)
         return
@@ -883,6 +1041,8 @@ async def process_whatsapp_incoming(
         return
 
     if action_key == "menu_status" or lower_text in ("/status", "status", "cek status"):
+        if not await require_whatsapp_login(from_number, db):
+            return
         leaves = (
             db.query(models.LeaveRequest)
             .filter(models.LeaveRequest.whatsapp_user_id == from_number)
@@ -929,7 +1089,7 @@ async def process_whatsapp_incoming(
         return
 
     if action_key == "menu_cuti" or lower_text in ("/cuti", "cuti", "/izin", "izin"):
-        await start_cuti_flow(from_number)
+        await start_cuti_flow(from_number, db)
         return
 
     # Jika user menyapa awal atau belum ada state
@@ -941,12 +1101,117 @@ async def process_whatsapp_incoming(
     # -----------------------------------------------------------------------
     # FORM STEP CONVERSATION HANDLER
     # -----------------------------------------------------------------------
-    state = user_states.get(from_number)
+    state = clear_expired_user_state(from_number)
     if not state:
         await send_welcome_menu(from_number)
         return
 
     step = state.get("step")
+
+    if step == "login_waiting_nik":
+        nik = re.sub(r"\D", "", text)
+        if len(nik) != 16:
+            await send_whatsapp_text(from_number, "NIK harus terdiri dari 16 digit. Silakan ketik ulang NIK Anda:")
+            return
+
+        phone_number = normalize_whatsapp_number(from_number)
+        lock_since = datetime.datetime.utcnow() - datetime.timedelta(minutes=LOGIN_LOCK_MINUTES)
+        recent_failures = db.query(models.WhatsAppAuditLog).filter(
+            models.WhatsAppAuditLog.phone_number == phone_number,
+            models.WhatsAppAuditLog.event_type == "LOGIN_NIK_FAILED",
+            models.WhatsAppAuditLog.created_at >= lock_since,
+        ).count()
+        if recent_failures >= LOGIN_MAX_FAILURES:
+            await send_whatsapp_text(from_number, "⏳ Percobaan login terlalu banyak. Silakan coba lagi setelah beberapa menit atau hubungi HR.")
+            return
+        identity = db.query(models.WhatsAppIdentity).filter(
+            models.WhatsAppIdentity.phone_number == phone_number
+        ).first()
+        employee = db.query(models.Employee).filter(
+            models.Employee.nik == nik,
+            models.Employee.active == True,
+        ).first()
+        linked_to_phone = db.query(models.WhatsAppIdentity).filter(
+            models.WhatsAppIdentity.employee_id == employee.id if employee else False,
+            models.WhatsAppIdentity.status == "ACTIVE",
+        ).first() if employee else None
+
+        if identity and identity.locked_until and identity.locked_until > datetime.datetime.utcnow():
+            await send_whatsapp_text(from_number, "⏳ Percobaan login terlalu banyak. Silakan coba lagi setelah beberapa menit atau hubungi HR.")
+            return
+
+        if not employee or linked_to_phone or (identity and identity.status == "ACTIVE" and identity.employee_id != employee.id):
+            if identity:
+                identity.failed_attempts = (identity.failed_attempts or 0) + 1
+                if identity.failed_attempts >= LOGIN_MAX_FAILURES:
+                    identity.locked_until = datetime.datetime.utcnow() + datetime.timedelta(minutes=LOGIN_LOCK_MINUTES)
+            _audit_whatsapp(db, phone_number, "LOGIN_NIK_FAILED")
+            db.commit()
+            user_states.pop(from_number, None)
+            await send_whatsapp_text(
+                from_number,
+                "❌ Data login tidak dapat diverifikasi.\n"
+                "Pastikan NIK benar dan hubungi HR jika nomor Anda sudah pernah terhubung."
+            )
+            return
+
+        user_states[from_number] = make_user_state(
+            "login_confirmation",
+            {"employee_id": employee.id, "nik_last4": nik[-4:]},
+        )
+        await send_whatsapp_text(
+            from_number,
+            f"⚠️ *Konfirmasi Kepemilikan NIK*\n\n"
+            f"Anda akan menghubungkan nomor ini dengan NIK yang berakhiran *{nik[-4:]}*.\n"
+            "Pastikan NIK tersebut benar-benar milik Anda. Jangan gunakan NIK orang lain.\n\n"
+            "Jika Anda yakin dan sadar, ketik persis:\n"
+            "*yakin dan sadar*"
+        )
+        return
+
+    if step == "login_confirmation":
+        if lower_text != "yakin dan sadar":
+            await send_whatsapp_text(
+                from_number,
+                "Konfirmasi tidak sesuai. Untuk melanjutkan, ketik persis *yakin dan sadar*; "
+                "atau ketik *Batal*."
+            )
+            return
+        phone_number = normalize_whatsapp_number(from_number)
+        employee_id = state["data"].get("employee_id")
+        identity = db.query(models.WhatsAppIdentity).filter(
+            models.WhatsAppIdentity.phone_number == phone_number
+        ).first()
+        conflict = db.query(models.WhatsAppIdentity).filter(
+            models.WhatsAppIdentity.employee_id == employee_id,
+            models.WhatsAppIdentity.status == "ACTIVE",
+        ).first()
+        if conflict and (not identity or conflict.id != identity.id):
+            user_states.pop(from_number, None)
+            await send_whatsapp_text(from_number, "❌ NIK tersebut sudah terhubung ke nomor WhatsApp lain. Hubungi HR Master untuk reset.")
+            return
+        if identity and identity.status == "ACTIVE" and identity.employee_id != employee_id:
+            user_states.pop(from_number, None)
+            await send_whatsapp_text(from_number, "❌ Nomor ini sudah terhubung ke NIK lain. Perubahan hanya dapat dilakukan oleh HR Master.")
+            return
+        if not identity:
+            identity = models.WhatsAppIdentity(phone_number=phone_number, employee_id=employee_id)
+            db.add(identity)
+        identity.status = "ACTIVE"
+        identity.verified_at = datetime.datetime.utcnow()
+        identity.last_seen_at = datetime.datetime.utcnow()
+        identity.failed_attempts = 0
+        identity.locked_until = None
+        _audit_whatsapp(db, phone_number, "LOGIN_SUCCESS", employee_id)
+        db.commit()
+        user_states.pop(from_number, None)
+        await send_whatsapp_text(
+            from_number,
+            "✅ *Login berhasil.*\n\n"
+            "Nomor WhatsApp ini sudah terhubung ke data karyawan Anda.\n"
+            "Sekarang Anda dapat mengetik *Cuti*, *Izin*, *Absen Luar*, atau *Status*."
+        )
+        return
 
     # STEP 1: PILIH KATEGORI (CUTI / IZIN)
     if step == "pilih_kategori":
@@ -974,7 +1239,14 @@ async def process_whatsapp_incoming(
             return
 
         user_states[from_number]["data"]["kategori"] = chosen_kat
-        await prompt_pilih_cabang(from_number, db, is_wfl=False)
+        employee = get_active_whatsapp_employee(db, from_number)
+        if employee:
+            user_states[from_number]["data"]["employee_id"] = employee.id
+            user_states[from_number]["data"]["nama"] = employee.nama
+            user_states[from_number]["data"]["cabang"] = employee.cabang
+            await check_quota_and_prompt_date(from_number, employee.nama, db, is_wfl=False)
+        else:
+            await prompt_pilih_cabang(from_number, db, is_wfl=False)
         return
 
     # STEP 2: PILIH CABANG (CUTI BIASA)
@@ -1466,126 +1738,131 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                 # Event delivery status (sent, delivered, read) - abaikan
                 continue
 
-            msg = messages[0]
-            from_number = msg.get("from")  # nomor pengirim, misal '6281234567890'
-            msg_type = msg.get("type")
+            for msg in messages:
+                message_id = msg.get("id")
+                if not claim_whatsapp_message(db, message_id):
+                    print(f"[WhatsApp Webhook] Pesan duplikat diabaikan: {message_id}")
+                    continue
 
-            raw_text = ""
-            interactive_id = None
+                from_number = msg.get("from")  # nomor pengirim, misal '6281234567890'
+                msg_type = msg.get("type")
 
-            if msg_type == "text":
-                raw_text = msg.get("text", {}).get("body", "")
+                raw_text = ""
+                interactive_id = None
 
-            elif msg_type == "interactive":
-                inter = msg.get("interactive", {})
-                inter_type = inter.get("type")
-                if inter_type == "button_reply":
-                    interactive_id = inter.get("button_reply", {}).get("id")
-                    raw_text = inter.get("button_reply", {}).get("title", "")
-                elif inter_type == "list_reply":
-                    interactive_id = inter.get("list_reply", {}).get("id")
-                    raw_text = inter.get("list_reply", {}).get("title", "")
+                if msg_type == "text":
+                    raw_text = msg.get("text", {}).get("body", "")
 
-            elif (msg_type == "image" or msg_type == "document") and from_number:
-                # Pesan berupa berkas foto atau dokumen (SKD / Absen Jarak Jauh)
-                state = user_states.get(from_number)
-                step_now = state.get("step") if state else None
+                elif msg_type == "interactive":
+                    inter = msg.get("interactive", {})
+                    inter_type = inter.get("type")
+                    if inter_type == "button_reply":
+                        interactive_id = inter.get("button_reply", {}).get("id")
+                        raw_text = inter.get("button_reply", {}).get("title", "")
+                    elif inter_type == "list_reply":
+                        interactive_id = inter.get("list_reply", {}).get("id")
+                        raw_text = inter.get("list_reply", {}).get("title", "")
 
-                # 1. KASUS: UNGGAH SURAT KETERANGAN SAKIT (SKD) - Gambar atau PDF maks 10MB
-                if state and step_now == "sakit_upload_surat":
-                    msg_data = msg.get("image") or msg.get("document", {})
-                    media_id = msg_data.get("id")
-                    mime_type = msg_data.get("mime_type", "image/jpeg").lower()
-                    doc_filename = msg_data.get("filename", "")
+                elif (msg_type == "image" or msg_type == "document") and from_number:
+                    # Pesan berupa berkas foto atau dokumen (SKD / Absen Jarak Jauh)
+                    state = clear_expired_user_state(from_number)
+                    step_now = state.get("step") if state else None
 
-                    is_image = mime_type.startswith("image/") or msg_type == "image"
-                    is_pdf = mime_type == "application/pdf" or doc_filename.lower().endswith(".pdf")
+                    # 1. KASUS: UNGGAH SURAT KETERANGAN SAKIT (SKD) - Gambar atau PDF maks 10MB
+                    if state and step_now == "sakit_upload_surat":
+                        msg_data = msg.get("image") or msg.get("document", {})
+                        media_id = msg_data.get("id")
+                        mime_type = msg_data.get("mime_type", "image/jpeg").lower()
+                        doc_filename = msg_data.get("filename", "")
 
-                    if not (is_image or is_pdf):
-                        await send_whatsapp_text(
-                            from_number,
-                            "⚠️ Format berkas tidak didukung.\n"
-                            "Mohon kirimkan Surat Keterangan Sakit berupa *Foto (JPEG, PNG, WEBP, HEIC)* atau *Dokumen PDF* (maks. 10 MB)."
-                        )
-                        continue
+                        is_image = mime_type.startswith("image/") or msg_type == "image"
+                        is_pdf = mime_type == "application/pdf" or doc_filename.lower().endswith(".pdf")
 
-                    # Cek ukuran file awal jika tersedia di metadata
-                    file_size = msg_data.get("file_size")
-                    if file_size and int(file_size) > MAX_MEDIA_BYTES:
-                        size_mb = int(file_size) / (1024 * 1024)
-                        await send_whatsapp_text(
-                            from_number,
-                            f"⚠️ Ukuran berkas terlalu besar ({size_mb:.1f} MB).\n"
-                            f"Maksimal ukuran file surat dokter adalah *10 MB*. Silakan kirimkan file yang lebih kecil."
-                        )
-                        continue
+                        if not (is_image or is_pdf):
+                            await send_whatsapp_text(
+                                from_number,
+                                "⚠️ Format berkas tidak didukung.\n"
+                                "Mohon kirimkan Surat Keterangan Sakit berupa *Foto (JPEG, PNG, WEBP, HEIC)* atau *Dokumen PDF* (maks. 10 MB)."
+                            )
+                            continue
 
-                    tipe_label = "Dokumen PDF" if is_pdf else "Foto"
-                    await send_whatsapp_text(from_number, f"⏳ {tipe_label} surat keterangan sakit diterima, sedang menyimpan ke sistem HR...")
-                    saved_path = await download_whatsapp_media(media_id, "application/pdf" if is_pdf else mime_type)
+                        # Cek ukuran file awal jika tersedia di metadata
+                        file_size = msg_data.get("file_size")
+                        if file_size and int(file_size) > MAX_MEDIA_BYTES:
+                            size_mb = int(file_size) / (1024 * 1024)
+                            await send_whatsapp_text(
+                                from_number,
+                                f"⚠️ Ukuran berkas terlalu besar ({size_mb:.1f} MB).\n"
+                                f"Maksimal ukuran file surat dokter adalah *10 MB*. Silakan kirimkan file yang lebih kecil."
+                            )
+                            continue
 
-                    if saved_path == "EXCEEDED_SIZE":
-                        await send_whatsapp_text(
-                            from_number,
-                            "⚠️ Ukuran berkas melebihi batas maksimal 10 MB.\n"
-                            "Silakan kompres berkas Anda dan kirimkan kembali di bawah 10 MB."
-                        )
-                    elif saved_path:
-                        user_states[from_number]["data"]["foto_bukti"] = saved_path
-                        user_states[from_number]["step"] = "konfirmasi"
-                        await send_confirmation_card(from_number, is_wfl=False)
-                    else:
-                        await send_whatsapp_text(
-                            from_number,
-                            "⚠️ Gagal mengunduh/menyimpan surat sakit dari WhatsApp. Silakan coba kirim ulang berkas Anda."
-                        )
+                        tipe_label = "Dokumen PDF" if is_pdf else "Foto"
+                        await send_whatsapp_text(from_number, f"⏳ {tipe_label} surat keterangan sakit diterima, sedang menyimpan ke sistem HR...")
+                        saved_path = await download_whatsapp_media(media_id, "application/pdf" if is_pdf else mime_type)
 
-                # 2. KASUS: UNGGAH FOTO ABSENSI JARAK JAUH (WFL)
-                elif state and step_now == "wfl_upload_foto":
-                    msg_data = msg.get("image") or msg.get("document", {})
-                    media_id = msg_data.get("id")
-                    mime_type = msg_data.get("mime_type", "image/jpeg").lower()
-
-                    if media_id and (mime_type.startswith("image/") or msg_type == "image"):
-                        await send_whatsapp_text(from_number, "⏳ Foto bukti diterima, sedang menyimpan ke sistem...")
-                        saved_path = await download_whatsapp_media(media_id, mime_type)
                         if saved_path == "EXCEEDED_SIZE":
                             await send_whatsapp_text(
                                 from_number,
-                                "⚠️ Ukuran foto melebihi batas maksimal 10 MB. Silakan kirim foto dengan ukuran lebih kecil."
+                                "⚠️ Ukuran berkas melebihi batas maksimal 10 MB.\n"
+                                "Silakan kompres berkas Anda dan kirimkan kembali di bawah 10 MB."
                             )
                         elif saved_path:
                             user_states[from_number]["data"]["foto_bukti"] = saved_path
                             user_states[from_number]["step"] = "konfirmasi"
-                            await send_confirmation_card(from_number, is_wfl=True)
+                            await send_confirmation_card(from_number, is_wfl=False)
                         else:
                             await send_whatsapp_text(
                                 from_number,
-                                "⚠️ Gagal mengunduh/menyimpan foto dari WhatsApp. Silakan coba kirim ulang foto Anda."
+                                "⚠️ Gagal mengunduh/menyimpan surat sakit dari WhatsApp. Silakan coba kirim ulang berkas Anda."
                             )
+
+                    # 2. KASUS: UNGGAH FOTO ABSENSI JARAK JAUH (WFL)
+                    elif state and step_now == "wfl_upload_foto":
+                        msg_data = msg.get("image") or msg.get("document", {})
+                        media_id = msg_data.get("id")
+                        mime_type = msg_data.get("mime_type", "image/jpeg").lower()
+
+                        if media_id and (mime_type.startswith("image/") or msg_type == "image"):
+                            await send_whatsapp_text(from_number, "⏳ Foto bukti diterima, sedang menyimpan ke sistem...")
+                            saved_path = await download_whatsapp_media(media_id, mime_type)
+                            if saved_path == "EXCEEDED_SIZE":
+                                await send_whatsapp_text(
+                                    from_number,
+                                    "⚠️ Ukuran foto melebihi batas maksimal 10 MB. Silakan kirim foto dengan ukuran lebih kecil."
+                                )
+                            elif saved_path:
+                                user_states[from_number]["data"]["foto_bukti"] = saved_path
+                                user_states[from_number]["step"] = "konfirmasi"
+                                await send_confirmation_card(from_number, is_wfl=True)
+                            else:
+                                await send_whatsapp_text(
+                                    from_number,
+                                    "⚠️ Gagal mengunduh/menyimpan foto dari WhatsApp. Silakan coba kirim ulang foto Anda."
+                                )
+                        else:
+                            await send_whatsapp_text(
+                                from_number,
+                                "⚠️ Berkas yang dikirim bukan format gambar (JPEG, PNG, WEBP, HEIC).\n"
+                                "Silakan kirimkan berkas berupa *foto/gambar* bukti kehadiran Anda."
+                            )
+
+                    # 3. KASUS LAIN: TIDAK SEDANG DI STEP UNGGAH BERKAS
                     else:
                         await send_whatsapp_text(
                             from_number,
-                            "⚠️ Berkas yang dikirim bukan format gambar (JPEG, PNG, WEBP, HEIC).\n"
-                            "Silakan kirimkan berkas berupa *foto/gambar* bukti kehadiran Anda."
+                            "ℹ️ Foto / dokumen hanya diterima saat proses pengajuan Surat Sakit atau Absensi Jarak Jauh.\n"
+                            "Ketik *Cuti* atau *Absen Luar* untuk memulai pengajuan baru."
                         )
+                    continue
 
-                # 3. KASUS LAIN: TIDAK SEDANG DI STEP UNGGAH BERKAS
-                else:
-                    await send_whatsapp_text(
-                        from_number,
-                        "ℹ️ Foto / dokumen hanya diterima saat proses pengajuan Surat Sakit atau Absensi Jarak Jauh.\n"
-                        "Ketik *Cuti* atau *Absen Luar* untuk memulai pengajuan baru."
+                if from_number:
+                    await process_whatsapp_incoming(
+                        from_number=from_number,
+                        raw_text=raw_text,
+                        interactive_id=interactive_id,
+                        db=db,
                     )
-                continue  # Tidak perlu panggil process_whatsapp_incoming
-
-            if from_number:
-                await process_whatsapp_incoming(
-                    from_number=from_number,
-                    raw_text=raw_text,
-                    interactive_id=interactive_id,
-                    db=db,
-                )
 
     # Selalu kembalikan 200 OK ke Meta
     return {"status": "success"}
