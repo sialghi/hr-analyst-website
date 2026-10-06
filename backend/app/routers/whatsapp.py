@@ -742,12 +742,24 @@ async def check_quota_and_prompt_date(to_number: str, nama: str, db: Session, is
         if not stats.get("is_eligible", True):
             user_states.pop(to_number, None)
             tgl_berhak = stats.get("eligible_from")
-            tgl_info = f" (Mulai berhak cuti: *{tgl_berhak.strftime('%d-%m-%Y')}*)" if tgl_berhak else ""
+            if tgl_berhak:
+                if isinstance(tgl_berhak, str):
+                    import datetime as _dt
+                    try:
+                        tgl_berhak = _dt.date.fromisoformat(tgl_berhak)
+                    except Exception:
+                        tgl_berhak = None
+            tgl_ann_str = tgl_berhak.strftime("%d %B %Y") if tgl_berhak else "-"
+            tgl_jan_str = f"01 Januari {tgl_berhak.year + 1}" if tgl_berhak else "-"
             await send_whatsapp_text(
                 to_number,
-                f"⛔ *MAAF: BELUM MEMILIKI HAK CUTI*\n\n"
-                f"Halo *{nama}*, hak Cuti Tahunan baru dapat diajukan setelah genap 1 tahun masa kerja{tgl_info}.\n\n"
-                f"Pengajuan cuti tahunan belum dapat diproses. "
+                f"⛔ *MAAF: BELUM MEMILIKI HAK CUTI TAHUNAN*\n\n"
+                f"Halo *{nama}*, Anda belum berhak mengajukan Cuti Tahunan.\n\n"
+                f"📌 *Ketentuan Cuti Tahunan:*\n"
+                f"• Hak cuti pertama baru dapat diajukan setelah *1 tahun masa kerja* "
+                f"(mulai *{tgl_ann_str}*).\n"
+                f"• Jatah cuti saat anniversary adalah *kuota proporsional* (bukan 12 hari penuh).\n"
+                f"• Kuota tahunan *penuh 12 hari* baru diberikan mulai *{tgl_jan_str}*.\n\n"
                 f"Silakan ketik *Cuti* jika ingin mengajukan izin jenis lain (Sakit / Izin Telat / Pulang Cepat)."
             )
             return
@@ -1330,11 +1342,24 @@ async def process_whatsapp_incoming(
             if not stats.get("is_eligible", True):
                 user_states.pop(from_number, None)
                 tgl_berhak = stats.get("eligible_from")
-                tgl_info = f" (Mulai berhak: *{tgl_berhak.strftime('%d-%m-%Y')}*)" if tgl_berhak else ""
+                if tgl_berhak:
+                    if isinstance(tgl_berhak, str):
+                        import datetime as _dt
+                        try:
+                            tgl_berhak = _dt.date.fromisoformat(tgl_berhak)
+                        except Exception:
+                            tgl_berhak = None
+                tgl_ann_str = tgl_berhak.strftime("%d %B %Y") if tgl_berhak else "-"
+                tgl_jan_str = f"01 Januari {tgl_berhak.year + 1}" if tgl_berhak else "-"
                 await send_whatsapp_text(
                     from_number,
                     f"⛔ *PENGAJUAN DITOLAK SISTEM*\n\n"
-                    f"Halo *{nama}*, Anda belum berhak mengajukan Cuti Tahunan karena belum genap 1 tahun bekerja{tgl_info}."
+                    f"Halo *{nama}*, Anda belum berhak mengajukan Cuti Tahunan.\n\n"
+                    f"📌 *Ketentuan Cuti Tahunan:*\n"
+                    f"• Hak cuti pertama dapat diajukan setelah *1 tahun masa kerja* "
+                    f"(mulai *{tgl_ann_str}*).\n"
+                    f"• Jatah cuti saat anniversary adalah *kuota proporsional* (bukan 12 hari penuh).\n"
+                    f"• Kuota tahunan *penuh 12 hari* baru diberikan mulai *{tgl_jan_str}*."
                 )
                 return
             if stats["remaining_days"] <= 0:

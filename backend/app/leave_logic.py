@@ -213,23 +213,31 @@ def grant_anniversary_quota(db: Session, employee: Employee, year: int, commit: 
 def grant_annual_reset_quota(db: Session, employee: Employee, year: int, commit: bool = True) -> Optional[LeaveBalanceLedger]:
     """
     Memberikan kuota penuh ANNUAL_LEAVE_QUOTA untuk reset tahunan (1 Januari).
-    Hanya untuk karyawan yang sudah >= LEAVE_MIN_TENURE_YEARS pada 1 Januari tahun ini.
+
+    Syarat: anniversary pertama karyawan harus jatuh di tahun SEBELUM year
+    (first_ann.year < year). Artinya:
+    - Join April 2025 → anniversary April 2026 → Reset Tahunan baru diberikan 1 Jan 2027
+    - Join Jan 2025  → anniversary Jan 2026  → Reset Tahunan diberikan 1 Jan 2027
+
+    Karyawan yang anniversarynya di tahun yang sama dengan year (misal anniversary 2026
+    dan year=2026) hanya mendapat kuota proporsional via grant_anniversary_quota, BUKAN reset ini.
+
     Idempotent — jika sudah ada GRANT_ANNUAL_RESET untuk tahun ini, tidak menulis lagi.
     """
     if not employee.join_date:
         return None
-    reset_date = datetime.date(year, LEAVE_RESET_MONTH, LEAVE_RESET_DAY)
     first_ann = get_first_anniversary(employee.join_date)
-    # Karyawan harus sudah melewati anniversary pertama sebelum atau tepat di tanggal reset
-    if first_ann > reset_date:
-        return None  # Belum berhak
+    # Anniversary pertama HARUS sudah lewat di tahun sebelumnya (bukan tahun yang sama)
+    # Agar karyawan benar-benar sudah menyelesaikan satu siklus penuh sebelum mendapat reset
+    if first_ann.year >= year:
+        return None  # Belum berhak: anniversary pertama belum atau baru di tahun ini
     return write_ledger_entry(
         db=db,
         employee_id=employee.id,
         year=year,
         entry_type=ENTRY_GRANT_ANNUAL_RESET,
         amount=float(ANNUAL_LEAVE_QUOTA),
-        note=f"Reset kuota tahunan {year} — {ANNUAL_LEAVE_QUOTA} hari",
+        note=f"Reset kuota tahunan {year} (sesuai Rekap {year})",
         commit=commit,
     )
 
@@ -479,11 +487,15 @@ def run_leave_quota_jobs(db: Session, target_date: Optional[datetime.date] = Non
     Idempotent — aman dijalankan berkali-kali pada hari yang sama.
 
     Jobs:
-    1. Karyawan yang anniversary pertamanya di tahun 'year':
-       Jika target_date >= first_ann dan belum ada entri di ledger, berikan kuota proporsional.
-    2. Karyawan yang sudah melewati tahun anniversary pertama (first_ann.year < year):
-       Jika belum ada entri GRANT_ANNUAL_RESET untuk tahun 'year', berikan kuota tahunan penuh (12 hari).
-       (Jika tepat 1 Jan, hanguskan juga saldo tahun lalu).
+    1. Karyawan yang anniversary pertamanya di tahun berjalan 'year' (first_ann.year == year):
+       Berikan kuota proporsional anniversary saat target_date >= first_ann.
+       TIDAK mendapat Reset Tahunan di tahun yang sama.
+       Contoh: join April 2025 → anniversary April 2026 → dapat 9 hari (bukan 12).
+
+    2. Karyawan yang anniversary pertamanya di tahun SEBELUM year (first_ann.year < year):
+       Berikan kuota tahunan penuh 12 hari setiap 1 Januari.
+       Hanguskan saldo tahun lalu jika tepat 1 Jan.
+       Contoh: join April 2025 → anniversary April 2026 → Reset 12 hari baru 1 Jan 2027.
     """
     if target_date is None:
         target_date = get_today_jakarta()
