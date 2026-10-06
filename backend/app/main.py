@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .database import Base, engine
+from .database import Base, engine, SessionLocal
 from .routers import auth, profiles, rules, employees, holidays, process, chat, leaves, whatsapp
 
 # Buat semua tabel kalau belum ada (untuk production sebaiknya pakai Alembic migration,
@@ -47,6 +47,13 @@ def _run_migrations():
 
 
 _run_migrations()
+
+# Backfill pemakaian cuti approved yang sudah ada sebelum ledger diaktifkan.
+from .leave_logic import reconcile_approved_leave_ledger
+with SessionLocal() as _startup_db:
+    _reconciled = reconcile_approved_leave_ledger(_startup_db)
+    if _reconciled:
+        print(f"[LEAVE LEDGER] Reconciled {_reconciled} approved leave requests.")
 
 app = FastAPI(title="HR Absensi Pipeline - Web API")
 
@@ -93,4 +100,3 @@ async def startup_event():
     import asyncio
     from .scheduler import start_daily_contract_scheduler
     asyncio.create_task(start_daily_contract_scheduler())
-

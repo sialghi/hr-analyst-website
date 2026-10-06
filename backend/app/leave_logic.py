@@ -284,6 +284,62 @@ def record_leave_used(
     )
 
 
+def get_leave_request_days(leave_request: LeaveRequest) -> float:
+    """Menghitung bobot hari cuti dari nilai tersimpan atau rentang tanggal."""
+    if leave_request.jumlah_hari is not None:
+        return float(leave_request.jumlah_hari)
+    weight = KATEGORI_POTONG_CUTI_MAP.get(leave_request.kategori, 1.0)
+    date_range = (leave_request.tanggal_selesai - leave_request.tanggal_mulai).days + 1
+    return float(date_range * weight)
+
+
+def reconcile_approved_leave_ledger(db: Session) -> int:
+    """
+    Backfill pemakaian untuk pengajuan approved yang dibuat sebelum ledger aktif.
+    Idempoten berdasarkan leave_request_id agar aman dijalankan setiap startup.
+    """
+    approved_leaves = (
+        db.query(LeaveRequest)
+        .filter(
+            LeaveRequest.status == "APPROVED",
+            LeaveRequest.kategori.in_(KATEGORI_POTONG_CUTI_MAP),
+        )
+        .all()
+    )
+    created = 0
+    for leave in approved_leaves:
+        employee = (
+            db.query(Employee)
+            .filter(Employee.nama.ilike(leave.nama.strip()), Employee.active == True)
+            .first()
+        )
+        if not employee:
+            continue
+        existing = (
+            db.query(LeaveBalanceLedger)
+            .filter(
+                LeaveBalanceLedger.leave_request_id == leave.id,
+                LeaveBalanceLedger.entry_type == ENTRY_USED,
+            )
+            .first()
+        )
+        if existing:
+            continue
+        record_leave_used(
+            db,
+            employee.id,
+            leave.tanggal_mulai.year,
+            get_leave_request_days(leave),
+            leave.id,
+            f"{leave.kategori} {leave.tanggal_mulai} s/d {leave.tanggal_selesai} (rekonsiliasi)",
+            commit=False,
+        )
+        created += 1
+    if created:
+        db.commit()
+    return created
+
+
 def reverse_leave_used(
     db: Session,
     employee_id: int,

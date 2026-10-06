@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.models import Base, Employee, LeaveBalanceLedger
+from app.models import Base, Employee, LeaveBalanceLedger, LeaveRequest
 from app.leave_logic import (
     get_anniversary_date,
     get_first_anniversary,
@@ -31,6 +31,7 @@ from app.leave_logic import (
     expire_previous_year_balance,
     record_leave_used,
     reverse_leave_used,
+    reconcile_approved_leave_ledger,
     validate_annual_leave_request,
     run_leave_quota_jobs,
     ENTRY_GRANT_ANNIVERSARY,
@@ -224,6 +225,30 @@ class TestExpireBalance(BaseDBTestCase):
         expire_previous_year_balance(self.db, emp, 2025)
         result2 = expire_previous_year_balance(self.db, emp, 2025)  # Kedua kali → None
         self.assertIsNone(result2)
+
+
+class TestLeaveLedgerReconciliation(BaseDBTestCase):
+    def test_backfills_approved_leave_once_with_date_range(self):
+        emp = make_employee(self.db, "Agus Triyana", datetime.date(2023, 7, 16))
+        leave = LeaveRequest(
+            nama=emp.nama,
+            kategori="CUTI_TAHUNAN",
+            tanggal_mulai=datetime.date(2026, 10, 3),
+            tanggal_selesai=datetime.date(2026, 10, 7),
+            status="APPROVED",
+        )
+        self.db.add(leave)
+        self.db.commit()
+
+        self.assertEqual(reconcile_approved_leave_ledger(self.db), 1)
+        self.assertEqual(get_ledger_balance(self.db, emp.id, 2026), -5.0)
+        self.assertEqual(reconcile_approved_leave_ledger(self.db), 0)
+        self.assertEqual(
+            self.db.query(LeaveBalanceLedger)
+            .filter(LeaveBalanceLedger.leave_request_id == leave.id)
+            .count(),
+            1,
+        )
 
     def test_no_expire_if_no_balance(self):
         """Tidak menulis EXPIRED jika saldo sudah 0"""

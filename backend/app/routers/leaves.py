@@ -15,6 +15,7 @@ from ..leave_logic import (
     get_ledger_entries,
     get_ledger_granted,
     get_leave_balance_info,
+    get_leave_request_days,
     ENTRY_USED,
     ENTRY_REVERSED,
     KATEGORI_POTONG_CUTI_MAP,
@@ -559,7 +560,7 @@ async def update_leave_status(
     if leave.kategori in KATEGORI_POTONG_CUTI_MAP:
         emp = _get_employee_by_nama(db, leave.nama)
         if emp:
-            days = leave.jumlah_hari if leave.jumlah_hari is not None else KATEGORI_POTONG_CUTI_MAP.get(leave.kategori, 1.0)
+            days = get_leave_request_days(leave)
             year = leave.tanggal_mulai.year
             desc = f"{leave.kategori} {leave.tanggal_mulai} s/d {leave.tanggal_selesai}"
 
