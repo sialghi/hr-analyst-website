@@ -362,6 +362,10 @@ export default function KaryawanPage() {
   const editingEmployee = editingId ? employees.find((emp) => emp.id === editingId) : undefined;
 
   function startCreate() {
+    if (profiles.length === 0) {
+      setError("Profil/divisi belum tersedia. Muat ulang halaman lalu coba lagi.");
+      return;
+    }
     setEditingId(null);
     setForm({ ...BLANK_FORM, profile_code: profiles[0]?.code || "" });
     setActiveTab("data");
@@ -450,6 +454,30 @@ export default function KaryawanPage() {
     setSaving(true);
     setError(null);
     try {
+      const employmentStatus = normalizeEmploymentStatus(form.employment_status);
+      if (!form.nama.trim()) {
+        setError("Nama karyawan wajib diisi.");
+        setActiveTab("data");
+        return;
+      }
+      if (!form.profile_code) {
+        setError("Profil/divisi wajib dipilih.");
+        setActiveTab("data");
+        return;
+      }
+      if (!form.join_date) {
+        setError("Tanggal masuk / bergabung wajib diisi.");
+        setActiveTab("kontrak");
+        return;
+      }
+      if (
+        employmentStatus === "PKWT" &&
+        (!form.contract_start_date || !form.contract_end_date)
+      ) {
+        setError("Untuk PKWT, tanggal mulai dan selesai kontrak wajib diisi.");
+        setActiveTab("kontrak");
+        return;
+      }
       const payload = formToPayload(form);
       if (editingId) await api.updateEmployee(editingId, payload);
       else await api.createEmployee(payload);
@@ -1245,7 +1273,6 @@ export default function KaryawanPage() {
                   <Field label="Tanggal Masuk / Bergabung" hint="Wajib diisi untuk semua karyawan. Digunakan untuk hitung masa kerja.">
                     <input
                       type="date"
-                      required
                       className={inputCls}
                       style={inputStyle}
                       value={form.join_date}
@@ -1267,7 +1294,6 @@ export default function KaryawanPage() {
                         <Field label="Tanggal Mulai Kontrak" hint="Wajib untuk PKWT">
                           <input
                             type="date"
-                            required={form.employment_status === "PKWT"}
                             className={inputCls}
                             style={inputStyle}
                             value={form.contract_start_date}
@@ -1277,7 +1303,6 @@ export default function KaryawanPage() {
                         <Field label="Tanggal Selesai Kontrak" hint="Wajib untuk PKWT">
                           <input
                             type="date"
-                            required={form.employment_status === "PKWT"}
                             className={inputCls}
                             style={inputStyle}
                             value={form.contract_end_date}
