@@ -52,7 +52,29 @@ async function request(path: string, options: RequestInit = {}) {
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+      signal: options.signal ?? controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError(
+        "Server tidak merespons dalam 15 detik. Periksa status backend Railway.",
+        408
+      );
+    }
+    throw new ApiError(
+      "Tidak dapat terhubung ke server. Periksa URL API dan status backend Railway.",
+      0
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     let detail = `Error ${res.status}`;
@@ -284,6 +306,24 @@ export const api = {
   async downloadAttendanceTemplate(format: "xlsx" | "csv" = "xlsx"): Promise<Blob> {
     const res = await request(`/proses/template?format=${format}`);
     return res.blob();
+  },
+
+  async getAttendanceReviews(
+    status: "PENDING" | "RESOLVED" | "ALL" = "PENDING",
+    uploadBatchId?: number
+  ) {
+    const query = new URLSearchParams({ status });
+    if (uploadBatchId) query.set("upload_batch_id", String(uploadBatchId));
+    const res = await request(`/attendance/reviews?${query.toString()}`);
+    return res.json();
+  },
+
+  async resolveAttendanceReview(id: number, decision: string, note?: string) {
+    const res = await request(`/attendance/reviews/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ decision, note }),
+    });
+    return res.json();
   },
 
   async getLeaves(params?: { status?: string; nama?: string; kategori?: string; cabang?: string; tipe_absensi?: string }) {

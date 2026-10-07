@@ -94,10 +94,13 @@ class Employee(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nama = Column(String, nullable=False, index=True)
+    employee_code = Column(String, nullable=True, unique=True, index=True)
     nik = Column(String, nullable=True, unique=True, index=True)  # NIK KTP 16 digit
     id_mesin = Column(String, nullable=True)  # ID di mesin absensi, opsional
     profile_code = Column(String, ForeignKey("profiles.code"), nullable=False)
     cabang = Column(String, nullable=True)
+    jabatan = Column(String, nullable=True)
+    payroll_status = Column(String, nullable=True)
     uang_makan_override = Column(Integer, nullable=True)  # null -> pakai default global
     bpjs_kesehatan = Column(Integer, nullable=True, default=0)
     bpjs_tk = Column(Integer, nullable=True, default=0)
@@ -128,6 +131,26 @@ class Employee(Base):
 
     profile = relationship("Profile", back_populates="employees")
     contracts = relationship("EmploymentContract", back_populates="employee", cascade="all, delete-orphan", order_by="EmploymentContract.contract_number.desc()")
+
+
+class EmployeeImportCandidate(Base):
+    """Karyawan baru hasil impor Master yang menunggu penentuan profil/status oleh HR."""
+    __tablename__ = "employee_import_candidates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    employee_code = Column(String, nullable=False, unique=True, index=True)
+    nama = Column(String, nullable=False)
+    nik = Column(String, nullable=True)
+    join_date = Column(Date, nullable=True)
+    uang_makan_override = Column(Integer, nullable=True)
+    jabatan = Column(String, nullable=True)
+    cabang = Column(String, nullable=False)
+    payroll_status = Column(String, nullable=True)
+    source_row = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="PENDING")
+    approved_employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
 
 class EmploymentContract(Base):
@@ -225,6 +248,7 @@ class LeaveRequest(Base):
     __tablename__ = "leave_requests"
 
     id = Column(Integer, primary_key=True, index=True)
+    import_key = Column(String, nullable=True, unique=True, index=True)
     nama = Column(String, nullable=False, index=True)
     telegram_user_id = Column(String, nullable=True)
     whatsapp_user_id = Column(String, nullable=True)
@@ -288,6 +312,73 @@ class AbsenManual(Base):
 
     __table_args__ = (
         UniqueConstraint("nama", "tahun", "bulan", name="uq_absen_manual_nama_periode"),
+    )
+
+
+class AttendanceUploadBatch(Base):
+    """Metadata upload absensi; file mentah tidak disimpan di database."""
+    __tablename__ = "attendance_upload_batches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String, nullable=False)
+    period_start = Column(Date, nullable=True)
+    period_end = Column(Date, nullable=True)
+    row_count = Column(Integer, default=0)
+    status = Column(String, nullable=False, default="PROCESSING")
+    uploaded_by = Column(String, nullable=True)
+    file_hash = Column(String, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    daily_records = relationship("AttendanceDaily", back_populates="upload_batch")
+
+
+class AttendanceDaily(Base):
+    """Satu ringkasan absensi per karyawan per tanggal hasil upload."""
+    __tablename__ = "attendance_daily"
+
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    attendance_date = Column(Date, nullable=False, index=True)
+    status = Column(String, nullable=False)  # PRESENT atau INCOMPLETE
+    cabang = Column(String, nullable=True)
+    profile = Column(String, nullable=True)
+    jam_masuk = Column(String, nullable=True)
+    jam_keluar = Column(String, nullable=True)
+    kategori_hari = Column(String, nullable=True)
+    catatan = Column(String, nullable=True)
+    upload_batch_id = Column(Integer, ForeignKey("attendance_upload_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+    employee = relationship("Employee")
+    upload_batch = relationship("AttendanceUploadBatch", back_populates="daily_records")
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "attendance_date", name="uq_attendance_daily_employee_date"),
+    )
+
+
+class AttendanceReview(Base):
+    """Hari kerja tanpa scan yang menunggu klasifikasi HR."""
+    __tablename__ = "attendance_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    attendance_date = Column(Date, nullable=False, index=True)
+    status = Column(String, nullable=False, default="PENDING")  # PENDING, RESOLVED
+    decision = Column(String, nullable=True)  # ANNUAL_LEAVE, UNPAID_LEAVE, CORRECTED, IGNORED
+    leave_request_id = Column(Integer, ForeignKey("leave_requests.id", ondelete="SET NULL"), nullable=True)
+    note = Column(String, nullable=True)
+    upload_batch_id = Column(Integer, ForeignKey("attendance_upload_batches.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(String, nullable=True)
+
+    employee = relationship("Employee")
+    leave_request = relationship("LeaveRequest")
+    upload_batch = relationship("AttendanceUploadBatch")
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "attendance_date", name="uq_attendance_review_employee_date"),
     )
 
 

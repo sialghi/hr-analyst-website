@@ -31,6 +31,7 @@ from app.leave_logic import (
     expire_previous_year_balance,
     record_leave_used,
     reverse_leave_used,
+    get_paid_leave_days,
     reconcile_approved_leave_ledger,
     validate_annual_leave_request,
     run_leave_quota_jobs,
@@ -42,6 +43,7 @@ from app.leave_logic import (
 )
 from app.config import ANNUAL_LEAVE_QUOTA
 from app.pipeline.service import _hitung_cuti_sakit_periode
+from app.routers.leaves import delete_leave_request
 
 
 def make_employee(db, nama: str, join_date: datetime.date) -> Employee:
@@ -376,6 +378,50 @@ class TestSchedulerIdempotency(BaseDBTestCase):
 
 
 class TestReverseUsed(BaseDBTestCase):
+    def test_deleted_approved_leave_is_tombstoned_and_no_longer_active(self):
+        emp = make_employee(self.db, "Maya", datetime.date(2024, 6, 1))
+        grant_anniversary_quota(self.db, emp, 2025)
+        leave = LeaveRequest(
+            nama=emp.nama,
+            kategori="CUTI_TAHUNAN",
+            tanggal_mulai=datetime.date(2025, 6, 10),
+            tanggal_selesai=datetime.date(2025, 6, 11),
+            jumlah_hari=2.0,
+            unpaid_leave_days=0.0,
+            status="APPROVED",
+        )
+        self.db.add(leave)
+        self.db.commit()
+        record_leave_used(self.db, emp.id, 2025, 2.0, leave.id)
+
+        delete_leave_request(leave.id, self.db)
+
+        deleted = self.db.query(LeaveRequest).filter(LeaveRequest.id == leave.id).one()
+        self.assertEqual(deleted.status, "DELETED")
+        self.assertEqual(get_ledger_balance(self.db, emp.id, 2025), 7.0)
+
+    def test_partial_unpaid_leave_reversal_uses_paid_days(self):
+        leave = LeaveRequest(
+            nama="Raka",
+            kategori="CUTI_TAHUNAN",
+            tanggal_mulai=datetime.date(2025, 6, 1),
+            tanggal_selesai=datetime.date(2025, 6, 4),
+            jumlah_hari=4.0,
+            unpaid_leave_days=2.0,
+            status="APPROVED",
+        )
+        self.assertEqual(get_paid_leave_days(leave), 2.0)
+
+        emp = make_employee(self.db, "Raka", datetime.date(2024, 6, 1))
+        grant_anniversary_quota(self.db, emp, 2025)
+        self.db.add(leave)
+        self.db.commit()
+        record_leave_used(self.db, emp.id, 2025, get_paid_leave_days(leave), leave.id)
+        self.assertEqual(get_ledger_balance(self.db, emp.id, 2025), 5.0)
+
+        reverse_leave_used(self.db, emp.id, 2025, leave.id, "deleted")
+        self.assertEqual(get_ledger_balance(self.db, emp.id, 2025), 7.0)
+
     def test_reverse_used_restores_balance(self):
         join = datetime.date(2024, 6, 1)
         emp = make_employee(self.db, "Raka", join)
@@ -398,6 +444,17 @@ class TestReverseUsed(BaseDBTestCase):
         reverse_leave_used(self.db, emp.id, 2025, leave_request_id=888)
         result2 = reverse_leave_used(self.db, emp.id, 2025, leave_request_id=888)
         self.assertIsNone(result2)  # Skip pada run kedua
+        self.assertEqual(get_ledger_balance(self.db, emp.id, 2025), 7.0)
+
+    def test_reverse_after_reapproval_reverses_latest_used_entry(self):
+        join = datetime.date(2024, 6, 1)
+        emp = make_employee(self.db, "Dina", join)
+        grant_anniversary_quota(self.db, emp, 2025)
+        record_leave_used(self.db, emp.id, 2025, 2.0, leave_request_id=777)
+        reverse_leave_used(self.db, emp.id, 2025, leave_request_id=777)
+        record_leave_used(self.db, emp.id, 2025, 2.0, leave_request_id=777)
+
+        reverse_leave_used(self.db, emp.id, 2025, leave_request_id=777)
         self.assertEqual(get_ledger_balance(self.db, emp.id, 2025), 7.0)
 
 

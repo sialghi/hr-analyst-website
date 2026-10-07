@@ -139,10 +139,13 @@ class EmploymentContractOut(EmploymentContractBase):
 # ---------- Employee (master karyawan) ----------
 class EmployeeBase(BaseModel):
     nama: str
+    employee_code: Optional[str] = None
     nik: Optional[str] = None             # NIK KTP 16 digit
     id_mesin: Optional[str] = None
     profile_code: str
     cabang: Optional[str] = None
+    jabatan: Optional[str] = None
+    payroll_status: Optional[str] = None
     uang_makan_override: Optional[int] = None
     bpjs_kesehatan: Optional[int] = 0
     bpjs_tk: Optional[int] = 0
@@ -181,6 +184,15 @@ class EmployeeOut(EmployeeBase):
 
     class Config:
         from_attributes = True
+
+
+class EmployeeImportApproval(BaseModel):
+    profile_code: str
+    employment_status: str
+    join_date: Optional[date] = None
+    contract_start_date: Optional[date] = None
+    contract_end_date: Optional[date] = None
+    contract_keterangan: Optional[str] = None
 
 
 # ---------- Holiday (tanggal merah) ----------

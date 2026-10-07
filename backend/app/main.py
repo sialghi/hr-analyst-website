@@ -42,6 +42,16 @@ def _run_migrations():
                                 conn.execute(text(sql))
                             except Exception as col_err:
                                 print(f"[MIGRATION ERROR on {col.name}]: {col_err}")
+            if "employees" in existing_tables:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_employees_employee_code "
+                    "ON employees (employee_code)"
+                ))
+            if "leave_requests" in existing_tables:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_leave_requests_import_key "
+                    "ON leave_requests (import_key)"
+                ))
     except Exception as e:
         print(f"[MIGRATION WARN] {e}")
 
@@ -78,6 +88,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+def health_check():
+    return {"status": "ok"}
+
+
+@app.get("/health")
+def health_status():
+    return {"status": "ok"}
+
 
 app.include_router(auth.router)
 app.include_router(profiles.router)

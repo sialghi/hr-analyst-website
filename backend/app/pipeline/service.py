@@ -125,12 +125,192 @@ def _derive_periode(df_prep) -> tuple | None:
     return best_cand if best_cand else (int(min_d.year), int(min_d.month))
 
 
+def persist_attendance_daily(db: Session, df_prep, upload_batch_id=None):
+    """Simpan satu ringkasan absensi per karyawan per tanggal."""
+    if df_prep is None or df_prep.empty:
+        return 0
+
+    employees = db.query(models.Employee).filter(models.Employee.active == True).all()  # noqa: E712
+    employee_by_name = {config.normalisasi_nama(emp.nama): emp for emp in employees}
+    saved = 0
+
+    for _, row in df_prep.iterrows():
+        employee = employee_by_name.get(config.normalisasi_nama(str(row.get("Nama", ""))))
+        if not employee:
+            continue
+
+        attendance_date = pd.to_datetime(row["Tanggal"]).date()
+        existing = (
+            db.query(models.AttendanceDaily)
+            .filter(
+                models.AttendanceDaily.employee_id == employee.id,
+                models.AttendanceDaily.attendance_date == attendance_date,
+            )
+            .first()
+        )
+        values = {
+            "status": "PRESENT" if str(row.get("Status_Data") or "") == "Lengkap" else "INCOMPLETE",
+            "cabang": _safe_val(row.get("Cabang")),
+            "profile": _safe_val(row.get("Profil")),
+            "jam_masuk": _safe_val(row.get("Jam_Masuk")),
+            "jam_keluar": _safe_val(row.get("Jam_Keluar")),
+            "kategori_hari": _safe_val(row.get("Kategori_Hari")),
+            "catatan": _safe_val(row.get("Catatan")),
+            "upload_batch_id": upload_batch_id,
+        }
+        if existing:
+            for key, value in values.items():
+                setattr(existing, key, value)
+        else:
+            db.add(models.AttendanceDaily(
+                employee_id=employee.id,
+                attendance_date=attendance_date,
+                **values,
+            ))
+        if values["status"] == "PRESENT":
+            review = db.query(models.AttendanceReview).filter(
+                models.AttendanceReview.employee_id == employee.id,
+                models.AttendanceReview.attendance_date == attendance_date,
+                models.AttendanceReview.status == "PENDING",
+            ).first()
+            if review:
+                review.status = "RESOLVED"
+                review.decision = "CORRECTED"
+                review.note = "Scan hadir ditemukan pada upload berikutnya."
+                review.resolved_at = datetime.datetime.utcnow()
+        saved += 1
+
+    db.commit()
+    return saved
+
+
+def create_absence_reviews(
+    db: Session,
+    period_start,
+    period_end,
+    upload_batch_id=None,
+    source_df=None,
+):
+    """Buat review hanya untuk karyawan yang tercakup dalam file upload."""
+    if not period_start or not period_end:
+        return 0
+
+    uploaded_names = {
+        config.normalisasi_nama(str(name))
+        for name in (source_df["Nama"].dropna().tolist() if source_df is not None and "Nama" in source_df.columns else [])
+        if str(name).strip()
+    }
+    if not uploaded_names:
+        return 0
+
+    employees = [
+        employee
+        for employee in db.query(models.Employee).filter(models.Employee.active == True).all()  # noqa: E712
+        if config.normalisasi_nama(employee.nama) in uploaded_names
+    ]
+    holidays = {
+        holiday.tanggal for holiday in db.query(models.Holiday).all()
+    }
+    approved_leaves = db.query(models.LeaveRequest).filter(
+        models.LeaveRequest.status == "APPROVED"
+    ).all()
+    remote_leaves = [
+        leave for leave in approved_leaves
+        if leave.kategori == "WORK_FROM_LOCATION"
+    ]
+    count = 0
+    current = period_start
+    while current <= period_end:
+        for employee in employees:
+            profile = config.PROFIL_JADWAL.get(
+                employee.profile_code,
+                config.PROFIL_JADWAL.get(config.PROFIL_DEFAULT, {}),
+            )
+            if current in holidays:
+                continue
+            hari = config.NAMA_HARI_ID[current.weekday()]
+            hari_kerja = profile.get("hari_kerja") or []
+            if (hari_kerja and hari not in hari_kerja) or (not hari_kerja and current.weekday() >= 5):
+                continue
+
+            has_daily = db.query(models.AttendanceDaily.id).filter(
+                models.AttendanceDaily.employee_id == employee.id,
+                models.AttendanceDaily.attendance_date == current,
+                models.AttendanceDaily.upload_batch_id == upload_batch_id,
+            ).first()
+            if has_daily:
+                continue
+
+            existing_review = db.query(models.AttendanceReview).filter(
+                models.AttendanceReview.employee_id == employee.id,
+                models.AttendanceReview.attendance_date == current,
+            ).first()
+            if existing_review:
+                if existing_review.status == "PENDING":
+                    existing_review.upload_batch_id = upload_batch_id
+                    existing_daily = db.query(models.AttendanceDaily).filter(
+                        models.AttendanceDaily.employee_id == employee.id,
+                        models.AttendanceDaily.attendance_date == current,
+                    ).first()
+                    if existing_daily:
+                        existing_daily.upload_batch_id = upload_batch_id
+                        existing_daily.status = "ABSENT_REVIEW"
+                        existing_daily.catatan = "Tidak ada scan pada hari kerja; menunggu review HR."
+                continue
+
+            has_leave = any(
+                config.normalisasi_nama(leave.nama) == config.normalisasi_nama(employee.nama)
+                and leave.tanggal_mulai <= current <= leave.tanggal_selesai
+                and leave.kategori != "WORK_FROM_LOCATION"
+                for leave in approved_leaves
+            )
+            has_remote = any(
+                config.normalisasi_nama(leave.nama) == config.normalisasi_nama(employee.nama)
+                and leave.tanggal_mulai <= current <= leave.tanggal_selesai
+                for leave in remote_leaves
+            )
+            if has_leave or has_remote:
+                continue
+
+            existing_daily = db.query(models.AttendanceDaily).filter(
+                models.AttendanceDaily.employee_id == employee.id,
+                models.AttendanceDaily.attendance_date == current,
+            ).first()
+            if existing_daily:
+                existing_daily.status = "ABSENT_REVIEW"
+                existing_daily.profile = employee.profile_code
+                existing_daily.kategori_hari = "Kerja"
+                existing_daily.upload_batch_id = upload_batch_id
+                existing_daily.catatan = "Tidak ada scan pada hari kerja; menunggu review HR."
+            else:
+                db.add(models.AttendanceDaily(
+                    employee_id=employee.id,
+                    attendance_date=current,
+                    status="ABSENT_REVIEW",
+                    profile=employee.profile_code,
+                    kategori_hari="Kerja",
+                    upload_batch_id=upload_batch_id,
+                    catatan="Tidak ada scan pada hari kerja; menunggu review HR.",
+                ))
+            db.add(models.AttendanceReview(
+                employee_id=employee.id,
+                attendance_date=current,
+                upload_batch_id=upload_batch_id,
+            ))
+            count += 1
+        current += datetime.timedelta(days=1)
+
+    db.commit()
+    return count
+
+
 def jalankan_pipeline_db(
     daftar_input,
     path_output: str,
     db: Session,
     override_master_path: str = None,
     override_tanggal_merah_path: str = None,
+    upload_batch_id: int = None,
     verbose: bool = False,
 ):
     """
@@ -210,6 +390,22 @@ def jalankan_pipeline_db(
     else:
         periode_start = periode_end = None
         df_prep_full = df_prep.copy()
+
+    persisted_count = persist_attendance_daily(db, df_prep, upload_batch_id=upload_batch_id)
+    if upload_batch_id:
+        batch = db.query(models.AttendanceUploadBatch).get(upload_batch_id)
+        if batch:
+            batch.period_start = periode_start
+            batch.period_end = periode_end
+            batch.row_count = persisted_count
+            db.commit()
+    create_absence_reviews(
+        db,
+        periode_start,
+        periode_end,
+        upload_batch_id=upload_batch_id,
+        source_df=df_prep,
+    )
 
     log("[4/5] Data Process (telat/lembur/uang makan/tidak masuk)...")
     df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]
@@ -594,6 +790,7 @@ def jalankan_pipeline_db_json(
     db: Session,
     override_master_path: str = None,
     override_tanggal_merah_path: str = None,
+    upload_batch_id: int = None,
     verbose: bool = False,
 ):
     """Jalankan pipeline lengkap, tulis Excel, DAN kembalikan dict terstruktur untuk JSON response."""
@@ -659,6 +856,22 @@ def jalankan_pipeline_db_json(
     else:
         periode_start = periode_end = None
         df_prep_full = df_prep.copy()
+
+    persisted_count = persist_attendance_daily(db, df_prep, upload_batch_id=upload_batch_id)
+    if upload_batch_id:
+        batch = db.query(models.AttendanceUploadBatch).get(upload_batch_id)
+        if batch:
+            batch.period_start = periode_start
+            batch.period_end = periode_end
+            batch.row_count = persisted_count
+            db.commit()
+    create_absence_reviews(
+        db,
+        periode_start,
+        periode_end,
+        upload_batch_id=upload_batch_id,
+        source_df=df_prep,
+    )
 
     log("[4/5] Data Process...")
     df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]

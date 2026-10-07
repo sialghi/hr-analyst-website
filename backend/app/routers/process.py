@@ -3,6 +3,7 @@ import os
 import shutil
 import tempfile
 import uuid
+import datetime
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from .. import models, auth
 from ..database import get_db
 from ..pipeline.service import jalankan_pipeline_db, jalankan_pipeline_db_json
+from ..leave_logic import get_ledger_balance, record_leave_used
 from ..shared_store import _file_store
 
 router = APIRouter(tags=["process"])
@@ -34,6 +36,31 @@ def _simpan_upload(f: UploadFile, folder: str, nama_file: str = None) -> str:
     return path_tujuan
 
 
+def _create_upload_batch(db: Session, filenames, uploaded_by=None):
+    batch = models.AttendanceUploadBatch(
+        filename=", ".join(name or "absensi" for name in filenames),
+        uploaded_by=uploaded_by,
+        status="PROCESSING",
+    )
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+def _finish_upload_batch(db: Session, batch, result_data=None, row_count=None, status="COMPLETED"):
+    if result_data:
+        period = result_data.get("periode") or {}
+        start_date = period.get("start_date")
+        end_date = period.get("end_date")
+        batch.period_start = datetime.date.fromisoformat(start_date) if start_date else None
+        batch.period_end = datetime.date.fromisoformat(end_date) if end_date else None
+    if row_count is not None:
+        batch.row_count = int(row_count)
+    batch.status = status
+    db.commit()
+
+
 def _jalankan_dan_kirim(files, db: Session, master_karyawan: UploadFile = None, tanggal_merah_override: UploadFile = None):
     if not files:
         raise HTTPException(status_code=400, detail="Tidak ada file absensi yang dikirim.")
@@ -41,6 +68,7 @@ def _jalankan_dan_kirim(files, db: Session, master_karyawan: UploadFile = None, 
     folder_kerja = tempfile.mkdtemp(prefix="hr_pipeline_")
     try:
         path_input_list = [_simpan_upload(f, folder_kerja) for f in files]
+        batch = _create_upload_batch(db, [f.filename for f in files])
 
         path_master = None
         if master_karyawan:
@@ -63,9 +91,12 @@ def _jalankan_dan_kirim(files, db: Session, master_karyawan: UploadFile = None, 
                 db=db,
                 override_master_path=path_master,
                 override_tanggal_merah_path=path_tgl_merah,
+                upload_batch_id=batch.id,
                 verbose=False,
             )
+            _finish_upload_batch(db, batch)
         except Exception as e:
+            _finish_upload_batch(db, batch, status="FAILED")
             raise HTTPException(status_code=422, detail=f"Gagal memproses data: {e}")
 
         return FileResponse(
@@ -85,7 +116,7 @@ def _jalankan_dan_kirim(files, db: Session, master_karyawan: UploadFile = None, 
 async def proses_absensi_manual(
     files: list[UploadFile] = File(..., description="Satu atau lebih file absensi mentah"),
     db: Session = Depends(get_db),
-    _: models.User = Depends(auth.get_current_user),
+    current_user: models.User = Depends(auth.get_current_user),
 ):
     """Upload manual lewat web: master karyawan & tanggal merah otomatis dari database.
     Mengembalikan JSON terstruktur lengkap dengan data 14 sheet + file_id untuk download Excel.
@@ -95,6 +126,7 @@ async def proses_absensi_manual(
 
     folder_kerja = tempfile.mkdtemp(prefix="hr_pipeline_")
     path_input_list = [_simpan_upload(f, folder_kerja) for f in files]
+    batch = _create_upload_batch(db, [f.filename for f in files], uploaded_by=current_user.nama)
 
     nama_dasar = os.path.splitext(files[0].filename or "")[0] if files else "Absensi"
     nama_download = f"Report Hasil_{nama_dasar}.xlsx"
@@ -106,9 +138,16 @@ async def proses_absensi_manual(
             daftar_input=path_input_list,
             path_output=path_output,
             db=db,
+            upload_batch_id=batch.id,
             verbose=False,
         )
+        _finish_upload_batch(
+            db,
+            batch,
+            result_data=result_data,
+        )
     except Exception as e:
+        _finish_upload_batch(db, batch, status="FAILED")
         raise HTTPException(status_code=422, detail=f"Gagal memproses data: {e}")
 
     # Simpan referensi file untuk download nanti (juga simpan result_data untuk chatbot)
@@ -117,6 +156,7 @@ async def proses_absensi_manual(
     # Tambahkan file_id & filename ke response
     result_data["file_id"] = file_id
     result_data["filename"] = nama_download
+    result_data["upload_batch_id"] = batch.id
 
     return JSONResponse(content=result_data)
 
@@ -135,6 +175,198 @@ async def download_hasil_proses(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=entry["filename"],
     )
+
+
+@router.get("/attendance/upload-batches")
+def list_attendance_upload_batches(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    batches = (
+        db.query(models.AttendanceUploadBatch)
+        .order_by(models.AttendanceUploadBatch.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [{
+        "id": batch.id,
+        "filename": batch.filename,
+        "period_start": batch.period_start,
+        "period_end": batch.period_end,
+        "row_count": batch.row_count,
+        "status": batch.status,
+        "uploaded_by": batch.uploaded_by,
+        "created_at": batch.created_at,
+    } for batch in batches]
+
+
+@router.get("/attendance/daily")
+def list_attendance_daily(
+    employee_id: int | None = Query(None),
+    start_date: datetime.date | None = Query(None),
+    end_date: datetime.date | None = Query(None),
+    limit: int = Query(500, ge=1, le=5000),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    query = db.query(models.AttendanceDaily).order_by(
+        models.AttendanceDaily.attendance_date.desc(),
+        models.AttendanceDaily.employee_id,
+    )
+    if employee_id is not None:
+        query = query.filter(models.AttendanceDaily.employee_id == employee_id)
+    if start_date is not None:
+        query = query.filter(models.AttendanceDaily.attendance_date >= start_date)
+    if end_date is not None:
+        query = query.filter(models.AttendanceDaily.attendance_date <= end_date)
+
+    rows = query.limit(limit).all()
+    return [{
+        "id": row.id,
+        "employee_id": row.employee_id,
+        "tanggal": row.attendance_date,
+        "status": row.status,
+        "cabang": row.cabang,
+        "profile": row.profile,
+        "jam_masuk": row.jam_masuk,
+        "jam_keluar": row.jam_keluar,
+        "kategori_hari": row.kategori_hari,
+        "catatan": row.catatan,
+        "upload_batch_id": row.upload_batch_id,
+        "updated_at": row.updated_at,
+    } for row in rows]
+
+
+@router.get("/attendance/reviews")
+def list_attendance_reviews(
+    status: str = Query("PENDING", pattern="^(PENDING|RESOLVED|ALL)$"),
+    upload_batch_id: int | None = Query(None, ge=1),
+    limit: int = Query(500, ge=1, le=5000),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    query = db.query(models.AttendanceReview).order_by(
+        models.AttendanceReview.attendance_date.desc(),
+        models.AttendanceReview.id.desc(),
+    )
+    if status != "ALL":
+        query = query.filter(models.AttendanceReview.status == status)
+    if upload_batch_id is not None:
+        query = query.filter(models.AttendanceReview.upload_batch_id == upload_batch_id)
+    rows = query.limit(limit).all()
+    from ..config import ANNUAL_LEAVE_QUOTA
+
+    return [{
+        "id": row.id,
+        "employee_id": row.employee_id,
+        "nama": row.employee.nama if row.employee else None,
+        "tanggal": row.attendance_date,
+        "status": row.status,
+        "decision": row.decision,
+        "note": row.note,
+        "upload_batch_id": row.upload_batch_id,
+        "created_at": row.created_at,
+        "resolved_at": row.resolved_at,
+        "resolved_by": row.resolved_by,
+        "sisa_cuti_tahunan": max(
+            0.0,
+            get_ledger_balance(db, row.employee_id, row.attendance_date.year),
+        ),
+        "kuota_cuti_tahunan": ANNUAL_LEAVE_QUOTA,
+    } for row in rows]
+
+
+@router.patch("/attendance/reviews/{review_id}")
+def resolve_attendance_review(
+    review_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.require_hr_master),
+):
+    review = db.query(models.AttendanceReview).filter(
+        models.AttendanceReview.id == review_id
+    ).first()
+    if not review:
+        raise HTTPException(status_code=404, detail="Review ketidakhadiran tidak ditemukan.")
+    if review.status != "PENDING":
+        raise HTTPException(status_code=400, detail="Review ini sudah diselesaikan.")
+
+    decision = str(payload.get("decision") or "").strip().upper()
+    note = str(payload.get("note") or "").strip() or None
+    allowed = {"ANNUAL_LEAVE", "UNPAID_LEAVE", "SICK_OR_PERMISSION", "CORRECTED", "IGNORED"}
+    if decision not in allowed:
+        raise HTTPException(status_code=400, detail="Keputusan tidak valid.")
+
+    employee = review.employee
+    leave_request_id = None
+    if decision == "ANNUAL_LEAVE":
+        balance = max(0.0, get_ledger_balance(db, employee.id, review.attendance_date.year))
+        if balance < 1:
+            raise HTTPException(status_code=400, detail="Saldo cuti tahunan tidak mencukupi. Pilih Unpaid Leave atau koreksi.")
+        leave = models.LeaveRequest(
+            nama=employee.nama,
+            kategori="CUTI_TAHUNAN",
+            tanggal_mulai=review.attendance_date,
+            tanggal_selesai=review.attendance_date,
+            jumlah_hari=1.0,
+            unpaid_leave_days=0.0,
+            alasan="Ditetapkan dari review absensi tanpa scan.",
+            catatan_hr=note,
+            status="APPROVED",
+            approved_by=f"HR Master ({current_user.nama})",
+            approved_at=datetime.datetime.utcnow(),
+        )
+        db.add(leave)
+        db.flush()
+        record_leave_used(
+            db,
+            employee.id,
+            review.attendance_date.year,
+            1.0,
+            leave.id,
+            f"CUTI_TAHUNAN otomatis dari review {review.attendance_date}",
+        )
+        leave_request_id = leave.id
+    elif decision in {"UNPAID_LEAVE", "SICK_OR_PERMISSION"}:
+        leave = models.LeaveRequest(
+            nama=employee.nama,
+            kategori="UNPAID_LEAVE" if decision == "UNPAID_LEAVE" else "SAKIT",
+            tanggal_mulai=review.attendance_date,
+            tanggal_selesai=review.attendance_date,
+            jumlah_hari=1.0,
+            unpaid_leave_days=1.0 if decision == "UNPAID_LEAVE" else 0.0,
+            alasan="Ditetapkan dari review absensi tanpa scan.",
+            catatan_hr=note,
+            status="APPROVED",
+            approved_by=f"HR Master ({current_user.nama})",
+            approved_at=datetime.datetime.utcnow(),
+        )
+        db.add(leave)
+        db.flush()
+        leave_request_id = leave.id
+
+    review.status = "RESOLVED"
+    review.decision = decision
+    review.note = note
+    review.leave_request_id = leave_request_id
+    review.resolved_at = datetime.datetime.utcnow()
+    review.resolved_by = current_user.nama
+    daily = db.query(models.AttendanceDaily).filter(
+        models.AttendanceDaily.employee_id == employee.id,
+        models.AttendanceDaily.attendance_date == review.attendance_date,
+    ).first()
+    if daily:
+        daily.status = decision
+        daily.catatan = note or f"Diselesaikan HR sebagai {decision}."
+    db.commit()
+    db.refresh(review)
+    return {
+        "id": review.id,
+        "status": review.status,
+        "decision": review.decision,
+        "leave_request_id": review.leave_request_id,
+    }
 
 
 @router.get("/proses/template")

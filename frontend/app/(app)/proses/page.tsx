@@ -38,6 +38,25 @@ interface ProcessResult {
   cabang_list: string[];
   profil_list: string[];
   periode?: { tahun: number; bulan: number } | null;
+  upload_batch_id?: number;
+}
+
+interface AttendanceReview {
+  id: number;
+  employee_id: number;
+  nama: string;
+  tanggal: string;
+  status: string;
+  decision?: string | null;
+  note?: string | null;
+  sisa_cuti_tahunan: number;
+  kuota_cuti_tahunan: number;
+}
+
+interface AttendanceReviewGroup {
+  employeeId: number;
+  nama: string;
+  reviews: AttendanceReview[];
 }
 
 /* ===================================================================
@@ -1350,7 +1369,57 @@ export default function ProsesPage() {
   const [detailNama, setDetailNama] = useState<string | null>(null);
   const [downloadingTemplate, setDownloadingTemplate] = useState<"xlsx" | "csv" | null>(null);
   const [showTemplateGuide, setShowTemplateGuide] = useState(false);
+  const [attendanceReviews, setAttendanceReviews] = useState<AttendanceReview[]>([]);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [expandedReviewEmployees, setExpandedReviewEmployees] = useState<Set<number>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const attendanceReviewGroups = useMemo<AttendanceReviewGroup[]>(() => {
+    const groups = new Map<number, AttendanceReviewGroup>();
+    for (const review of attendanceReviews) {
+      const existing = groups.get(review.employee_id);
+      if (existing) {
+        existing.reviews.push(review);
+      } else {
+        groups.set(review.employee_id, {
+          employeeId: review.employee_id,
+          nama: review.nama,
+          reviews: [review],
+        });
+      }
+    }
+    return Array.from(groups.values()).sort((a, b) => a.nama.localeCompare(b.nama));
+  }, [attendanceReviews]);
+
+  async function loadAttendanceReviews(uploadBatchId?: number) {
+    setReviewLoading(true);
+    try {
+      setAttendanceReviews((await api.getAttendanceReviews("PENDING", uploadBatchId)) || []);
+    } catch (err) {
+      console.error("Gagal memuat review absensi:", err);
+    } finally {
+      setReviewLoading(false);
+    }
+  }
+
+  async function handleAttendanceReview(id: number, decision: string) {
+    const note = window.prompt("Catatan HR (opsional):") || undefined;
+    try {
+      await api.resolveAttendanceReview(id, decision, note);
+      await loadAttendanceReviews(result?.upload_batch_id);
+    } catch (err: any) {
+      window.alert(err.message || "Gagal menyelesaikan review absensi.");
+    }
+  }
+
+  function toggleReviewEmployee(employeeId: number) {
+    setExpandedReviewEmployees((current) => {
+      const next = new Set(current);
+      if (next.has(employeeId)) next.delete(employeeId);
+      else next.add(employeeId);
+      return next;
+    });
+  }
 
   function handleFiles(list: FileList | null) {
     if (!list) return;
@@ -1367,6 +1436,7 @@ export default function ProsesPage() {
       const data = await api.prosesAbsensi(files);
       setResult(data);
       setActiveTab(0);
+      await loadAttendanceReviews(data.upload_batch_id);
     } catch (err: any) {
       setError(err.message || "Gagal memproses data absensi.");
     } finally {
@@ -1736,6 +1806,88 @@ export default function ProsesPage() {
           isAlert={kpis.jml_perlu_dicek > 0}
         />
       </div>
+
+      <Card className="mb-5 border-amber-200 bg-amber-50/40">
+          <div className="flex items-center justify-between gap-3 mb-2.5">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold text-slate-900">Review Absensi Tanpa Scan</h2>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                  {attendanceReviews.length} pending
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                Hanya menampilkan karyawan dari file ini. Hari tanpa scan tidak otomatis memotong cuti.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => loadAttendanceReviews(result.upload_batch_id)}
+              disabled={reviewLoading}
+              className="text-xs font-semibold text-slate-700 hover:text-slate-950 disabled:opacity-50"
+            >
+              {reviewLoading ? "Memuat..." : "Refresh"}
+            </button>
+          </div>
+          {reviewLoading ? (
+            <p className="text-xs text-slate-600">Memuat review dari upload ini...</p>
+          ) : attendanceReviews.length === 0 ? (
+            <p className="text-xs text-slate-600">
+              Tidak ada hari kerja tanpa scan yang menunggu keputusan untuk file ini.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {attendanceReviewGroups.map((group) => {
+                const expanded = expandedReviewEmployees.has(group.employeeId);
+                return (
+                  <div key={group.employeeId} className="rounded-md border border-amber-200 bg-white/70 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => toggleReviewEmployee(group.employeeId)}
+                      className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-left hover:bg-amber-50/70 transition-colors"
+                      aria-expanded={expanded}
+                    >
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-slate-500 text-[11px]" aria-hidden="true">
+                          {expanded ? "▾" : "▸"}
+                        </span>
+                        <span className="text-xs font-semibold text-slate-900 truncate">{group.nama}</span>
+                      </span>
+                      <span className="shrink-0 text-[10px] font-semibold text-amber-800 bg-amber-100 rounded-full px-1.5 py-0.5">
+                        {group.reviews.length} tanggal perlu keputusan
+                      </span>
+                    </button>
+
+                    {expanded && (
+                      <div className="border-t border-amber-100 px-2.5 py-1">
+                        <div className="space-y-0">
+                          {group.reviews.map((review) => (
+                            <div
+                              key={review.id}
+                              className="grid gap-1 border-b border-slate-100 last:border-0 py-1 sm:grid-cols-[90px_145px_1fr] sm:items-center"
+                            >
+                              <div className="text-[11px] text-slate-700">{review.tanggal}</div>
+                              <div className="text-[11px] font-semibold text-slate-800">
+                                Sisa cuti: {review.sisa_cuti_tahunan} / {review.kuota_cuti_tahunan} hari
+                              </div>
+                              <div className="flex flex-wrap gap-1">
+                                <button onClick={() => handleAttendanceReview(review.id, "ANNUAL_LEAVE")} className="px-1.5 py-0.5 rounded bg-amber-100 text-[10px] text-amber-800 hover:bg-amber-200">Cuti</button>
+                                <button onClick={() => handleAttendanceReview(review.id, "UNPAID_LEAVE")} className="px-1.5 py-0.5 rounded bg-rose-100 text-[10px] text-rose-800 hover:bg-rose-200">Unpaid</button>
+                                <button onClick={() => handleAttendanceReview(review.id, "SICK_OR_PERMISSION")} className="px-1.5 py-0.5 rounded bg-sky-100 text-[10px] text-sky-800 hover:bg-sky-200">Sakit/Izin</button>
+                                <button onClick={() => handleAttendanceReview(review.id, "CORRECTED")} className="px-1.5 py-0.5 rounded bg-emerald-100 text-[10px] text-emerald-800 hover:bg-emerald-200">Hadir</button>
+                                <button onClick={() => handleAttendanceReview(review.id, "IGNORED")} className="px-1.5 py-0.5 rounded bg-white text-[10px] text-slate-700 hover:bg-slate-100 border border-amber-200">Abaikan</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
 
       {/* Sheet Tabs Bar */}
       <div className="mb-4 overflow-x-auto pb-1" style={{ scrollbarWidth: "thin" }}>

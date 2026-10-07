@@ -9,7 +9,10 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import Base, get_db
 from app.main import app
-from app.models import User, Employee, EmploymentContract, Profile, RoleEnum
+from app.models import (
+    User, Employee, EmploymentContract, Profile, RoleEnum,
+    LeaveRequest, LeaveBalanceLedger, EmployeeImportCandidate,
+)
 from app.config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
 from app.auth import get_current_user, require_hr_master
 from app.pipeline.loader import build_master_df_from_db
@@ -455,6 +458,238 @@ class TestContractManagement(unittest.TestCase):
         self.assertIn("HR_MOVE", events)
         self.assertIn("HR_REVOKE", events)
         db.close()
+
+
+class TestEmployeeWorkbookImports(unittest.TestCase):
+
+    def setUp(self):
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        db = TestingSessionLocal()
+        db.add(Profile(
+            code="OFFICE",
+            nama="Office",
+            hari_kerja=["Senin", "Selasa", "Rabu", "Kamis", "Jumat"],
+        ))
+        db.commit()
+        db.close()
+
+    @staticmethod
+    def _upload(workbook, filename):
+        output = io.BytesIO()
+        workbook.save(output)
+        output.seek(0)
+        return {"file": (filename, output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+
+    @staticmethod
+    def _master_workbook():
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Master ID"
+        sheet.append([
+            "ID Karyawan", "Kode Cabang", "No Urut", "Nama", "NIK",
+            "Tanggal Join", "UM (Uang Makan)", "Jabatan", "Lokasi Kerja",
+            "Sheet Asal", "Status (Bulanan/Harian)",
+        ])
+        sheet.append([
+            "JIP-010001", "01", "0001", "Current Employee", "3201010101010001",
+            datetime.date(2024, 1, 15), 65000, "Admin", "Gudang A", "Gudang A", "Bulanan",
+        ])
+        sheet.append([
+            "JIP-010002", "01", "0002", "New Employee", "3201010101010002",
+            datetime.date(2025, 2, 15), 70000, "Staff", "Gudang A", "Gudang A", "Harian",
+        ])
+        return workbook
+
+    def test_master_dry_run_commit_and_review_new_employee(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            nama="Old Employee",
+            nik="3201010101010001",
+            profile_code="OFFICE",
+            employment_status="PKWT",
+            active=False,
+            cabang="OLD BRANCH",
+        )
+        db.add(employee)
+        db.add(LeaveRequest(
+            nama="Old Employee",
+            kategori="SAKIT",
+            tanggal_mulai=datetime.date(2025, 1, 1),
+            tanggal_selesai=datetime.date(2025, 1, 1),
+            status="APPROVED",
+        ))
+        db.commit()
+        employee_id = employee.id
+        db.close()
+
+        workbook = self._master_workbook()
+        dry = client.post(
+            "/employees/import/master?dry_run=true",
+            files=self._upload(workbook, "master.xlsx"),
+        )
+        self.assertEqual(dry.status_code, 200)
+        self.assertEqual(dry.json()["total_updated"], 1)
+        self.assertEqual(dry.json()["total_new_pending_review"], 1)
+        self.assertEqual(dry.json()["total_conflicts"], 0)
+
+        db = TestingSessionLocal()
+        unchanged = db.query(Employee).filter(Employee.id == employee_id).one()
+        self.assertIsNone(unchanged.employee_code)
+        self.assertEqual(unchanged.cabang, "OLD BRANCH")
+        self.assertEqual(db.query(EmployeeImportCandidate).count(), 0)
+        db.close()
+
+        applied = client.post(
+            "/employees/import/master?dry_run=false",
+            files=self._upload(workbook, "master.xlsx"),
+        )
+        self.assertEqual(applied.status_code, 200)
+        self.assertEqual(applied.json()["total_updated"], 1)
+        self.assertEqual(applied.json()["total_new_pending_review"], 1)
+
+        db = TestingSessionLocal()
+        updated = db.query(Employee).filter(Employee.id == employee_id).one()
+        self.assertEqual(updated.employee_code, "JIP-010001")
+        self.assertEqual(updated.nama, "Current Employee")
+        self.assertEqual(updated.cabang, "Gudang A")
+        self.assertTrue(updated.active)
+        self.assertEqual(updated.profile_code, "OFFICE")
+        self.assertEqual(updated.employment_status, "PKWT")
+        self.assertEqual(db.query(LeaveRequest).one().nama, "Current Employee")
+        candidate = db.query(EmployeeImportCandidate).filter(
+            EmployeeImportCandidate.employee_code == "JIP-010002"
+        ).one()
+        candidate_id = candidate.id
+        self.assertEqual(candidate.status, "PENDING")
+        db.close()
+
+        approved = client.post(
+            f"/employees/import/master/pending/{candidate_id}/approve",
+            json={"profile_code": "OFFICE", "employment_status": "PKWTT"},
+        )
+        self.assertEqual(approved.status_code, 200)
+        self.assertTrue(approved.json()["active"])
+        self.assertEqual(approved.json()["employee_code"], "JIP-010002")
+        self.assertEqual(approved.json()["payroll_status"], "Harian")
+
+        updated = client.put(
+            f"/employees/{employee_id}",
+            json={
+                "nama": "Current Employee",
+                "profile_code": "OFFICE",
+                "employment_status": "PKWT",
+                "join_date": "2024-01-15",
+                "cabang": "Gudang A",
+                "active": True,
+            },
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["employee_code"], "JIP-010001")
+        db = TestingSessionLocal()
+        preserved = db.query(Employee).filter(Employee.id == employee_id).one()
+        self.assertEqual(preserved.jabatan, "Admin")
+        self.assertEqual(preserved.payroll_status, "Bulanan")
+        db.close()
+
+    def test_recap_import_quarantines_missing_ids_and_is_idempotent(self):
+        db = TestingSessionLocal()
+        db.add(Employee(
+            employee_code="JIP-020001",
+            nama="Recap Employee",
+            nik="3201010101010003",
+            profile_code="OFFICE",
+            active=True,
+        ))
+        db.commit()
+        db.close()
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Rekap Kehadiran"
+        sheet.append(["No", "ID", "NIK", "Cabang", "Nama", "Status", "Tanggal", "Keterangan (S/I/CS)"])
+        sheet.append([1, "JIP-020001", "3201010101010003", "Kby. Lama", "Recap Employee", "Bulanan", datetime.date(2026, 1, 1), "C"])
+        sheet.append([2, "JIP-020001", "3201010101010003", "Kby. Lama", "Recap Employee", "Bulanan", datetime.date(2026, 1, 2), "CS"])
+        sheet.append([3, "JIP-020001", "3201010101010003", "Kby. Lama", "Recap Employee", "Bulanan", datetime.date(2026, 1, 3), "S"])
+        sheet.append([4, "JIP-020001", "3201010101010003", "Kby. Lama", "Recap Employee", "Bulanan", datetime.date(2026, 1, 4), "T"])
+        sheet.append([5, None, "3201010101010003", "Kby. Lama", "Recap Employee", "Bulanan", datetime.date(2026, 1, 5), "C"])
+
+        dry = client.post(
+            "/employees/import/recap?dry_run=true",
+            files=self._upload(workbook, "recap.xlsx"),
+        )
+        self.assertEqual(dry.status_code, 200)
+        self.assertEqual(dry.json()["total_to_import"], 3)
+        self.assertEqual(dry.json()["total_t_ignored"], 1)
+        self.assertEqual(dry.json()["total_conflicts"], 1)
+        db = TestingSessionLocal()
+        self.assertEqual(db.query(LeaveRequest).count(), 0)
+        db.close()
+
+        applied = client.post(
+            "/employees/import/recap?dry_run=false",
+            files=self._upload(workbook, "recap.xlsx"),
+        )
+        self.assertEqual(applied.status_code, 200)
+        self.assertEqual(applied.json()["total_to_import"], 3)
+
+        repeated = client.post(
+            "/employees/import/recap?dry_run=false",
+            files=self._upload(workbook, "recap.xlsx"),
+        )
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.json()["total_to_import"], 0)
+        self.assertEqual(repeated.json()["total_duplicate_or_existing"], 3)
+
+        db = TestingSessionLocal()
+        self.assertEqual(db.query(LeaveRequest).count(), 3)
+        self.assertEqual(db.query(LeaveRequest).filter(LeaveRequest.kategori == "SAKIT").count(), 1)
+        self.assertEqual(db.query(LeaveBalanceLedger).filter(LeaveBalanceLedger.entry_type == "USED").count(), 2)
+        db.close()
+
+    def test_missing_employee_deactivation_requires_explicit_apply_and_never_deletes(self):
+        db = TestingSessionLocal()
+        db.add_all([
+            Employee(
+                employee_code="JIP-010001",
+                nama="Current Employee",
+                nik="3201010101010001",
+                profile_code="OFFICE",
+                active=True,
+            ),
+            Employee(
+                employee_code="JIP-OLD0001",
+                nama="Former Employee",
+                nik="3201010101010009",
+                profile_code="OFFICE",
+                active=True,
+            ),
+        ])
+        db.commit()
+        former_id = db.query(Employee).filter(Employee.employee_code == "JIP-OLD0001").one().id
+        db.close()
+
+        preview = client.post(
+            "/employees/import/master?dry_run=true&deactivate_missing=true",
+            files=self._upload(self._master_workbook(), "master.xlsx"),
+        )
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json()["total_missing_from_master"], 1)
+        db = TestingSessionLocal()
+        self.assertTrue(db.query(Employee).filter(Employee.id == former_id).one().active)
+        db.close()
+
+        applied = client.post(
+            "/employees/import/master?dry_run=false&deactivate_missing=true",
+            files=self._upload(self._master_workbook(), "master.xlsx"),
+        )
+        self.assertEqual(applied.status_code, 200)
+        db = TestingSessionLocal()
+        former = db.query(Employee).filter(Employee.id == former_id).one()
+        self.assertFalse(former.active)
+        self.assertEqual(former.employee_code, "JIP-OLD0001")
+        db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

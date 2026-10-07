@@ -355,31 +355,22 @@ def reverse_leave_used(
 ) -> Optional[LeaveBalanceLedger]:
     """
     Membalikkan USED entry saat cuti dibatalkan/ditolak.
-    Cari entri USED yang terkait leave_request_id, lalu buat REVERSED senilai kebalikannya.
-    Idempotent — jika REVERSED untuk leave_request_id ini sudah ada, skip.
+    Membalik pemakaian bersih yang terkait leave_request_id.
+    Idempotent — jika seluruh pemakaian sudah dibalik, skip. Ini juga aman
+    setelah siklus status APPROVED → REJECTED → APPROVED.
     """
-    # Cek apakah REVERSED sudah ada
-    existing_reversed = (
-        db.query(LeaveBalanceLedger)
+    # Hitung pemakaian bersih agar siklus APPROVED → REJECTED → APPROVED
+    # tetap bisa dibalik saat pengajuan akhirnya dihapus.
+    net_used = (
+        db.query(func.sum(LeaveBalanceLedger.amount))
         .filter(
             LeaveBalanceLedger.leave_request_id == leave_request_id,
-            LeaveBalanceLedger.entry_type == ENTRY_REVERSED,
+            LeaveBalanceLedger.entry_type.in_([ENTRY_USED, ENTRY_REVERSED]),
         )
-        .first()
+        .scalar()
     )
-    if existing_reversed:
-        return None
-
-    # Cari entri USED
-    used_entry = (
-        db.query(LeaveBalanceLedger)
-        .filter(
-            LeaveBalanceLedger.leave_request_id == leave_request_id,
-            LeaveBalanceLedger.entry_type == ENTRY_USED,
-        )
-        .first()
-    )
-    if not used_entry:
+    net_used = float(net_used or 0.0)
+    if net_used >= 0:
         return None
 
     return write_ledger_entry(
@@ -387,7 +378,7 @@ def reverse_leave_used(
         employee_id=employee_id,
         year=year,
         entry_type=ENTRY_REVERSED,
-        amount=-used_entry.amount,  # Kebalikan dari USED (positif)
+        amount=-net_used,
         note=f"Cuti dibatalkan/ditolak: {leave_desc}",
         leave_request_id=leave_request_id,
         commit=commit,

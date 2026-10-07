@@ -2,15 +2,523 @@
 import datetime
 from typing import Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, File, UploadFile
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas, auth
 from ..database import get_db
+from ..employee_imports import normalize_text, parse_master_workbook, parse_recap_workbook
 
 router = APIRouter(prefix="/employees", tags=["employees"])
 
 
 from ..config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
+
+
+def _name_reference_conflict(db: Session, employee: models.Employee, new_name: str) -> Optional[str]:
+    old_key = normalize_text(employee.nama)
+    new_key = normalize_text(new_name)
+    if old_key == new_key:
+        return None
+
+    other_employees = db.query(models.Employee).filter(models.Employee.id != employee.id).all()
+    if any(normalize_text(row.nama) in (old_key, new_key) for row in other_employees):
+        return "Nama lama/baru dipakai karyawan lain; relasi berbasis nama perlu ditinjau."
+
+    adjustments = db.query(models.EmployeeAdjustment).all()
+    if any(normalize_text(row.nama) == new_key for row in adjustments):
+        return "Penyesuaian karyawan dengan nama tujuan sudah ada."
+
+    manual_rows = db.query(models.AbsenManual).all()
+    old_manual = [row for row in manual_rows if normalize_text(row.nama) == old_key]
+    target_periods = {
+        (row.tahun, row.bulan)
+        for row in manual_rows
+        if normalize_text(row.nama) == new_key
+    }
+    if any((row.tahun, row.bulan) in target_periods for row in old_manual):
+        return "Absen manual dengan nama tujuan sudah ada pada periode yang sama."
+    return None
+
+
+def _rename_employee_name_references(db: Session, old_name: str, new_name: str) -> None:
+    old_key = normalize_text(old_name)
+    if old_key == normalize_text(new_name):
+        return
+    for row in db.query(models.LeaveRequest).all():
+        if normalize_text(row.nama) == old_key:
+            row.nama = new_name
+    for row in db.query(models.EmployeeAdjustment).all():
+        if normalize_text(row.nama) == old_key:
+            row.nama = new_name
+    for row in db.query(models.AbsenManual).all():
+        if normalize_text(row.nama) == old_key:
+            row.nama = new_name
+
+
+def _candidate_dict(candidate: models.EmployeeImportCandidate) -> dict:
+    return {
+        "id": candidate.id,
+        "employee_code": candidate.employee_code,
+        "nama": candidate.nama,
+        "nik": candidate.nik,
+        "join_date": candidate.join_date,
+        "uang_makan_override": candidate.uang_makan_override,
+        "jabatan": candidate.jabatan,
+        "cabang": candidate.cabang,
+        "payroll_status": candidate.payroll_status,
+        "source_row": candidate.source_row,
+        "status": candidate.status,
+    }
+
+
+@router.post("/import/master")
+async def import_employee_master(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(default=True),
+    deactivate_missing: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    """Sinkronkan Master dengan pratinjau aman; karyawan baru menunggu review profil."""
+    if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="File Master harus berformat .xlsx atau .xlsm.")
+    try:
+        rows, conflicts = parse_master_workbook(await file.read())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not rows and not conflicts:
+        raise HTTPException(status_code=400, detail="Workbook Master tidak berisi data karyawan.")
+
+    employees = db.query(models.Employee).all()
+    by_code = {}
+    by_nik = {}
+    by_name = {}
+    for employee in employees:
+        if employee.employee_code:
+            by_code.setdefault(employee.employee_code, []).append(employee)
+        if employee.nik:
+            by_nik.setdefault(employee.nik, []).append(employee)
+        by_name.setdefault(normalize_text(employee.nama), []).append(employee)
+
+    present_codes = {row["employee_code"] for row in rows}
+    present_codes.update(
+        conflict["employee_code"]
+        for conflict in conflicts
+        if conflict.get("employee_code")
+    )
+    plans = []
+    matched_employee_ids = set()
+    for row in rows:
+        code = row["employee_code"]
+        employee = None
+        matched_by = None
+        code_matches = by_code.get(code, [])
+        if len(code_matches) > 1:
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "ID JIP duplikat di database."})
+            continue
+        if code_matches:
+            employee, matched_by = code_matches[0], "employee_code"
+        elif row["nik"]:
+            nik_matches = by_nik.get(row["nik"], [])
+            if len(nik_matches) > 1:
+                conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "NIK terhubung ke lebih dari satu karyawan di database."})
+                continue
+            if nik_matches:
+                employee, matched_by = nik_matches[0], "nik"
+        if employee is None:
+            name_matches = by_name.get(normalize_text(row["nama"]), [])
+            if len(name_matches) > 1:
+                conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Nama cocok ke lebih dari satu karyawan di database."})
+                continue
+            if name_matches:
+                employee, matched_by = name_matches[0], "nama"
+
+        if employee is None:
+            plans.append({"row": row, "employee": None, "matched_by": None})
+            continue
+        if employee.id in matched_employee_ids:
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Karyawan database sudah dicocokkan dengan baris Master lain."})
+            continue
+        if employee.employee_code and employee.employee_code != code:
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Karyawan yang cocok sudah memiliki ID JIP berbeda."})
+            continue
+        if row["nik"]:
+            owners = [owner for owner in by_nik.get(row["nik"], []) if owner.id != employee.id]
+            if owners:
+                conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "NIK sudah dipakai karyawan lain di database."})
+                continue
+            if matched_by != "employee_code" and employee.nik and employee.nik != row["nik"]:
+                conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "NIK berbeda dari karyawan yang cocok; perlu verifikasi manual."})
+                continue
+        if any(
+            other.id != employee.id and normalize_text(other.nama) == normalize_text(row["nama"])
+            for other in employees
+        ):
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Nama kanonis sudah dipakai karyawan lain."})
+            continue
+        rename_conflict = _name_reference_conflict(db, employee, row["nama"])
+        if rename_conflict:
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": rename_conflict})
+            continue
+        plans.append({"row": row, "employee": employee, "matched_by": matched_by})
+        matched_employee_ids.add(employee.id)
+
+    candidate_by_code = {
+        candidate.employee_code: candidate
+        for candidate in db.query(models.EmployeeImportCandidate)
+        .all()
+    }
+    updates = []
+    new_candidates = []
+    for plan in plans:
+        row = plan["row"]
+        employee = plan["employee"]
+        if employee is None:
+            new_candidates.append(row)
+            continue
+        changed = ["employee_code", "cabang", "active"]
+        if normalize_text(employee.nama) != normalize_text(row["nama"]):
+            changed.append("nama")
+        if row["nik"] and employee.nik != row["nik"]:
+            changed.append("nik")
+        if row["join_date"] and employee.join_date != row["join_date"]:
+            changed.append("join_date")
+        if row["uang_makan_override"] is not None and employee.uang_makan_override != row["uang_makan_override"]:
+            changed.append("uang_makan_override")
+        if row["jabatan"] and employee.jabatan != row["jabatan"]:
+            changed.append("jabatan")
+        if row["payroll_status"] and employee.payroll_status != row["payroll_status"]:
+            changed.append("payroll_status")
+        updates.append({
+            "row": row,
+            "employee_id": employee.id,
+            "matched_by": plan["matched_by"],
+            "fields": changed,
+        })
+
+    removal_candidates = [
+        employee for employee in employees
+        if employee.employee_code and employee.employee_code not in present_codes
+    ]
+    deactivation_blocked = bool(deactivate_missing and conflicts)
+    source_row_numbers = {
+        row["source_row"] for row in rows
+    } | {
+        conflict["row"] for conflict in conflicts if conflict.get("row") is not None
+    }
+
+    if not dry_run:
+        try:
+            for plan in plans:
+                row = plan["row"]
+                employee = plan["employee"]
+                if employee is None:
+                    candidate = candidate_by_code.get(row["employee_code"])
+                    if candidate is None:
+                        candidate = models.EmployeeImportCandidate(employee_code=row["employee_code"])
+                        db.add(candidate)
+                        candidate_by_code[row["employee_code"]] = candidate
+                    elif candidate.status != "PENDING":
+                        candidate.status = "PENDING"
+                        candidate.approved_employee_id = None
+                    for field in (
+                        "nama", "nik", "join_date", "uang_makan_override", "jabatan",
+                        "cabang", "payroll_status", "source_row",
+                    ):
+                        setattr(candidate, field, row[field])
+                    continue
+
+                old_name = employee.nama
+                if normalize_text(old_name) != normalize_text(row["nama"]):
+                    _rename_employee_name_references(db, old_name, row["nama"])
+                    employee.nama = row["nama"]
+                employee.employee_code = row["employee_code"]
+                employee.cabang = row["cabang"]
+                employee.active = True
+                if row["nik"]:
+                    employee.nik = row["nik"]
+                if row["join_date"]:
+                    employee.join_date = row["join_date"]
+                if row["uang_makan_override"] is not None:
+                    employee.uang_makan_override = row["uang_makan_override"]
+                if row["jabatan"]:
+                    employee.jabatan = row["jabatan"]
+                if row["payroll_status"]:
+                    employee.payroll_status = row["payroll_status"]
+                candidate = candidate_by_code.get(row["employee_code"])
+                if candidate and candidate.status == "PENDING":
+                    candidate.status = "APPROVED"
+                    candidate.approved_employee_id = employee.id
+
+            if deactivate_missing and not deactivation_blocked:
+                for employee in removal_candidates:
+                    employee.active = False
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Sinkronisasi dibatalkan karena konflik ID JIP/NIK yang unik.") from exc
+        except Exception:
+            db.rollback()
+            raise
+    else:
+        db.rollback()
+
+    return {
+        "message": "Pratinjau selesai." if dry_run else "Sinkronisasi selesai; karyawan baru menunggu review HR.",
+        "dry_run": dry_run,
+        "total_source_rows": len(source_row_numbers),
+        "total_updated": len(updates),
+        "total_new_pending_review": len(new_candidates),
+        "total_conflicts": len(conflicts),
+        "total_missing_from_master": len(removal_candidates),
+        "deactivate_missing_requested": deactivate_missing,
+        "deactivation_blocked_by_conflicts": deactivation_blocked,
+        "detail": {
+            "updated": updates,
+            "new_pending_review": [
+                {"source_row": row["source_row"], "employee_code": row["employee_code"], "nama": row["nama"]}
+                for row in new_candidates
+            ],
+            "conflicts": conflicts,
+            "missing_from_master": [
+                {"employee_id": employee.id, "employee_code": employee.employee_code, "nama": employee.nama}
+                for employee in removal_candidates
+            ],
+        },
+    }
+
+
+@router.get("/import/master/pending")
+def list_employee_import_candidates(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    rows = (
+        db.query(models.EmployeeImportCandidate)
+        .filter(models.EmployeeImportCandidate.status == "PENDING")
+        .order_by(models.EmployeeImportCandidate.employee_code)
+        .all()
+    )
+    return [_candidate_dict(row) for row in rows]
+
+
+@router.post("/import/master/pending/{candidate_id}/approve", response_model=schemas.EmployeeOut)
+def approve_employee_import_candidate(
+    candidate_id: int,
+    payload: schemas.EmployeeImportApproval,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    candidate = db.query(models.EmployeeImportCandidate).filter(
+        models.EmployeeImportCandidate.id == candidate_id,
+        models.EmployeeImportCandidate.status == "PENDING",
+    ).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Kandidat impor tidak ditemukan atau sudah diproses.")
+    profile = db.query(models.Profile).filter(models.Profile.code == payload.profile_code).first()
+    if not profile:
+        raise HTTPException(status_code=400, detail=f"Profil '{payload.profile_code}' tidak ditemukan.")
+
+    employment_status = _normalize_employment_status(payload.employment_status)
+    if employment_status not in ("PKWTT", "PKWT", "PHL"):
+        raise HTTPException(status_code=400, detail="Status kepegawaian harus PKWTT, PKWT, atau PHL.")
+    join_date = payload.join_date or candidate.join_date
+    if not join_date:
+        raise HTTPException(status_code=400, detail="Tanggal Join wajib dilengkapi sebelum kandidat diaktifkan.")
+    if candidate.nik and db.query(models.Employee).filter(models.Employee.nik == candidate.nik).first():
+        raise HTTPException(status_code=409, detail="NIK kandidat sudah dipakai karyawan lain.")
+    if db.query(models.Employee).filter(models.Employee.employee_code == candidate.employee_code).first():
+        raise HTTPException(status_code=409, detail="ID JIP kandidat sudah terdaftar sebagai karyawan.")
+
+    contract = None
+    if employment_status == "PKWT":
+        if not payload.contract_start_date or not payload.contract_end_date:
+            raise HTTPException(status_code=400, detail="Tanggal mulai dan akhir kontrak wajib untuk PKWT.")
+        if payload.contract_end_date <= payload.contract_start_date:
+            raise HTTPException(status_code=400, detail="Tanggal akhir kontrak harus setelah tanggal mulai.")
+        contract = (payload.contract_start_date, payload.contract_end_date)
+
+    employee = models.Employee(
+        employee_code=candidate.employee_code,
+        nama=candidate.nama,
+        nik=candidate.nik,
+        profile_code=profile.code,
+        cabang=candidate.cabang,
+        jabatan=candidate.jabatan,
+        payroll_status=candidate.payroll_status,
+        uang_makan_override=candidate.uang_makan_override,
+        join_date=join_date,
+        employment_status=employment_status,
+        active=True,
+    )
+    db.add(employee)
+    db.flush()
+    if contract:
+        db.add(models.EmploymentContract(
+            employee_id=employee.id,
+            contract_number=1,
+            start_date=contract[0],
+            end_date=contract[1],
+            status="ACTIVE",
+            keterangan=payload.contract_keterangan or "Kontrak pertama (impor Master)",
+        ))
+    candidate.status = "APPROVED"
+    candidate.approved_employee_id = employee.id
+    db.commit()
+    db.refresh(employee)
+    _enrich_employee_data(employee)
+    return employee
+
+
+@router.post("/import/recap")
+async def import_clean_attendance_recap(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    """Impor kode cuti/sakit terverifikasi; T tidak menjadi hitungan scan/keterlambatan."""
+    if not (file.filename or "").lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(status_code=400, detail="File Rekap harus berformat .xlsx atau .xlsm.")
+    try:
+        rows, conflicts = parse_recap_workbook(await file.read())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    employee_by_code = {
+        employee.employee_code: employee
+        for employee in db.query(models.Employee).filter(models.Employee.employee_code.isnot(None)).all()
+    }
+    event_categories = {
+        "C": ("CUTI_TAHUNAN", 1.0),
+        "CS": ("CUTI_SETENGAH_HARI", 0.5),
+        "S": ("SAKIT", 1.0),
+    }
+    existing_import_keys = {
+        request.import_key
+        for request in db.query(models.LeaveRequest).filter(models.LeaveRequest.import_key.isnot(None)).all()
+    }
+    all_leaves = db.query(models.LeaveRequest).all()
+    seen_keys = set()
+    prepared = []
+    ignored_late = 0
+    duplicates = 0
+
+    for row in rows:
+        code = row["employee_code"]
+        employee = employee_by_code.get(code)
+        if not employee:
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "ID JIP belum terdaftar di database; sinkronkan Master dahulu."})
+            continue
+        if row["nik"] and employee.nik and row["nik"] != employee.nik:
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "NIK Rekap berbeda dari Master/database."})
+            continue
+        if normalize_text(row["nama"]) != normalize_text(employee.nama):
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Nama Rekap berbeda dari Master/database."})
+            continue
+        if row["mark"] == "T":
+            ignored_late += 1
+            continue
+        if row["mark"] not in event_categories:
+            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": f"Kode keterangan tidak dikenal: {row['mark'] or '(kosong)'}."})
+            continue
+
+        category, days = event_categories[row["mark"]]
+        import_key = f"rekap-bersih:{code}:{row['tanggal'].isoformat()}:{category}"
+        if import_key in seen_keys or import_key in existing_import_keys:
+            duplicates += 1
+            continue
+        already_recorded = any(
+            normalize_text(leave.nama) == normalize_text(employee.nama)
+            and leave.tanggal_mulai == row["tanggal"]
+            and leave.tanggal_selesai == row["tanggal"]
+            and leave.kategori == category
+            for leave in all_leaves
+        )
+        if already_recorded:
+            duplicates += 1
+            seen_keys.add(import_key)
+            continue
+        seen_keys.add(import_key)
+        prepared.append({
+            "source_row": row["source_row"],
+            "employee": employee,
+            "employee_code": code,
+            "tanggal": row["tanggal"],
+            "mark": row["mark"],
+            "kategori": category,
+            "jumlah_hari": days,
+            "import_key": import_key,
+        })
+
+    source_row_numbers = {
+        row["source_row"] for row in rows
+    } | {
+        conflict["row"] for conflict in conflicts if conflict.get("row") is not None
+    }
+
+    if not dry_run:
+        from ..leave_logic import record_leave_used
+        try:
+            for item in prepared:
+                leave = models.LeaveRequest(
+                    import_key=item["import_key"],
+                    nama=item["employee"].nama,
+                    kategori=item["kategori"],
+                    tanggal_mulai=item["tanggal"],
+                    tanggal_selesai=item["tanggal"],
+                    jumlah_hari=item["jumlah_hari"],
+                    alasan=f"Diimpor dari Rekap Kehadiran Bersih ({item['mark']}).",
+                    status="APPROVED",
+                    catatan_hr="Histori impor dari Rekap Kehadiran Bersih.",
+                    approved_by="Import Rekap Kehadiran Bersih",
+                    approved_at=datetime.datetime.utcnow(),
+                )
+                db.add(leave)
+                db.flush()
+                if item["kategori"] in ("CUTI_TAHUNAN", "CUTI_SETENGAH_HARI"):
+                    record_leave_used(
+                        db,
+                        item["employee"].id,
+                        item["tanggal"].year,
+                        item["jumlah_hari"],
+                        leave.id,
+                        f"{item['kategori']} {item['tanggal']} (import Rekap)",
+                        commit=False,
+                    )
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Impor dibatalkan karena ada baris Rekap yang sudah pernah diimpor.") from exc
+        except Exception:
+            db.rollback()
+            raise
+    else:
+        db.rollback()
+
+    return {
+        "message": "Pratinjau selesai." if dry_run else "Impor Rekap selesai.",
+        "dry_run": dry_run,
+        "total_source_rows": len(source_row_numbers),
+        "total_to_import": len(prepared),
+        "total_duplicate_or_existing": duplicates,
+        "total_t_ignored": ignored_late,
+        "total_conflicts": len(conflicts),
+        "detail": {
+            "to_import": [
+                {
+                    "source_row": item["source_row"],
+                    "employee_code": item["employee_code"],
+                    "tanggal": item["tanggal"],
+                    "kategori": item["kategori"],
+                    "jumlah_hari": item["jumlah_hari"],
+                }
+                for item in prepared
+            ],
+            "conflicts": conflicts,
+        },
+    }
 
 
 @router.get("/whatsapp-identities")
@@ -948,7 +1456,10 @@ def update_employee(
                 )
                 db.add(new_c)
 
-    emp_dict = payload.dict(exclude={"contract_start_date", "contract_end_date", "contract_keterangan"})
+    emp_dict = payload.dict(
+        exclude={"contract_start_date", "contract_end_date", "contract_keterangan"},
+        exclude_unset=True,
+    )
     if "employment_status" in emp_dict:
         emp_dict["employment_status"] = _normalize_employment_status(emp_dict["employment_status"])
     for field, value in emp_dict.items():

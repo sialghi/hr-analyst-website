@@ -419,6 +419,8 @@ def list_leave_requests(
     q = db.query(models.LeaveRequest)
     if status_filter:
         q = q.filter(models.LeaveRequest.status == status_filter.upper())
+    else:
+        q = q.filter(models.LeaveRequest.status != "DELETED")
     if nama:
         q = q.filter(models.LeaveRequest.nama.ilike(f"%{nama}%"))
     if kategori:
@@ -624,15 +626,29 @@ def delete_leave_request(
     if not leave:
         raise HTTPException(status_code=404, detail="Data cuti tidak ditemukan.")
 
-    # Balikkan USED jika cuti yang dihapus statusnya APPROVED
+    linked_ledger_count = db.query(models.LeaveBalanceLedger.id).filter(
+        models.LeaveBalanceLedger.leave_request_id == leave.id,
+    ).count()
+
+    # Balikkan USED jika cuti yang dihapus statusnya APPROVED.
     if leave.status == "APPROVED" and leave.kategori in KATEGORI_POTONG_CUTI_MAP:
         emp = _get_employee_by_nama(db, leave.nama)
         if emp:
-            days = leave.jumlah_hari if leave.jumlah_hari is not None else KATEGORI_POTONG_CUTI_MAP.get(leave.kategori, 1.0)
             year = leave.tanggal_mulai.year
             desc = f"{leave.kategori} {leave.tanggal_mulai} s/d {leave.tanggal_selesai} [DIHAPUS]"
             reverse_leave_used(db, emp.id, year, leave.id, desc)
 
-    db.delete(leave)
+    if linked_ledger_count:
+        # Jangan hard-delete request yang sudah punya histori ledger.
+        # SQLite dapat memakai ulang ID tersebut dan mencampur histori lama
+        # dengan pengajuan baru.
+        leave.status = "DELETED"
+        leave.catatan_hr = (
+            f"{leave.catatan_hr} | Pengajuan dihapus oleh HR."
+            if leave.catatan_hr
+            else "Pengajuan dihapus oleh HR."
+        )
+    else:
+        db.delete(leave)
     db.commit()
     return None

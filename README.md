@@ -28,6 +28,7 @@ Sistem otomasi analisis absensi cerdas dan manajemen aturan bisnis SDM (Sumber D
   - [2. Backend (Railway)](#2-backend-railway)
   - [3. Frontend (Vercel)](#3-frontend-vercel)
 - [Integrasi Otomasi Workflow (n8n / Webhook)](#-integrasi-otomasi-workflow-n8n--webhook)
+- [Sinkronisasi Master Karyawan dan Rekap Kehadiran](#-sinkronisasi-master-karyawan-dan-rekap-kehadiran)
 - [Peran Pengguna & Keamanan (RBAC)](#-peran-pengguna--keamanan-rbac)
 
 ---
@@ -316,6 +317,25 @@ Aplikasi tetap mempertahankan endpoint integrasi n8n yang dapat dipanggil tanpa 
   - `X-API-Key`: `<API_KEY>`
 - **Body (form-data)**:
   - `file_tanggal_merah`: Berkas Excel daftar tanggal libur.
+
+---
+
+## 🗂️ Sinkronisasi Master Karyawan dan Rekap Kehadiran
+
+Endpoint berikut memerlukan autentikasi web HR Master. Keduanya berjalan dalam mode pratinjau secara default; data hanya ditulis saat `dry_run=false`.
+
+### Sinkronisasi Master
+- **Method**: `POST /employees/import/master`
+- **Body (form-data)**: `file` — workbook `.xlsx`/`.xlsm` dengan sheet `Master ID` atau kolom `ID Karyawan`, `Nama`, dan `Lokasi Kerja`.
+- Gunakan ID `JIP-...` untuk pencocokan. Kolom `Lokasi Kerja` menjadi nama cabang kanonis; profil jadwal dan status kontrak karyawan lama dipertahankan.
+- Karyawan baru masuk daftar review, bukan langsung aktif. Lihat `GET /employees/import/master/pending`, lalu setujui melalui `POST /employees/import/master/pending/{candidate_id}/approve` dengan `profile_code` dan `employment_status`. Karyawan PKWT juga wajib memiliki tanggal mulai/akhir kontrak.
+- Karyawan ber-ID JIP yang tidak ada di Master dilaporkan sebagai kandidat yang tidak ada. Dengan `deactivate_missing=true`, kandidat ditandai nonaktif hanya jika tidak ada konflik pada workbook. Endpoint ini tidak menghapus data secara fisik.
+
+### Impor Rekap Kehadiran Bersih
+- **Method**: `POST /employees/import/recap`
+- **Body (form-data)**: `file` — workbook `.xlsx`/`.xlsm` dengan sheet/kolom Rekap Kehadiran.
+- Kode `C`, `CS`, dan `S` diimpor sebagai cuti tahunan, cuti setengah hari, dan sakit; impor cuti mencatat ledger saldo. Kode `T` dilaporkan tetapi tidak menjadi hitungan telat karena file tidak memuat jam scan.
+- Baris tanpa ID JIP atau yang NIK/nama-nya tidak sesuai dengan data Master yang sudah tersinkron dikarantina pada hasil pratinjau. Impor yang sudah tercatat dapat dijalankan ulang tanpa membuat duplikasi.
 
 ---
 
