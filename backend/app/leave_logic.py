@@ -533,7 +533,11 @@ def validate_annual_leave_request(
 # Scheduler Jobs — dijalankan harian oleh scheduler.py & endpoint admin
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_leave_quota_jobs(db: Session, target_date: Optional[datetime.date] = None) -> dict:
+def run_leave_quota_jobs(
+    db: Session,
+    target_date: Optional[datetime.date] = None,
+    commit: bool = True,
+) -> dict:
     """
     Menjalankan semua leave quota jobs untuk target_date.
     Idempotent — aman dijalankan berkali-kali pada hari yang sama.
@@ -594,7 +598,7 @@ def run_leave_quota_jobs(db: Session, target_date: Optional[datetime.date] = Non
                 # 1a. Jika tepat tanggal reset 1 Januari, hanguskan sisa saldo tahun lalu
                 if is_reset_day:
                     prev_year = year - 1
-                    expired_entry = expire_previous_year_balance(db, emp, prev_year)
+                    expired_entry = expire_previous_year_balance(db, emp, prev_year, commit=commit)
                     if expired_entry:
                         result["reset_expired"].append({
                             "employee_id": emp.id,
@@ -604,7 +608,7 @@ def run_leave_quota_jobs(db: Session, target_date: Optional[datetime.date] = Non
                         })
 
                 # 1b. Berikan kuota reset tahunan penuh 12 hari (idempotent)
-                reset_entry = grant_annual_reset_quota(db, emp, year)
+                reset_entry = grant_annual_reset_quota(db, emp, year, commit=commit)
                 if reset_entry:
                     result["reset_grants"].append({
                         "employee_id": emp.id,
@@ -617,7 +621,7 @@ def run_leave_quota_jobs(db: Session, target_date: Optional[datetime.date] = Non
             elif first_ann.year == year:
                 # Hanya berikan jika tanggal target sudah tiba atau melewati tanggal anniversary pertama
                 if target_date >= first_ann:
-                    ann_entry = grant_anniversary_quota(db, emp, year)
+                    ann_entry = grant_anniversary_quota(db, emp, year, commit=commit)
                     if ann_entry:
                         result["anniversary_grants"].append({
                             "employee_id": emp.id,

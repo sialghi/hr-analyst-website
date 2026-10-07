@@ -144,6 +144,7 @@ def _set_summary_col_widths(ws):
         (28, 20),  # Potongan Pulang Duluan (Rp)
         (29, 18),  # Bonus Tanggal Merah (Rp)
         (30, 20),  # Total Uang Makan Akhir (Rp)
+        (31, 22),  # Total Bersih (Rp)
     ]
     for col_idx, width in lebar:
         ws.column_dimensions[get_column_letter(col_idx)].width = width
@@ -327,6 +328,7 @@ def _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=None, bpjs_dic
         "Total Bonus Lembur (Rp)",
         "Uang Makan Harian (Rp)", "Potongan Telat (Rp)", "Potongan Pulang Duluan (Rp)",
         "Bonus Tanggal Merah (Rp)", "Total Uang Makan Akhir (Rp)",
+        "Total Bersih (Rp)",
     ]
     _tulis_judul(
         ws, "2. Summary Overview per Karyawan",
@@ -443,6 +445,9 @@ def _sheet_summary_overview(wb, daftar_karyawan, adjustments_dict=None, bpjs_dic
         ws.cell(row=r, column=30,
                 value=f"=SUMIF('12. Uang Makan'!$B:$B,{nama_ref},'12. Uang Makan'!$J:$J)+{uang_makan_manual}")
         ws.cell(row=r, column=30).number_format = FMT_RUPIAH
+        # Col AE: Total Bersih = uang makan akhir - BPJS - potongan lain + bonus lain + lembur
+        ws.cell(row=r, column=31, value=f"=AD{r}-U{r}-V{r}-X{r}+W{r}+Y{r}")
+        ws.cell(row=r, column=31).number_format = FMT_RUPIAH
 
         for c in range(1, len(headers) + 1):
             ws.cell(row=r, column=c).border = BORDER_ALL

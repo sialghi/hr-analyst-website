@@ -642,6 +642,14 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         bpjs_info = get_bpjs_info(bpjs_dict, str(nama), master_dict=master_dict)
         bpjs_kesehatan = bpjs_info.get("bpjs_kesehatan", 0)
         bpjs_tk = bpjs_info.get("bpjs_tk", 0)
+        total_bersih = (
+            total_uang_makan
+            - bpjs_kesehatan
+            - bpjs_tk
+            - potongan_lain
+            + bonus_lain
+            + total_bonus_lembur
+        )
 
         # Hitung cuti & sakit dalam periode file yang diupload
         emp_cuti, emp_sakit, emp_unpaid = _hitung_cuti_sakit_periode(
@@ -679,6 +687,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
             "Potongan Pulang Duluan (Rp)": potongan_pd_rp,
             "Bonus Tanggal Merah (Rp)": bonus_tgl_merah_rp,
             "Total Uang Makan Akhir (Rp)": total_uang_makan,
+            "Total Bersih (Rp)": total_bersih,
         })
 
     headers = [
@@ -692,7 +701,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         "Total Bonus Lain-lain (Rp)", "Total Potongan Lain-lain (Rp)",
         "Total Bonus Lembur (Rp)",
         "Uang Makan Harian (Rp)", "Potongan Telat (Rp)", "Potongan Pulang Duluan (Rp)",
-        "Bonus Tanggal Merah (Rp)", "Total Uang Makan Akhir (Rp)",
+        "Bonus Tanggal Merah (Rp)", "Total Uang Makan Akhir (Rp)", "Total Bersih (Rp)",
     ]
     types = {
         "Cabang": "text", "Nama": "text", "Profil": "text",
@@ -710,7 +719,7 @@ def _compute_summary_overview_json(df_prep, df_telat, df_lembur, df_pulang_dulua
         "Total Bonus Lembur (Rp)": "currency",
         "Uang Makan Harian (Rp)": "currency", "Potongan Telat (Rp)": "currency",
         "Potongan Pulang Duluan (Rp)": "currency", "Bonus Tanggal Merah (Rp)": "currency",
-        "Total Uang Makan Akhir (Rp)": "currency",
+        "Total Uang Makan Akhir (Rp)": "currency", "Total Bersih (Rp)": "currency",
     }
     return {"headers": headers, "types": types, "rows": rows}, daftar
 
@@ -1052,6 +1061,7 @@ def jalankan_pipeline_db_json(
     total_lembur_k = sum(r.get("Jam Lembur (Bulat)", 0) for r in summary_data["rows"])
     total_bonus_lembur = sum(r.get("Total Bonus Lembur (Rp)", 0) for r in summary_data["rows"])
     total_uang_makan = sum(r.get("Total Uang Makan Akhir (Rp)", 0) for r in summary_data["rows"])
+    total_bersih = sum(r.get("Total Bersih (Rp)", 0) for r in summary_data["rows"])
     total_pulang_duluan = sum(r.get("Jml Pulang Duluan", 0) for r in summary_data["rows"])
     total_absensi_jarak_jauh = sum(r.get("Absensi Jarak Jauh", 0) for r in summary_data["rows"])
     jml_perlu_dicek = len(df_perlu_dicek) if df_perlu_dicek is not None else 0
@@ -1066,6 +1076,7 @@ def jalankan_pipeline_db_json(
             "total_lembur": total_lembur_k,
             "total_bonus_lembur": total_bonus_lembur,
             "total_uang_makan": total_uang_makan,
+            "total_bersih": total_bersih,
             "total_pulang_duluan": total_pulang_duluan,
             "total_absensi_jarak_jauh": total_absensi_jarak_jauh,
             "jml_perlu_dicek": jml_perlu_dicek,

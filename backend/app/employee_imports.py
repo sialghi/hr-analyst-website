@@ -23,6 +23,14 @@ def _is_blank(value) -> bool:
     )
 
 
+def _raw_source_value(value):
+    if value is None:
+        return None
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.isoformat()
+    return str(value)
+
+
 def clean_nik(value):
     if _is_blank(value):
         return None
@@ -211,6 +219,9 @@ def parse_recap_workbook(content):
 
     rows = []
     conflicts = []
+    source_headers = next(
+        sheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True)
+    )
     for row_number, values in enumerate(
         sheet.iter_rows(min_row=header_row + 1, values_only=True),
         start=header_row + 1,
@@ -228,6 +239,11 @@ def parse_recap_workbook(content):
         nik = clean_nik(value_for("nik"))
         row = {
             "source_row": row_number,
+            "source_values": [
+                {"header": str(header), "value": _raw_source_value(values[index] if index < len(values) else None)}
+                for index, header in enumerate(source_headers)
+                if header is not None
+            ],
             "employee_code": employee_code or None,
             "nik": None if nik is False else nik,
             "cabang": " ".join(str(value_for("cabang") or "").split()),
@@ -237,8 +253,6 @@ def parse_recap_workbook(content):
             "mark": mark,
         }
         row_errors = []
-        if not employee_code:
-            row_errors.append("ID Karyawan kosong.")
         if not nama:
             row_errors.append("Nama kosong.")
         if nik is False:

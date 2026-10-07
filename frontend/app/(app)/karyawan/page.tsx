@@ -304,6 +304,9 @@ export default function KaryawanPage() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [globalRules, setGlobalRules] = useState<any>(null);
   const [filter, setFilter] = useState("");
+  const [filterStatus, setFilterStatus] = useState("ALL");
+  const [filterProfile, setFilterProfile] = useState("ALL");
+  const [filterEmploymentStatus, setFilterEmploymentStatus] = useState("ALL");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<any>({ ...BLANK_FORM });
@@ -605,9 +608,17 @@ export default function KaryawanPage() {
     setImportResult(null);
   }
 
-  const filtered = employees.filter((e) =>
-    e.nama.toLowerCase().includes(filter.toLowerCase())
-  );
+  const filtered = employees.filter((employee) => {
+    if (!employee.nama.toLowerCase().includes(filter.trim().toLowerCase())) return false;
+    if (filterStatus === "ACTIVE" && !employee.active) return false;
+    if (filterStatus === "INACTIVE" && employee.active) return false;
+    if (filterProfile !== "ALL" && employee.profile_code !== filterProfile) return false;
+    if (
+      filterEmploymentStatus !== "ALL" &&
+      normalizeEmploymentStatus(employee.employment_status) !== filterEmploymentStatus
+    ) return false;
+    return true;
+  });
 
   // ─── Tab styles ─────────────────────────────────────────────────────────────
   const tabStyle = (active: boolean) => ({
@@ -859,18 +870,80 @@ export default function KaryawanPage() {
         </Card>
       )}
 
-      <input
-        placeholder="Cari nama karyawan..."
-        className={inputCls}
-        style={{ ...inputStyle, maxWidth: 320 }}
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-      />
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          placeholder="Cari nama karyawan..."
+          aria-label="Cari nama karyawan"
+          className={inputCls}
+          style={{ ...inputStyle, maxWidth: 320 }}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <select
+          aria-label="Filter status karyawan"
+          className={inputCls}
+          style={{ ...inputStyle, width: "auto", minWidth: 150 }}
+          value={filterStatus}
+          onChange={(e) => setFilterStatus(e.target.value)}
+        >
+          <option value="ALL">Semua status</option>
+          <option value="ACTIVE">Aktif</option>
+          <option value="INACTIVE">Nonaktif</option>
+        </select>
+        <select
+          aria-label="Filter profil atau divisi"
+          className={inputCls}
+          style={{ ...inputStyle, width: "auto", minWidth: 190 }}
+          value={filterProfile}
+          onChange={(e) => setFilterProfile(e.target.value)}
+        >
+          <option value="ALL">Semua profil / divisi</option>
+          {profiles.map((profile) => (
+            <option key={profile.code} value={profile.code}>
+              {profile.nama}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Filter status kepegawaian"
+          className={inputCls}
+          style={{ ...inputStyle, width: "auto", minWidth: 170 }}
+          value={filterEmploymentStatus}
+          onChange={(e) => setFilterEmploymentStatus(e.target.value)}
+        >
+          <option value="ALL">Semua kepegawaian</option>
+          <option value="PKWTT">PKWTT</option>
+          <option value="PKWT">PKWT</option>
+          <option value="PHL">PHL</option>
+        </select>
+        <span className="text-xs" style={{ color: "var(--text-muted)" }} aria-live="polite">
+          {filtered.length} dari {employees.length} karyawan
+        </span>
+        {(filter || filterStatus !== "ALL" || filterProfile !== "ALL" || filterEmploymentStatus !== "ALL") && (
+          <button
+            type="button"
+            className="text-xs underline"
+            style={{ color: "var(--text-muted)", background: "none", border: "none", cursor: "pointer" }}
+            onClick={() => {
+              setFilter("");
+              setFilterStatus("ALL");
+              setFilterProfile("ALL");
+              setFilterEmploymentStatus("ALL");
+            }}
+          >
+            Hapus filter
+          </button>
+        )}
+      </div>
 
       {/* ─── Tabel Karyawan ──────────────────────────────────────────────────── */}
       <Card className="mt-4 p-0 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
+        <div className="max-h-[70vh] overflow-auto">
+          <table className="w-full text-sm">
+          <thead
+            className="sticky top-0 z-10"
+            style={{ background: "var(--surface, #fff)" }}
+          >
             <tr
               className="border-b text-left"
               style={{ borderColor: "var(--line)", color: "var(--text-muted)" }}
@@ -1034,7 +1107,8 @@ export default function KaryawanPage() {
               </tr>
             )}
           </tbody>
-        </table>
+          </table>
+        </div>
       </Card>
 
       {/* ─── Modal Tambah / Edit Karyawan (Tabbed) ───────────────────────────── */}

@@ -351,6 +351,7 @@ def approve_employee_import_candidate(
         join_date=join_date,
         employment_status=employment_status,
         active=True,
+        profile_needs_review=False,
     )
     db.add(employee)
     db.flush()

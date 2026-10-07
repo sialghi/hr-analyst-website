@@ -178,6 +178,7 @@ class EmployeeUpdate(EmployeeBase):
 
 class EmployeeOut(EmployeeBase):
     id: int
+    profile_needs_review: bool = False
     contracts: List[EmploymentContractOut] = []
     tenure_display: Optional[str] = None
     contract_reminder_status: Optional[Dict[str, Any]] = None

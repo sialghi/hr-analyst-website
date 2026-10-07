@@ -162,7 +162,7 @@ Sistem dirancang untuk membaca file ekspor mesin absensi mentah dalam format `.x
 
 Setiap kali data absensi diproses, sistem menghasilkan buku kerja Excel (`.xlsx`) profesional dengan 14 sheet analitik lengkap:
 
-1. **Summary Overview**: Ringkasan akumulasi seluruh karyawan (hari kerja valid, frekuensi telat, jam lembur bulat, total bonus lembur, uang makan akhir, dan status catatan).
+1. **Summary Overview**: Ringkasan akumulasi seluruh karyawan, termasuk kolom paling kanan **Total Bersih** (`Uang Makan Akhir - BPJS Kesehatan - BPJS TK - Potongan Lain-lain + Bonus Lain-lain + Bonus Lembur`).
 2. **Rekap Telat**: Detil setiap kejadian datang terlambat, menit selisih, dan patokan jam masuk profil.
 3. **Rekap Lembur**: Perhitungan jam lembur (dibulatkan per jam utuh) dan nominal bonus lembur (Rp).
 4. **Rekap Pulang Duluan**: Daftar scan keluar sebelum jam kepulangan resmi profil jadwal.
@@ -336,6 +336,16 @@ Endpoint berikut memerlukan autentikasi web HR Master. Keduanya berjalan dalam m
 - **Body (form-data)**: `file` — workbook `.xlsx`/`.xlsm` dengan sheet/kolom Rekap Kehadiran.
 - Kode `C`, `CS`, dan `S` diimpor sebagai cuti tahunan, cuti setengah hari, dan sakit; impor cuti mencatat ledger saldo. Kode `T` dilaporkan tetapi tidak menjadi hitungan telat karena file tidak memuat jam scan.
 - Baris tanpa ID JIP atau yang NIK/nama-nya tidak sesuai dengan data Master yang sudah tersinkron dikarantina pada hasil pratinjau. Impor yang sudah tercatat dapat dijalankan ulang tanpa membuat duplikasi.
+
+### Eksperimen Reset Database Lokal
+Untuk eksperimen lokal yang mengganti roster dan histori karyawan berdasarkan kedua workbook tersebut, gunakan skrip terpisah berikut dari root repositori:
+
+```powershell
+python backend\rebuild_local_employee_data.py
+python backend\rebuild_local_employee_data.py --apply
+```
+
+Perintah pertama hanya menampilkan pratinjau. `--apply` hanya menerima `backend\hr_app.db`, membuat dan memverifikasi backup lokal sebelum reset, lalu mengimpor roster serta seluruh baris sumber Rekap dan nilai aslinya ke tabel audit `attendance_recap_records`. Data akun, profil/aturan, dan tanggal merah dipertahankan. Enam baris Rekap tanpa ID yang tidak bisa dicocokkan dengan NIK unik atau nama persis tetap tersimpan tanpa tautan karyawan. Kode `T` disimpan sebagai data sumber saja; skrip ini tidak membuat data scan atau mengubah algoritma absensi.
 
 ---
 

@@ -25,8 +25,8 @@ interface KPIs {
   total_lembur: number;
   total_bonus_lembur: number;
   total_uang_makan: number;
+  total_bersih: number;
   total_pulang_duluan: number;
-  jml_perlu_dicek: number;
   total_baris_scan: number;
 }
 
@@ -1799,12 +1799,7 @@ export default function ProsesPage() {
         <KpiCard label="Pulang Cepat" value={kpis.total_pulang_duluan} accent="amber" />
         <KpiCard label="Bonus Lembur" value={formatRupiah(kpis.total_bonus_lembur)} accent="indigo" />
         <KpiCard label="Uang Makan" value={formatRupiah(kpis.total_uang_makan)} accent="emerald" />
-        <KpiCard
-          label="Perlu Dicek"
-          value={kpis.jml_perlu_dicek}
-          accent="rose"
-          isAlert={kpis.jml_perlu_dicek > 0}
-        />
+        <KpiCard label="Total Bersih" value={formatRupiah(kpis.total_bersih)} accent="emerald" />
       </div>
 
       <Card className="mb-5 border-amber-200 bg-amber-50/40">

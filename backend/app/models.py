@@ -105,6 +105,7 @@ class Employee(Base):
     bpjs_kesehatan = Column(Integer, nullable=True, default=0)
     bpjs_tk = Column(Integer, nullable=True, default=0)
     active = Column(Boolean, default=True)
+    profile_needs_review = Column(Boolean, nullable=False, default=False)
 
     # ── Status Kepegawaian & Data Kontrak ────────────────────────────────────
     # employment_status: "PKWTT" (karyawan tetap), "PKWT" (karyawan kontrak), atau "PHL" (pekerja harian lapangan)
@@ -380,6 +381,30 @@ class AttendanceReview(Base):
     __table_args__ = (
         UniqueConstraint("employee_id", "attendance_date", name="uq_attendance_review_employee_date"),
     )
+
+
+class AttendanceRecapRecord(Base):
+    """Baris sumber Rekap Kehadiran Bersih, termasuk kode yang bukan scan mentah."""
+    __tablename__ = "attendance_recap_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_key = Column(String, nullable=False, unique=True, index=True)
+    source_file_hash = Column(String, nullable=False, index=True)
+    source_row = Column(Integer, nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True)
+    employee_code = Column(String, nullable=True, index=True)
+    source_nik = Column(String, nullable=True)
+    source_cabang = Column(String, nullable=True)
+    source_nama = Column(String, nullable=True)
+    source_payroll_status = Column(String, nullable=True)
+    source_payload = Column(JSON, nullable=True)
+    attendance_date = Column(Date, nullable=True, index=True)
+    mark = Column(String, nullable=True)
+    canonical_nama = Column(String, nullable=True)
+    canonical_cabang = Column(String, nullable=True)
+    reconciliation_status = Column(String, nullable=False)
+    identity_warning = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 class LeaveBalanceLedger(Base):
