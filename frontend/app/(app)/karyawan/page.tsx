@@ -30,6 +30,7 @@ interface ContractReminderStatus {
 interface Employee {
   id: number;
   nama: string;
+  employee_code: string | null;
   nik: string | null;
   id_mesin: string | null;
   profile_code: string;
@@ -391,31 +392,36 @@ export default function KaryawanPage() {
 
   async function moveWhatsAppIdentity(identity: WhatsAppIdentity) {
     const candidates = employees
-      .filter((employee) => employee.active && employee.id !== identity.employee_id)
-      .map((employee) => `${employee.id}: ${employee.nama}${employee.nik ? ` (${employee.nik})` : ""}`)
+      .filter((employee) => employee.id !== identity.employee_id && employee.employee_code)
+      .map((employee) =>
+        `${employee.employee_code}: ${employee.nama}${employee.active ? "" : " (Nonaktif)"}`
+      )
       .join("\n");
     if (!candidates) {
-      setWhatsappError("Tidak ada karyawan aktif lain sebagai tujuan linking.");
+      setWhatsappError("Tidak ada karyawan lain dengan Kode Karyawan untuk tujuan linking.");
       return;
     }
-    const employeeIdInput = window.prompt(`Masukkan ID karyawan tujuan:\n\n${candidates}`);
-    if (!employeeIdInput) return;
-    const employeeId = Number(employeeIdInput.trim());
-    if (!Number.isInteger(employeeId)) {
-      setWhatsappError("ID karyawan tujuan tidak valid.");
+    const employeeCodeInput = window.prompt(`Masukkan Kode Karyawan tujuan:\n\n${candidates}`);
+    if (!employeeCodeInput) return;
+    const target = employees.find(
+      (employee) =>
+        employee.id !== identity.employee_id &&
+        employee.employee_code?.toLocaleLowerCase() === employeeCodeInput.trim().toLocaleLowerCase()
+    );
+    if (!target?.employee_code) {
+      setWhatsappError("Kode Karyawan tujuan tidak ditemukan.");
       return;
     }
     const reason = window.prompt("Alasan pemindahan linking (wajib):");
     if (!reason?.trim()) return;
     try {
-      const updated = await api.moveWhatsAppIdentity(identity.id, employeeId, reason.trim());
-      const target = employees.find((employee) => employee.id === employeeId);
+      const updated = await api.moveWhatsAppIdentity(identity.id, target.employee_code, reason.trim());
       setWhatsappIdentities((items) =>
         items.map((item) => item.id === identity.id ? {
           ...item,
           employee_id: updated.employee_id,
-          employee_name: target?.nama || item.employee_name,
-          employee_nik_last4: target?.nik ? target.nik.slice(-4) : null,
+          employee_name: target.nama,
+          employee_nik_last4: target.nik ? target.nik.slice(-4) : null,
           status: updated.new_status,
         } : item)
       );
@@ -609,7 +615,12 @@ export default function KaryawanPage() {
   }
 
   const filtered = employees.filter((employee) => {
-    if (!employee.nama.toLowerCase().includes(filter.trim().toLowerCase())) return false;
+    const search = filter.trim().toLocaleLowerCase();
+    if (search && ![
+      employee.nama,
+      employee.employee_code,
+      employee.nik,
+    ].some((value) => value?.toLocaleLowerCase().includes(search))) return false;
     if (filterStatus === "ACTIVE" && !employee.active) return false;
     if (filterStatus === "INACTIVE" && employee.active) return false;
     if (filterProfile !== "ALL" && employee.profile_code !== filterProfile) return false;
@@ -872,8 +883,8 @@ export default function KaryawanPage() {
 
       <div className="flex flex-wrap items-center gap-2">
         <input
-          placeholder="Cari nama karyawan..."
-          aria-label="Cari nama karyawan"
+          placeholder="Cari nama, Kode Karyawan, atau NIK..."
+          aria-label="Cari nama, Kode Karyawan, atau NIK"
           className={inputCls}
           style={{ ...inputStyle, maxWidth: 320 }}
           value={filter}
@@ -948,6 +959,7 @@ export default function KaryawanPage() {
               className="border-b text-left"
               style={{ borderColor: "var(--line)", color: "var(--text-muted)" }}
             >
+              <th className="px-4 py-3 font-medium">Kode Karyawan</th>
               <th className="px-4 py-3 font-medium">Nama</th>
               <th className="px-4 py-3 font-medium">Profil / Divisi</th>
               <th className="px-4 py-3 font-medium">Cabang</th>
@@ -967,6 +979,9 @@ export default function KaryawanPage() {
                 className="border-b last:border-0"
                 style={{ borderColor: "var(--line)" }}
               >
+                <td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--text-muted)" }}>
+                  {emp.employee_code || "—"}
+                </td>
                 <td className="px-4 py-3 font-medium" style={{ color: "var(--ink)" }}>
                   {emp.nama}
                 </td>
@@ -1098,7 +1113,7 @@ export default function KaryawanPage() {
             {filtered.length === 0 && (
               <tr>
                 <td
-                  colSpan={master ? 8 : 7}
+                  colSpan={master ? 9 : 8}
                   className="px-4 py-8 text-center"
                   style={{ color: "var(--text-muted)" }}
                 >

@@ -189,10 +189,10 @@ export const api = {
     return res.json();
   },
 
-  async moveWhatsAppIdentity(id: number, employeeId: number, reason: string) {
+  async moveWhatsAppIdentity(id: number, employeeCode: string, reason: string) {
     const res = await request(`/employees/whatsapp-identities/${id}/move`, {
       method: "PATCH",
-      body: JSON.stringify({ employee_id: employeeId, reason }),
+      body: JSON.stringify({ employee_code: employeeCode, reason }),
     });
     return res.json();
   },

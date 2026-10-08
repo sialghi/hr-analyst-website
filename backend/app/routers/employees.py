@@ -595,20 +595,19 @@ def move_whatsapp_identity(
     current_user: models.User = Depends(auth.require_hr_master),
 ):
     """Pindahkan linking ke karyawan lain setelah verifikasi manual oleh HR."""
-    target_employee_id = payload.get("employee_id")
+    target_employee_code = str(payload.get("employee_code") or "").strip()
     reason = str(payload.get("reason") or "").strip()
-    if not isinstance(target_employee_id, int) or not reason:
-        raise HTTPException(status_code=400, detail="employee_id dan alasan pemindahan wajib diisi.")
+    if not target_employee_code or not reason:
+        raise HTTPException(status_code=400, detail="employee_code dan alasan pemindahan wajib diisi.")
 
     identity = db.query(models.WhatsAppIdentity).filter(models.WhatsAppIdentity.id == identity_id).first()
     target = db.query(models.Employee).filter(
-        models.Employee.id == target_employee_id,
-        models.Employee.active == True,
+        models.Employee.employee_code == target_employee_code,
     ).first()
     if not identity:
         raise HTTPException(status_code=404, detail="Linking WhatsApp tidak ditemukan.")
     if not target:
-        raise HTTPException(status_code=404, detail="Karyawan tujuan tidak ditemukan atau tidak aktif.")
+        raise HTTPException(status_code=404, detail="Kode Karyawan tujuan tidak ditemukan.")
 
     conflict = db.query(models.WhatsAppIdentity).filter(
         models.WhatsAppIdentity.employee_id == target.id,
@@ -634,7 +633,13 @@ def move_whatsapp_identity(
         ),
     ))
     db.commit()
-    return {"status": "sukses", "identity_id": identity.id, "employee_id": target.id, "new_status": identity.status}
+    return {
+        "status": "sukses",
+        "identity_id": identity.id,
+        "employee_id": target.id,
+        "employee_code": target.employee_code,
+        "new_status": identity.status,
+    }
 
 
 def _normalize_employment_status(value: Optional[str]) -> str:

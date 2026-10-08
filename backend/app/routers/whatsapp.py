@@ -125,12 +125,11 @@ async def require_whatsapp_login(to_number: str, db: Session) -> Optional[models
     )
     return None
 
-KATEGORI_MAP = {
-    "1": ("CUTI_TAHUNAN", "🏖️ Cuti Tahunan (Full Day)"),
-    "2": ("SAKIT", "🏥 Sakit / SKD (Full Day)"),
-    "3": ("IZIN_TELAT", "⏰ Izin Datang Terlambat"),
-    "4": ("IZIN_PULANG_CEPAT", "🏃 Izin Pulang Lebih Awal"),
-    "5": ("LAINNYA", "📝 Izin Lainnya"),
+IZIN_KATEGORI_MAP = {
+    "1": ("SAKIT", "🏥 Sakit / SKD (Full Day)"),
+    "2": ("IZIN_TELAT", "⏰ Izin Datang Terlambat"),
+    "3": ("IZIN_PULANG_CEPAT", "🏃 Izin Pulang Lebih Awal"),
+    "4": ("LAINNYA", "📝 Izin Lainnya"),
 }
 
 KATEGORI_NAME_MAP = {
@@ -475,19 +474,17 @@ async def send_whatsapp_leave_status_notification(
 # 4. LOGIKA PERCAKAPAN FORMULIR CHATBOT WHATSAPP
 # ===========================================================================
 
-async def send_welcome_menu(to_number: str):
+async def send_welcome_menu(to_number: str, login_success: bool = False):
     """Menampilkan pesan selamat datang dan pilihan menu utama bot."""
     body_text = (
-        f"👋 *Selamat datang di WhatsApp Bot HR Absensi & Cuti!*\n\n"
-        f"Layanan ini memudahkan karyawan untuk mengajukan permohonan cuti, "
-        f"sakit, izin jam kerja, maupun absensi bekerja di luar kantor.\n\n"
-        f"Semua pengajuan akan diteruskan langsung ke sistem Website HR Analyst "
-        f"untuk diverifikasi oleh HR Master.\n\n"
-        f"Silakan pilih menu di bawah atau ketik perintah:\n"
-        f"• *Cuti* : Pengajuan Cuti Tahunan / Sakit / Izin\n"
-        f"• *Absen Luar* : Pengajuan Absensi Jarak Jauh\n"
-        f"• *Status* : Cek riwayat pengajuan Anda\n"
-        f"• *Batal* : Membatalkan pengisian form"
+        (
+            "✅ *Login berhasil.* Nomor WhatsApp ini sudah terhubung ke data karyawan Anda.\n\n"
+            if login_success
+            else "👋 *Selamat datang di WhatsApp Bot HR Absensi & Cuti!*\n\n"
+        )
+        + "Silakan pilih layanan yang Anda butuhkan. Anda juga dapat mengetik "
+        + "*cuti*, *izin*, *absen luar*, *status*, atau *profil*.\n\n"
+        + "Semua pengajuan diteruskan ke Website HR Analyst untuk diverifikasi HR Master."
     )
 
     sections = [
@@ -496,23 +493,28 @@ async def send_welcome_menu(to_number: str):
             "rows": [
                 {
                     "id": "menu_cuti",
-                    "title": "🏖️ Ajukan Cuti/Izin",
-                    "description": "Cuti Tahunan, Sakit SKD, Izin Telat/Pulang",
+                    "title": "Cuti",
+                    "description": "Ajukan Cuti Tahunan",
+                },
+                {
+                    "id": "menu_izin",
+                    "title": "Izin",
+                    "description": "Sakit/SKD, telat, pulang cepat, lainnya",
                 },
                 {
                     "id": "menu_wfl",
-                    "title": "📍 Absen Jarak Jauh",
+                    "title": "Absen Luar",
                     "description": "Bekerja di luar kantor / tugas luar",
                 },
                 {
                     "id": "menu_status",
-                    "title": "📊 Cek Status Saya",
+                    "title": "Status",
                     "description": "Lihat 5 riwayat pengajuan terakhir",
                 },
                 {
-                    "id": "menu_help",
-                    "title": "❓ Bantuan",
-                    "description": "Panduan lengkap penggunaan bot",
+                    "id": "menu_profile",
+                    "title": "Profil",
+                    "description": "Lihat data profil karyawan Anda",
                 },
             ],
         }
@@ -521,7 +523,7 @@ async def send_welcome_menu(to_number: str):
     await send_whatsapp_list(
         to_number=to_number,
         body_text=body_text,
-        button_label="Pilih Menu HR",
+        button_label="Pilih Menu",
         sections=sections,
         header_text="HR BOT ASSISTANT",
     )
@@ -532,14 +534,14 @@ async def send_help_guide(to_number: str):
         f"ℹ️ *PANDUAN LENGKAP BOT WHATSAPP HR*\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
         f"📌 *Pengajuan Cuti / Izin:*\n"
-        f"1. Ketik *Cuti* atau pilih menu *Ajukan Cuti/Izin*.\n"
-        f"2. Pilih jenis kategori (Cuti Tahunan, Sakit, Izin Telat, Pulang Cepat, Lainnya).\n"
+        f"1. Pilih *Cuti* untuk Cuti Tahunan, atau *Izin* untuk Sakit/SKD, Izin Telat, Pulang Cepat, dan Izin Lainnya.\n"
+        f"2. Ikuti pilihan dan instruksi bot.\n"
         f"3. Pilih Cabang & Nama Karyawan sesuai master data HR.\n"
         f"4. Masukkan tanggal (contoh: `2026-10-05` atau `besok` / `hari ini`).\n"
         f"5. Jika izin telat/pulang awal, masukkan jam (contoh: `09:30`).\n"
         f"6. Tuliskan alasan singkat, lalu konfirmasi pengiriman.\n\n"
         f"📌 *Absensi Jarak Jauh (Tugas Luar):*\n"
-        f"1. Ketik *Absen Luar* atau pilih menu *Absen Jarak Jauh*.\n"
+        f"1. Pilih menu atau ketik *Absen Luar*.\n"
         f"2. Pilih Cabang & Nama Karyawan.\n"
         f"3. Masukkan tanggal bertugas di luar kantor.\n"
         f"4. Tuliskan alasan penugasan / keterangan tugas.\n"
@@ -553,7 +555,7 @@ async def send_help_guide(to_number: str):
 
 
 async def start_cuti_flow(to_number: str, db: Session):
-    """Langkah 1: Pilih Kategori Cuti / Izin."""
+    """Mulai pengajuan cuti tahunan menggunakan alur pengajuan yang sudah ada."""
     employee = await require_whatsapp_login(to_number, db)
     if not employee:
         return
@@ -561,38 +563,47 @@ async def start_cuti_flow(to_number: str, db: Session):
         "employee_id": employee.id,
         "nama": employee.nama,
         "cabang": employee.cabang,
+        "kategori": "CUTI_TAHUNAN",
+        "allowed_categories": ["CUTI_TAHUNAN"],
     })
+    await check_quota_and_prompt_date(to_number, employee.nama, db, is_wfl=False)
 
+
+async def start_izin_flow(to_number: str, db: Session):
+    """Tampilkan pilihan kategori izin sebelum melanjutkan alur pengajuan."""
+    employee = await require_whatsapp_login(to_number, db)
+    if not employee:
+        return
+    allowed_categories = [category for category, _ in IZIN_KATEGORI_MAP.values()]
+    user_states[to_number] = make_user_state("pilih_kategori", {
+        "employee_id": employee.id,
+        "nama": employee.nama,
+        "cabang": employee.cabang,
+        "allowed_categories": allowed_categories,
+    })
     body = (
         "Langkah 1 dari 5:\n"
-        "Silakan pilih *Kategori Pengajuan* yang Anda butuhkan:\n\n"
-        "1. 🏖️ Cuti Tahunan (Full Day)\n"
-        "2. 🏥 Sakit / SKD (Full Day)\n"
-        "3. ⏰ Izin Datang Terlambat\n"
-        "4. 🏃 Izin Pulang Lebih Awal\n"
-        "5. 📝 Izin Lainnya\n\n"
-        "_Tip: Anda bisa klik tombol 'Pilih Kategori' atau balas angka 1-5._"
+        "Silakan pilih *Kategori Izin* yang Anda butuhkan:"
     )
 
-    sections = [
-        {
-            "title": "Jenis Izin / Cuti",
-            "rows": [
-                {"id": "kat_CUTI_TAHUNAN", "title": "Cuti Tahunan", "description": "Full Day cuti tahunan"},
-                {"id": "kat_SAKIT", "title": "Sakit / SKD", "description": "Full Day sakit dengan surat dokter"},
-                {"id": "kat_IZIN_TELAT", "title": "Izin Datang Telat", "description": "Izin jam masuk terlambat"},
-                {"id": "kat_IZIN_PULANG_CEPAT", "title": "Izin Pulang Awal", "description": "Izin pulang sebelum jam keluar"},
-                {"id": "kat_LAINNYA", "title": "Izin Lainnya", "description": "Keperluan mendesak lainnya"},
-            ],
-        }
-    ]
+    sections = [{
+        "title": "Jenis Izin",
+        "rows": [
+            {
+                "id": f"kat_{category}",
+                "title": label.split(" ", 1)[1].split(" (", 1)[0],
+                "description": label,
+            }
+            for category, label in IZIN_KATEGORI_MAP.values()
+        ],
+    }]
 
     await send_whatsapp_list(
         to_number=to_number,
         body_text=body,
-        button_label="Pilih Kategori",
+        button_label="Pilih Izin",
         sections=sections,
-        header_text="Pengajuan Cuti & Izin",
+        header_text="Pengajuan Izin",
     )
 
 
@@ -854,7 +865,7 @@ async def check_quota_and_prompt_date(to_number: str, nama: str, db: Session, is
                 f"(mulai *{tgl_ann_str}*).\n"
                 f"• Jatah cuti saat anniversary adalah *kuota proporsional* (bukan 12 hari penuh).\n"
                 f"• Kuota tahunan *penuh 12 hari* baru diberikan mulai *{tgl_jan_str}*.\n\n"
-                f"Silakan ketik *Cuti* jika ingin mengajukan izin jenis lain (Sakit / Izin Telat / Pulang Cepat)."
+                f"Silakan pilih *Izin* jika ingin mengajukan Sakit / Izin Telat / Pulang Cepat."
             )
             return
 
@@ -866,7 +877,7 @@ async def check_quota_and_prompt_date(to_number: str, nama: str, db: Session, is
                 f"Halo *{nama}*, kuota Cuti Tahunan Anda untuk tahun *{stats['year']}* sudah habis "
                 f"(Telah digunakan: *{int(stats['used_days'])}/{int(stats['total_quota'])} Hari*).\n\n"
                 f"Pengajuan cuti tahunan tidak dapat dilanjutkan. "
-                f"Silakan ketik *Cuti* jika ingin mengajukan izin jenis lain (Sakit / Izin Telat / Pulang Cepat)."
+                f"Silakan pilih *Izin* jika ingin mengajukan Sakit / Izin Telat / Pulang Cepat."
             )
             return
 
@@ -974,11 +985,7 @@ async def process_whatsapp_incoming(
         if identity and identity.status == "ACTIVE":
             identity.last_seen_at = datetime.datetime.utcnow()
             db.commit()
-            await send_whatsapp_text(
-                from_number,
-                "✅ Nomor WhatsApp ini sudah login ke sistem HR.\n"
-                "Ketik *Cuti*, *Izin*, atau *Absen Luar* untuk melanjutkan."
-            )
+            await send_welcome_menu(from_number, login_success=True)
             return
         user_states[from_number] = make_user_state("login_waiting_nik")
         await send_whatsapp_text(
@@ -1037,7 +1044,7 @@ async def process_whatsapp_incoming(
             user_states.pop(from_number, None)
             await send_whatsapp_text(from_number, "❌ Pengisian formulir telah dibatalkan.")
         else:
-            await send_whatsapp_text(from_number, "ℹ️ Tidak ada formulir yang sedang berjalan. Ketik *Cuti* untuk mengajukan baru.")
+            await send_whatsapp_text(from_number, "ℹ️ Tidak ada formulir yang sedang berjalan. Pilih *Cuti* atau *Izin* untuk pengajuan baru.")
         return
 
     if action_key == "menu_status" or lower_text in ("/status", "status", "cek status"):
@@ -1055,7 +1062,7 @@ async def process_whatsapp_incoming(
             await send_whatsapp_text(
                 from_number,
                 "Belum ada riwayat pengajuan cuti/izin dari nomor WhatsApp Anda.\n\n"
-                "Ketik *Cuti* atau *Absen Luar* untuk membuat pengajuan baru."
+                "Pilih *Cuti*, *Izin*, atau *Absen Luar* untuk membuat pengajuan baru."
             )
             return
 
@@ -1084,12 +1091,30 @@ async def process_whatsapp_incoming(
         await send_whatsapp_text(from_number, "\n\n".join(lines))
         return
 
+    if action_key == "menu_profile" or lower_text in ("/profil", "profil", "profile", "/profile"):
+        employee = await require_whatsapp_login(from_number, db)
+        if not employee:
+            return
+        await send_whatsapp_text(
+            from_number,
+            "👤 *Profil Karyawan*\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"Nama: *{employee.nama}*\n"
+            f"Cabang: *{employee.cabang or '-'}*\n"
+            f"Kepegawaian: *{employee.employment_status or '-'}*",
+        )
+        return
+
     if action_key == "menu_wfl" or lower_text in ("/absen_luar", "absen luar", "tugas luar", "wfl"):
         await start_wfl_flow(from_number, db)
         return
 
-    if action_key == "menu_cuti" or lower_text in ("/cuti", "cuti", "/izin", "izin"):
+    if action_key == "menu_cuti" or lower_text in ("/cuti", "cuti"):
         await start_cuti_flow(from_number, db)
+        return
+
+    if action_key == "menu_izin" or lower_text in ("/izin", "izin"):
+        await start_izin_flow(from_number, db)
         return
 
     # Jika user menyapa awal atau belum ada state
@@ -1205,23 +1230,16 @@ async def process_whatsapp_incoming(
         _audit_whatsapp(db, phone_number, "LOGIN_SUCCESS", employee_id)
         db.commit()
         user_states.pop(from_number, None)
-        await send_whatsapp_text(
-            from_number,
-            "✅ *Login berhasil.*\n\n"
-            "Nomor WhatsApp ini sudah terhubung ke data karyawan Anda.\n"
-            "Sekarang Anda dapat mengetik *Cuti*, *Izin*, *Absen Luar*, atau *Status*."
-        )
+        await send_welcome_menu(from_number, login_success=True)
         return
 
-    # STEP 1: PILIH KATEGORI (CUTI / IZIN)
+    # STEP 1: PILIH KATEGORI IZIN
     if step == "pilih_kategori":
         chosen_kat = None
         if action_key.startswith("kat_"):
             chosen_kat = action_key.replace("kat_", "")
-        elif text in ("1", "2", "3", "4", "5"):
-            chosen_kat = KATEGORI_MAP[text][0]
-        elif "cuti" in lower_text:
-            chosen_kat = "CUTI_TAHUNAN"
+        elif text in IZIN_KATEGORI_MAP:
+            chosen_kat = IZIN_KATEGORI_MAP[text][0]
         elif "sakit" in lower_text:
             chosen_kat = "SAKIT"
         elif "telat" in lower_text:
@@ -1231,10 +1249,11 @@ async def process_whatsapp_incoming(
         elif "lain" in lower_text:
             chosen_kat = "LAINNYA"
 
-        if not chosen_kat:
+        allowed_categories = state["data"].get("allowed_categories", [])
+        if not chosen_kat or chosen_kat not in allowed_categories:
             await send_whatsapp_text(
                 from_number,
-                "Pilihan kategori tidak valid. Silakan pilih dari menu atau ketik angka 1 sampai 5:"
+                "Pilihan kategori tidak valid. Silakan pilih salah satu kategori izin dari menu."
             )
             return
 
@@ -1603,7 +1622,7 @@ async def process_whatsapp_incoming(
                     f"• ID: `#{overlap.id}` ({kat_name})\n"
                     f"• Periode: {tgl_str}\n"
                     f"• Status: {overlap.status}\n\n"
-                    f"Pengajuan ganda tidak dapat diproses. Ketik *Cuti* untuk mencoba kembali."
+                    f"Pengajuan ganda tidak dapat diproses. Pilih *Cuti* atau *Izin* untuk mencoba kembali."
                 )
                 return
 
@@ -1852,7 +1871,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                         await send_whatsapp_text(
                             from_number,
                             "ℹ️ Foto / dokumen hanya diterima saat proses pengajuan Surat Sakit atau Absensi Jarak Jauh.\n"
-                            "Ketik *Cuti* atau *Absen Luar* untuk memulai pengajuan baru."
+                            "Pilih *Cuti*, *Izin*, atau *Absen Luar* untuk memulai pengajuan baru."
                         )
                     continue
 

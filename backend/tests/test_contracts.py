@@ -323,8 +323,14 @@ class TestContractManagement(unittest.TestCase):
             sent.append((to_number, message))
             return {"mocked": True}
 
+        async def fake_send_list(**kwargs):
+            sent.append((kwargs["to_number"], kwargs))
+            return {"mocked": True}
+
         original_send = whatsapp.send_whatsapp_text
+        original_send_list = whatsapp.send_whatsapp_list
         whatsapp.send_whatsapp_text = fake_send
+        whatsapp.send_whatsapp_list = fake_send_list
         whatsapp.user_states.pop("628123456789", None)
         try:
             asyncio.run(whatsapp.process_whatsapp_incoming("08123456789", "login", None, db))
@@ -338,9 +344,125 @@ class TestContractManagement(unittest.TestCase):
             self.assertEqual(identity.phone_number, "628123456789")
             self.assertEqual(identity.employee_id, employee.id)
             self.assertEqual(identity.status, "ACTIVE")
-            self.assertTrue(any("Login berhasil" in message for _, message in sent))
+            login_menu = next(message for _, message in sent if isinstance(message, dict))
+            self.assertEqual(
+                [row["id"] for row in login_menu["sections"][0]["rows"]],
+                ["menu_cuti", "menu_izin", "menu_wfl", "menu_status", "menu_profile"],
+            )
+            self.assertIn("Login berhasil", login_menu["body_text"])
         finally:
             whatsapp.send_whatsapp_text = original_send
+            whatsapp.send_whatsapp_list = original_send_list
+            whatsapp.user_states.pop("08123456789", None)
+            db.close()
+
+    def test_whatsapp_profile_shows_only_linked_employee_fields_without_nik(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            nama="Profil WhatsApp",
+            nik="3201010101010099",
+            profile_code="OFFICE",
+            cabang="Jakarta",
+            employment_status="PKWT",
+            active=True,
+        )
+        db.add(employee)
+        db.flush()
+        db.add(whatsapp.models.WhatsAppIdentity(
+            phone_number="628123456789",
+            employee_id=employee.id,
+            status="ACTIVE",
+        ))
+        db.commit()
+        sent = []
+
+        async def fake_send(to_number, message):
+            sent.append(message)
+            return {"mocked": True}
+
+        original_send = whatsapp.send_whatsapp_text
+        whatsapp.send_whatsapp_text = fake_send
+        whatsapp.user_states.pop("08123456789", None)
+        try:
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "", "menu_profile", db
+            ))
+            self.assertIn("Profil WhatsApp", sent[-1])
+            self.assertIn("Jakarta", sent[-1])
+            self.assertIn("PKWT", sent[-1])
+            self.assertNotIn(employee.nik, sent[-1])
+            self.assertNotIn("NIK", sent[-1])
+
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "profil", None, db
+            ))
+            self.assertIn("Profil WhatsApp", sent[-1])
+            self.assertNotIn(employee.nik, sent[-1])
+        finally:
+            whatsapp.send_whatsapp_text = original_send
+            whatsapp.user_states.pop("08123456789", None)
+            db.close()
+
+    def test_whatsapp_cuti_and_izin_menu_routes_to_separate_categories(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            nama="Menu WhatsApp",
+            profile_code="OFFICE",
+            active=True,
+        )
+        db.add(employee)
+        db.flush()
+        db.add(whatsapp.models.WhatsAppIdentity(
+            phone_number="628123456789",
+            employee_id=employee.id,
+            status="ACTIVE",
+        ))
+        db.commit()
+        sent_lists = []
+        original_send_list = whatsapp.send_whatsapp_list
+        original_check_quota = whatsapp.check_quota_and_prompt_date
+
+        async def fake_send_list(**kwargs):
+            sent_lists.append(kwargs)
+            return {"mocked": True}
+
+        async def fake_check_quota(to_number, nama, _db, is_wfl=False):
+            whatsapp.user_states[to_number]["step"] = "input_tgl"
+
+        whatsapp.send_whatsapp_list = fake_send_list
+        whatsapp.check_quota_and_prompt_date = fake_check_quota
+        whatsapp.user_states.pop("08123456789", None)
+        try:
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "", "menu_cuti", db
+            ))
+            self.assertEqual(
+                whatsapp.user_states["08123456789"]["data"]["kategori"],
+                "CUTI_TAHUNAN",
+            )
+            self.assertEqual(whatsapp.user_states["08123456789"]["step"], "input_tgl")
+
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "", "menu_izin", db
+            ))
+            self.assertEqual(
+                whatsapp.user_states["08123456789"]["data"]["allowed_categories"],
+                ["SAKIT", "IZIN_TELAT", "IZIN_PULANG_CEPAT", "LAINNYA"],
+            )
+            self.assertEqual(
+                [row["id"] for row in sent_lists[-1]["sections"][0]["rows"]],
+                ["kat_SAKIT", "kat_IZIN_TELAT", "kat_IZIN_PULANG_CEPAT", "kat_LAINNYA"],
+            )
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "", "kat_IZIN_TELAT", db
+            ))
+            self.assertEqual(
+                whatsapp.user_states["08123456789"]["data"]["kategori"],
+                "IZIN_TELAT",
+            )
+        finally:
+            whatsapp.send_whatsapp_list = original_send_list
+            whatsapp.check_quota_and_prompt_date = original_check_quota
             whatsapp.user_states.pop("08123456789", None)
             db.close()
 
@@ -361,6 +483,10 @@ class TestContractManagement(unittest.TestCase):
 
             sent.clear()
             asyncio.run(whatsapp.process_whatsapp_incoming("081111111111", "cuti", None, db))
+            self.assertIn("belum login", sent[-1])
+
+            sent.clear()
+            asyncio.run(whatsapp.process_whatsapp_incoming("081111111111", "profil", None, db))
             self.assertIn("belum login", sent[-1])
 
             sent.clear()
@@ -408,15 +534,17 @@ class TestContractManagement(unittest.TestCase):
         db = TestingSessionLocal()
         first = Employee(
             nama="Karyawan Link Satu",
+            employee_code="JIP-10001",
             nik="3201010101010002",
             profile_code="OFFICE",
             active=True,
         )
         second = Employee(
             nama="Karyawan Link Dua",
+            employee_code="JIP-10002",
             nik="3201010101010003",
             profile_code="OFFICE",
-            active=True,
+            active=False,
         )
         db.add_all([first, second])
         db.commit()
@@ -429,10 +557,16 @@ class TestContractManagement(unittest.TestCase):
             employee_id=first_id,
             status="ACTIVE",
         )
-        db.add(identity)
+        target_identity = whatsapp.models.WhatsAppIdentity(
+            phone_number="628122233355",
+            employee_id=second_id,
+            status="ACTIVE",
+        )
+        db.add_all([identity, target_identity])
         db.commit()
         db.refresh(identity)
         identity_id = identity.id
+        target_identity_id = target_identity.id
         db.close()
 
         audit_res = client.get("/employees/whatsapp-audit")
@@ -441,10 +575,32 @@ class TestContractManagement(unittest.TestCase):
 
         move_res = client.patch(
             f"/employees/whatsapp-identities/{identity_id}/move",
-            json={"employee_id": second_id, "reason": "Nomor dikonfirmasi HR sebagai milik karyawan kedua"},
+            json={"employee_code": "JIP-10002", "reason": "Nomor dikonfirmasi HR sebagai milik karyawan kedua"},
+        )
+        self.assertEqual(move_res.status_code, 409)
+
+        db = TestingSessionLocal()
+        db.query(whatsapp.models.WhatsAppIdentity).filter(
+            whatsapp.models.WhatsAppIdentity.id == target_identity_id
+        ).delete()
+        db.commit()
+        db.close()
+
+        move_res = client.patch(
+            f"/employees/whatsapp-identities/{identity_id}/move",
+            json={"employee_code": "JIP-10002", "reason": "Nomor dikonfirmasi HR sebagai milik karyawan kedua"},
         )
         self.assertEqual(move_res.status_code, 200)
         self.assertEqual(move_res.json()["employee_id"], second_id)
+        self.assertEqual(move_res.json()["employee_code"], "JIP-10002")
+        self.assertEqual(client.patch(
+            f"/employees/whatsapp-identities/{identity_id}/move",
+            json={"employee_code": "JIP-UNKNOWN", "reason": "Kode tidak terdaftar"},
+        ).status_code, 404)
+        self.assertEqual(client.patch(
+            f"/employees/whatsapp-identities/{identity_id}/move",
+            json={"reason": "Kode karyawan tidak diberikan"},
+        ).status_code, 400)
 
         revoke_res = client.patch(f"/employees/whatsapp-identities/{identity_id}/revoke")
         self.assertEqual(revoke_res.status_code, 200)
