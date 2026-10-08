@@ -438,3 +438,15 @@ class LeaveBalanceLedger(Base):
 
     employee = relationship("Employee")
     leave_request = relationship("LeaveRequest")
+
+
+class DatabaseMigrationArchive(Base):
+    """Retains non-null values from columns no longer represented by current models."""
+    __tablename__ = "database_migration_archive"
+
+    id = Column(Integer, primary_key=True, index=True)
+    archive_key = Column(String, nullable=False, unique=True, index=True)
+    source_table = Column(String, nullable=False, index=True)
+    source_primary_key = Column(String, nullable=False)
+    legacy_columns = Column(JSON, nullable=False)
+    archived_at = Column(DateTime, default=datetime.datetime.utcnow)

@@ -23,11 +23,10 @@ from dotenv import load_dotenv
 env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-from app.database import SessionLocal, Base, engine
+from app.database import SessionLocal
 from app import models
 from app.auth import hash_password
 
-Base.metadata.create_all(bind=engine)
 db = SessionLocal()
 
 # ---------------------------------------------------------------------------

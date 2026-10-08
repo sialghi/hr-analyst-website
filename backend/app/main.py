@@ -8,55 +8,9 @@ from fastapi.staticfiles import StaticFiles
 from .database import Base, engine, SessionLocal
 from .routers import auth, profiles, rules, employees, holidays, process, chat, leaves, whatsapp
 
-# Buat semua tabel kalau belum ada (untuk production sebaiknya pakai Alembic migration,
-# tapi create_all() ini cukup aman & simpel untuk skala project ini).
-Base.metadata.create_all(bind=engine)
-
-
-def _run_migrations():
-    """Migrasi otomatis untuk memastikan SEMUA kolom dari Base.metadata ada di database."""
-    from sqlalchemy import inspect, text
-    try:
-        inspector = inspect(engine)
-        existing_tables = set(inspector.get_table_names())
-
-        with engine.begin() as conn:
-            for table_name, table in Base.metadata.tables.items():
-                if table_name in existing_tables:
-                    existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
-                    for col in table.columns:
-                        if col.name not in existing_cols:
-                            col_type = col.type.compile(engine.dialect)
-                            default_clause = ""
-                            if col.default is not None and hasattr(col.default, "arg"):
-                                val = col.default.arg
-                                if isinstance(val, (int, float)):
-                                    default_clause = f" DEFAULT {val}"
-                                elif isinstance(val, bool):
-                                    default_clause = f" DEFAULT {str(val).lower()}"
-                                elif isinstance(val, str):
-                                    default_clause = f" DEFAULT '{val}'"
-                            sql = f"ALTER TABLE {table_name} ADD COLUMN {col.name} {col_type}{default_clause}"
-                            print(f"[MIGRATION] Adding column: {sql}")
-                            try:
-                                conn.execute(text(sql))
-                            except Exception as col_err:
-                                print(f"[MIGRATION ERROR on {col.name}]: {col_err}")
-            if "employees" in existing_tables:
-                conn.execute(text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_employees_employee_code "
-                    "ON employees (employee_code)"
-                ))
-            if "leave_requests" in existing_tables:
-                conn.execute(text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_leave_requests_import_key "
-                    "ON leave_requests (import_key)"
-                ))
-    except Exception as e:
-        print(f"[MIGRATION WARN] {e}")
-
-
-_run_migrations()
+# Keep SQLite developer/test setup compatible; PostgreSQL schema changes run via Alembic.
+if engine.dialect.name == "sqlite":
+    Base.metadata.create_all(bind=engine)
 
 # Backfill pemakaian cuti approved yang sudah ada sebelum ledger diaktifkan.
 from .leave_logic import reconcile_approved_leave_ledger

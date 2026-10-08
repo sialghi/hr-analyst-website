@@ -223,6 +223,9 @@ SEED_HR_MASTER_PASSWORD=ubah-password-ini
 
 Inisialisasi database dan akun awal:
 ```bash
+# Buat skema database baru dari migrasi Alembic
+alembic upgrade head
+
 # Buat akun HR Master pertama dan 7 profil kerja bawaan
 python seed.py
 
@@ -281,7 +284,8 @@ Frontend berjalan di: `http://localhost:3000`.
    - `SEED_HR_MASTER_EMAIL`: Email admin utama.
    - `SEED_HR_MASTER_PASSWORD`: Kata sandi admin utama.
 4. Railway akan menjalankan aplikasi secara otomatis sesuai `Procfile` / `railway.toml`.
-5. Buka tab **Shell** di Railway dan jalankan seeder sekali:
+   Perintah start menjalankan `alembic upgrade head` sebelum server API.
+5. Untuk database baru, buka tab **Shell** di Railway dan jalankan seeder sekali:
    ```bash
    python seed.py
    ```
@@ -292,6 +296,33 @@ Frontend berjalan di: `http://localhost:3000`.
 3. Tambahkan **Environment Variable**:
    - `NEXT_PUBLIC_API_URL`: URL publik backend Railway Anda (mis. `https://backend-production.up.railway.app` tanpa garis miring penutup).
 4. Klik **Deploy**.
+
+### Migrasi Database Lokal ke PostgreSQL Railway
+
+Untuk mengganti database yang dipakai aplikasi, jangan jalankan skrip lama `sync_local_to_railway.py`; skrip tersebut telah dinonaktifkan karena cakupan tabelnya tidak lengkap. Alur yang disarankan adalah membuat service PostgreSQL Railway **baru dan kosong** sebagai target, sementara database lama dipertahankan sementara untuk rollback.
+
+1. Verifikasi sumber SQLite yang akan dipindahkan. Default skrip adalah `backend\hr_app.db`; file ini tidak diubah. Hentikan sementara perubahan data di sistem lama saat cutover final.
+2. Siapkan PostgreSQL client tools di komputer migrasi (`pg_dump` harus tersedia di `PATH`). Simpan URL koneksi hanya di environment variable lokal, bukan di perintah yang dikomit, log, atau chat:
+   ```powershell
+   # Isi RAILWAY_DATABASE_URL dari secret manager di sesi lokal; jangan cetak nilainya.
+   $env:DATABASE_URL = $env:RAILWAY_DATABASE_URL
+   ```
+3. Dari folder `backend`, buat skema target baru, lalu pratinjau migrasi. Pratinjau bersifat read-only:
+   ```powershell
+   alembic upgrade head
+   python migrate_local_to_postgres.py
+   ```
+   Pastikan nama database/host target dan jumlah setiap tabel sesuai. Skrip akan berhenti jika skema tidak cocok, foreign key tidak valid, ada tabel aplikasi yang tidak dikenali, atau ada duplikasi yang melanggar unique key.
+4. Setelah pratinjau ditinjau dan database target dipastikan benar, jalankan mode apply dengan identitas target `HOST:PORT/DATABASE` yang cocok dengan output pratinjau:
+   ```powershell
+   python migrate_local_to_postgres.py --apply --confirm-target "HOST:PORT/DATABASE"
+   ```
+   Apply membuat arsip backup PostgreSQL format custom di `backend\backups`, lalu menyalin semua tabel aplikasi dalam satu transaksi. Nilai dari kolom SQLite lama yang tidak lagi ada di model disimpan di `database_migration_archive`. Jika validasi gagal, transaksi data dibatalkan; backup tetap disimpan.
+5. Setelah transfer dan verifikasi berhasil, ubah `DATABASE_URL` service backend Railway ke URL PostgreSQL target baru lalu deploy. Uji login HR, daftar karyawan, cuti/izin, histori, dan proses absensi sebelum mengalihkan pengguna. Pertahankan database lama dan backup sampai aplikasi tervalidasi serta keputusan file unggahan selesai.
+
+Seeder hanya dijalankan saat menyiapkan database baru secara manual. Jika mengikuti migrasi SQLite penuh di atas, jangan jalankan `seed.py` setelah transfer karena akun dan profil sudah ikut disalin.
+
+**Jangan arahkan skrip ke database lama atau menghapus service lama sebelum cutover disetujui.** Empat file lokal di `backend\uploads` tidak memiliki referensi `foto_bukti` di database SQLite, tetapi penyimpanan file production lama belum diverifikasi; putuskan dahulu apakah bukti lama perlu diarsipkan atau tetap tersedia. Migrasi database tidak memindahkan file uploads.
 
 ---
 

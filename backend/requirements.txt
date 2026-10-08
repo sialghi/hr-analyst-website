@@ -6,6 +6,7 @@ numpy>=1.24
 openpyxl>=3.1
 xlrd>=2.0.1
 sqlalchemy>=2.0,<2.1
+alembic>=1.13,<2
 psycopg2-binary>=2.9
 python-jose[cryptography]>=3.3
 passlib[bcrypt]>=1.7

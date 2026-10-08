@@ -19,6 +19,7 @@ frontend/.env*.local
 *.sqlite
 *.sqlite3
 backend/hr_app.db
+backend/backups/
 
 # Next.js build cache & outputs
 .next/
