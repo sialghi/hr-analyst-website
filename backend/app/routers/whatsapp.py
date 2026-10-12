@@ -531,27 +531,21 @@ async def send_welcome_menu(to_number: str, login_success: bool = False):
 
 async def send_help_guide(to_number: str):
     guide_text = (
-        f"ℹ️ *PANDUAN LENGKAP BOT WHATSAPP HR*\n"
-        f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"📌 *Pengajuan Cuti / Izin:*\n"
-        f"1. Pilih *Cuti* untuk Cuti Tahunan, atau *Izin* untuk Sakit/SKD, Izin Telat, Pulang Cepat, dan Izin Lainnya.\n"
-        f"2. Ikuti pilihan dan instruksi bot.\n"
-        f"3. Pilih Cabang & Nama Karyawan sesuai master data HR.\n"
-        f"4. Masukkan tanggal (contoh: `2026-10-05` atau `besok` / `hari ini`).\n"
-        f"5. Jika izin telat/pulang awal, masukkan jam (contoh: `09:30`).\n"
-        f"6. Tuliskan alasan singkat, lalu konfirmasi pengiriman.\n\n"
-        f"📌 *Absensi Jarak Jauh (Tugas Luar):*\n"
-        f"1. Pilih menu atau ketik *Absen Luar*.\n"
-        f"2. Pilih Cabang & Nama Karyawan.\n"
-        f"3. Masukkan tanggal bertugas di luar kantor.\n"
-        f"4. Tuliskan alasan penugasan / keterangan tugas.\n"
-        f"5. Kirim *Foto Bukti* kehadiran di lokasi tugas (JPEG/PNG/WEBP/HEIC).\n"
-        f"6. Klik *Ya, Kirim* pada kartu konfirmasi pengajuan.\n\n"
-        f"📌 *Perintah Cepat:*\n"
-        f"• Ketik *Status* untuk melihat status pengajuan Anda.\n"
-        f"• Ketik *Batal* kapan saja untuk mengulang dari awal."
+        "📘 *Panduan HR WhatsApp*\n\n"
+        "Gunakan menu untuk memilih:\n"
+        "• Cuti atau Izin\n"
+        "• Absen Luar\n"
+        "• Status pengajuan\n"
+        "• Profil\n\n"
+        "Periksa kembali tanggal dan keterangan sebelum mengirim pengajuan.\n\n"
+        "Ketik *panduan* kapan saja untuk membuka panduan ini lagi."
     )
     await send_whatsapp_text(to_number, guide_text)
+
+
+async def send_login_guide_and_menu(to_number: str):
+    await send_help_guide(to_number)
+    await send_welcome_menu(to_number, login_success=True)
 
 
 async def start_cuti_flow(to_number: str, db: Session):
@@ -1001,7 +995,7 @@ async def process_whatsapp_incoming(
         if identity and identity.status == "ACTIVE":
             identity.last_seen_at = datetime.datetime.utcnow()
             db.commit()
-            await send_welcome_menu(from_number, login_success=True)
+            await send_login_guide_and_menu(from_number)
             return
         user_states[from_number] = make_user_state("login_waiting_nik")
         await send_whatsapp_text(
@@ -1051,7 +1045,14 @@ async def process_whatsapp_incoming(
         )
         return
 
-    if action_key == "menu_help" or lower_text in ("/help", "help", "bantuan"):
+    if action_key == "menu_help" or lower_text in (
+        "/help",
+        "help",
+        "bantuan",
+        "/bantuan",
+        "panduan",
+        "/panduan",
+    ):
         await send_help_guide(from_number)
         return
 
@@ -1246,7 +1247,7 @@ async def process_whatsapp_incoming(
         _audit_whatsapp(db, phone_number, "LOGIN_SUCCESS", employee_id)
         db.commit()
         user_states.pop(from_number, None)
-        await send_welcome_menu(from_number, login_success=True)
+        await send_login_guide_and_menu(from_number)
         return
 
     # STEP 1: PILIH KATEGORI IZIN

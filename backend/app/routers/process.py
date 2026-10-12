@@ -4,26 +4,22 @@ import shutil
 import tempfile
 import uuid
 import datetime
+import math
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
+from openpyxl import load_workbook
 from sqlalchemy.orm import Session
 
-from .. import models, auth
+from .. import models, auth, schemas
 from ..database import get_db
-from ..pipeline.service import jalankan_pipeline_db, jalankan_pipeline_db_json
+from ..pipeline.service import jalankan_pipeline_db_json
 from ..leave_logic import get_ledger_balance, record_leave_used
 from ..shared_store import _file_store
 
 router = APIRouter(tags=["process"])
 
-API_KEY = os.environ.get("API_KEY")
 ALLOWED_EXT = (".xlsx", ".xls", ".csv")
-
-
-def _cek_api_key(x_api_key):
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="API key tidak valid atau tidak ada.")
 
 
 def _simpan_upload(f: UploadFile, folder: str, nama_file: str = None) -> str:
@@ -59,53 +55,6 @@ def _finish_upload_batch(db: Session, batch, result_data=None, row_count=None, s
         batch.row_count = int(row_count)
     batch.status = status
     db.commit()
-
-
-def _jalankan_dan_kirim(files, db: Session, master_karyawan: UploadFile = None, tanggal_merah_override: UploadFile = None):
-    if not files:
-        raise HTTPException(status_code=400, detail="Tidak ada file absensi yang dikirim.")
-
-    folder_kerja = tempfile.mkdtemp(prefix="hr_pipeline_")
-    try:
-        path_input_list = [_simpan_upload(f, folder_kerja) for f in files]
-        batch = _create_upload_batch(db, [f.filename for f in files])
-
-        path_master = None
-        if master_karyawan:
-            ext = os.path.splitext(master_karyawan.filename or "")[1].lower()
-            path_master = _simpan_upload(master_karyawan, folder_kerja, f"master_karyawan{ext}")
-
-        path_tgl_merah = None
-        if tanggal_merah_override:
-            ext = os.path.splitext(tanggal_merah_override.filename or "")[1].lower()
-            path_tgl_merah = _simpan_upload(tanggal_merah_override, folder_kerja, f"tgl_merah_override{ext}")
-
-        nama_dasar = os.path.splitext(files[0].filename or "")[0] if files else "Absensi"
-        nama_download = f"Report Hasil_{nama_dasar}.xlsx"
-        path_output = os.path.join(folder_kerja, f"Report_Hasil_{uuid.uuid4().hex[:8]}.xlsx")
-
-        try:
-            jalankan_pipeline_db(
-                daftar_input=path_input_list,
-                path_output=path_output,
-                db=db,
-                override_master_path=path_master,
-                override_tanggal_merah_path=path_tgl_merah,
-                upload_batch_id=batch.id,
-                verbose=False,
-            )
-            _finish_upload_batch(db, batch)
-        except Exception as e:
-            _finish_upload_batch(db, batch, status="FAILED")
-            raise HTTPException(status_code=422, detail=f"Gagal memproses data: {e}")
-
-        return FileResponse(
-            path_output,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=nama_download,
-        )
-    finally:
-        pass  # folder_kerja sengaja tidak dihapus langsung, biar FileResponse sempat mengirim filenya
 
 
 # ===========================================================================
@@ -175,6 +124,156 @@ async def download_hasil_proses(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=entry["filename"],
     )
+
+
+@router.patch("/proses/{file_id}/adjustments")
+def update_processed_adjustment(
+    file_id: str,
+    payload: schemas.EmployeeAdjustmentUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.get_current_user),
+):
+    """Save an employee adjustment and synchronize the active report and Excel file."""
+    entry = _file_store.get(file_id)
+    if not entry or not os.path.isfile(entry.get("path", "")):
+        raise HTTPException(status_code=404, detail="File proses tidak ditemukan atau sudah kedaluwarsa.")
+
+    nama = payload.nama.strip()
+    if not nama:
+        raise HTTPException(status_code=400, detail="Nama karyawan wajib diisi.")
+    if any(
+        value is not None and not math.isfinite(value)
+        for value in (payload.bonus_lain, payload.potongan_lain)
+    ):
+        raise HTTPException(status_code=400, detail="Nominal bonus dan potongan harus berupa angka valid.")
+
+    result_data = entry.get("result_data") or {}
+    summary_sheet = next(
+        (sheet for sheet in result_data.get("sheets", []) if sheet.get("key") == "summary"),
+        None,
+    )
+    summary_rows = summary_sheet.get("data", {}).get("rows", []) if summary_sheet else []
+    matching_rows = [
+        row for row in summary_rows
+        if str(row.get("Nama") or "").strip().casefold() == nama.casefold()
+    ]
+    if not matching_rows:
+        raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan pada ringkasan file proses ini.")
+
+    adjustment = (
+        db.query(models.EmployeeAdjustment)
+        .filter(models.EmployeeAdjustment.nama == nama)
+        .first()
+    )
+    stored_bonus = float(adjustment.bonus_lain or 0) if adjustment else float(
+        matching_rows[0].get("Total Bonus Lain-lain (Rp)") or 0
+    )
+    stored_deduction = float(adjustment.potongan_lain or 0) if adjustment else float(
+        matching_rows[0].get("Total Potongan Lain-lain (Rp)") or 0
+    )
+    new_bonus = payload.bonus_lain if payload.bonus_lain is not None else stored_bonus
+    new_deduction = payload.potongan_lain if payload.potongan_lain is not None else stored_deduction
+
+    report_path = entry["path"]
+    try:
+        workbook = load_workbook(report_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Workbook hasil proses tidak dapat dibuka untuk diperbarui.") from exc
+
+    sheet_name = "2. Summary Overview"
+    if sheet_name not in workbook.sheetnames:
+        raise HTTPException(status_code=500, detail="Sheet ringkasan tidak ditemukan pada workbook hasil proses.")
+    worksheet = workbook[sheet_name]
+    column_indexes = {
+        str(cell.value).strip(): cell.column
+        for cell in worksheet[4]
+        if cell.value is not None
+    }
+    required_columns = (
+        "Nama",
+        "Total Bonus Lain-lain (Rp)",
+        "Total Potongan Lain-lain (Rp)",
+        "Total Bersih (Rp)",
+    )
+    if any(column not in column_indexes for column in required_columns):
+        raise HTTPException(status_code=500, detail="Kolom penyesuaian/Total Bersih tidak lengkap pada workbook.")
+
+    matching_excel_rows = [
+        row_number
+        for row_number in range(5, worksheet.max_row + 1)
+        if str(worksheet.cell(row_number, column_indexes["Nama"]).value or "").strip().casefold() == nama.casefold()
+    ]
+    if len(matching_excel_rows) != len(matching_rows):
+        raise HTTPException(status_code=409, detail="Baris ringkasan aplikasi dan workbook tidak cocok.")
+
+    temporary_path = None
+    try:
+        for row_number in matching_excel_rows:
+            worksheet.cell(row_number, column_indexes["Total Bonus Lain-lain (Rp)"]).value = new_bonus
+            worksheet.cell(row_number, column_indexes["Total Potongan Lain-lain (Rp)"]).value = new_deduction
+        workbook.calculation.calcMode = "auto"
+        workbook.calculation.fullCalcOnLoad = True
+        workbook.calculation.forceFullCalc = True
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".xlsx",
+            prefix="hr_adjustment_",
+            dir=os.path.dirname(report_path),
+            delete=False,
+        ) as temporary_file:
+            temporary_path = temporary_file.name
+        workbook.save(temporary_path)
+
+        if adjustment is None:
+            adjustment = models.EmployeeAdjustment(
+                nama=nama,
+                bonus_lain=new_bonus,
+                potongan_lain=new_deduction,
+            )
+            db.add(adjustment)
+        else:
+            adjustment.bonus_lain = new_bonus
+            adjustment.potongan_lain = new_deduction
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if temporary_path and os.path.exists(temporary_path):
+            os.remove(temporary_path)
+        raise HTTPException(status_code=500, detail="Gagal menyimpan penyesuaian karyawan.") from exc
+
+    try:
+        os.replace(temporary_path, report_path)
+        temporary_path = None
+    except OSError as exc:
+        if temporary_path and os.path.exists(temporary_path):
+            os.remove(temporary_path)
+        raise HTTPException(
+            status_code=500,
+            detail="Penyesuaian tersimpan, tetapi workbook hasil proses gagal diperbarui. Simpan ulang untuk mencoba sinkronisasi lagi.",
+        ) from exc
+
+    for row in matching_rows:
+        report_old_bonus = float(row.get("Total Bonus Lain-lain (Rp)") or 0)
+        report_old_deduction = float(row.get("Total Potongan Lain-lain (Rp)") or 0)
+        row["Total Bonus Lain-lain (Rp)"] = new_bonus
+        row["Total Potongan Lain-lain (Rp)"] = new_deduction
+        row["Total Bersih (Rp)"] = (
+            float(row.get("Total Bersih (Rp)") or 0)
+            + (new_bonus - report_old_bonus)
+            - (new_deduction - report_old_deduction)
+        )
+    result_data.setdefault("kpis", {})["total_bersih"] = sum(
+        float(row.get("Total Bersih (Rp)") or 0) for row in summary_rows
+    )
+
+    return {
+        "status": "sukses",
+        "nama": nama,
+        "bonus_lain": new_bonus,
+        "potongan_lain": new_deduction,
+        "updated_rows": len(matching_rows),
+        "total_bersih": result_data["kpis"]["total_bersih"],
+    }
 
 
 @router.get("/attendance/upload-batches")
@@ -555,63 +654,3 @@ def download_attendance_template(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="template_absensi_mentah.xlsx"'},
     )
-
-
-# ===========================================================================
-# 2) ENDPOINT UNTUK N8N (tetap pakai X-API-Key, TIDAK butuh login web)
-#    Path sengaja SAMA seperti versi lama supaya workflow n8n existing tetap jalan.
-# ===========================================================================
-
-@router.get("/")
-def health_check():
-    return {"status": "ok", "pesan": "HR Absensi Pipeline API (web version) jalan normal."}
-
-
-@router.post("/proses-absensi")
-async def proses_absensi(
-    files: list[UploadFile] = File(..., description="Satu atau lebih file absensi mentah (.xlsx/.xls/.csv)"),
-    master_karyawan: UploadFile = File(
-        None, description="Opsional. Kalau kosong, master diambil otomatis dari database web."
-    ),
-    file_tanggal_merah_override: UploadFile = File(
-        None, description="Opsional. Kalau kosong, tanggal merah diambil otomatis dari database web."
-    ),
-    x_api_key: str = Header(default=None),
-    db: Session = Depends(get_db),
-):
-    _cek_api_key(x_api_key)
-    return _jalankan_dan_kirim(files, db, master_karyawan=master_karyawan, tanggal_merah_override=file_tanggal_merah_override)
-
-
-@router.post("/upload-tanggal-merah")
-async def upload_tanggal_merah_legacy(
-    file_tanggal_merah: UploadFile = File(...),
-    x_api_key: str = Header(default=None),
-    db: Session = Depends(get_db),
-):
-    """
-    DIPERTAHANKAN untuk kompatibilitas workflow n8n lama. Sekarang isi file
-    langsung di-parse dan disimpan ke tabel `holidays` di database (bukan lagi
-    disimpan sbg file .xlsx di server), supaya konsisten dengan halaman
-    'Tanggal Merah' di website.
-    """
-    _cek_api_key(x_api_key)
-    from ..pipeline.loader import load_tanggal_merah
-
-    ekstensi = os.path.splitext(file_tanggal_merah.filename or "")[1].lower()
-    if ekstensi not in ALLOWED_EXT:
-        raise HTTPException(status_code=400, detail="File harus berformat .xlsx/.xls/.csv")
-
-    folder_kerja = tempfile.mkdtemp(prefix="hr_tglmerah_")
-    path_temp = _simpan_upload(file_tanggal_merah, folder_kerja)
-    tanggal_merah_dict = load_tanggal_merah(path_temp)
-
-    for tgl, ket in tanggal_merah_dict.items():
-        existing = db.query(models.Holiday).filter(models.Holiday.tanggal == tgl).first()
-        if existing:
-            existing.keterangan = ket
-        else:
-            db.add(models.Holiday(tanggal=tgl, keterangan=ket))
-    db.commit()
-
-    return {"status": "sukses", "pesan": f"{len(tanggal_merah_dict)} tanggal merah berhasil disimpan ke database."}

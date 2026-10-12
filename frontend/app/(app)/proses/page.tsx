@@ -112,15 +112,15 @@ function exportSheetCSV(sheet: SheetInfo) {
 }
 
 function EditableAdjCell({
-  nama,
   fieldKey,
   initialVal,
   onSave,
+  onError,
 }: {
-  nama: string;
   fieldKey: "bonus_lain" | "potongan_lain";
   initialVal: number;
-  onSave?: (newVal: number) => void;
+  onSave: (newVal: number) => Promise<void>;
+  onError?: (message: string) => void;
 }) {
   const [val, setVal] = useState<string>(initialVal ? String(initialVal) : "");
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -133,16 +133,13 @@ function EditableAdjCell({
     const num = parseFloat(newStr) || 0;
     setStatus("saving");
     try {
-      await api.updateAdjustment({
-        nama,
-        [fieldKey]: num,
-      });
+      await onSave(num);
       setStatus("saved");
-      if (onSave) onSave(num);
       setTimeout(() => setStatus("idle"), 1500);
     } catch (err: any) {
       console.error("Gagal menyimpan penyesuaian:", err);
       setStatus("error");
+      onError?.(err.message || "Gagal menyimpan penyesuaian dan memperbarui laporan.");
     }
   };
 
@@ -560,6 +557,8 @@ function SheetTable({
   periode,
   onClickNama,
   onRowUpdate,
+  onAdjustmentSaved,
+  onAdjustmentError,
 }: {
   sheet: SheetInfo;
   search: string;
@@ -568,6 +567,12 @@ function SheetTable({
   periode?: { tahun: number; bulan: number } | null;
   onClickNama?: (nama: string) => void;
   onRowUpdate?: () => void;
+  onAdjustmentSaved: (payload: {
+    nama: string;
+    bonus_lain: number;
+    potongan_lain: number;
+  }) => Promise<void>;
+  onAdjustmentError: (message: string) => void;
 }) {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(25);
@@ -715,12 +720,18 @@ function SheetTable({
                         return (
                           <td key={h} className="px-2 py-1 whitespace-nowrap text-right bg-amber-50/40 border-x border-amber-200/40">
                             <EditableAdjCell
-                              nama={row["Nama"]}
                               fieldKey={fieldKey}
                               initialVal={valNum}
-                              onSave={(newVal) => {
-                                row[h] = newVal;
-                              }}
+                              onSave={(newVal) => onAdjustmentSaved({
+                                nama: String(row["Nama"] || ""),
+                                bonus_lain: fieldKey === "bonus_lain"
+                                  ? newVal
+                                  : Number(row["Total Bonus Lain-lain (Rp)"] || 0),
+                                potongan_lain: fieldKey === "potongan_lain"
+                                  ? newVal
+                                  : Number(row["Total Potongan Lain-lain (Rp)"] || 0),
+                              })}
+                              onError={onAdjustmentError}
                             />
                           </td>
                         );
@@ -1445,6 +1456,42 @@ export default function ProsesPage() {
     }
   }
 
+  async function handleSaveAdjustment(payload: {
+    nama: string;
+    bonus_lain: number;
+    potongan_lain: number;
+  }) {
+    if (!result) throw new Error("Hasil proses tidak tersedia.");
+    const updated = await api.updateProcessedAdjustment(result.file_id, payload);
+    setResult((current) => {
+      if (!current) return current;
+      const sheets = current.sheets.map((sheet) => {
+        if (sheet.key !== "summary") return sheet;
+        const rows = sheet.data.rows.map((row) => {
+          if (String(row["Nama"] || "").trim().toLocaleLowerCase() !== payload.nama.trim().toLocaleLowerCase()) {
+            return row;
+          }
+          const oldBonus = Number(row["Total Bonus Lain-lain (Rp)"] || 0);
+          const oldDeduction = Number(row["Total Potongan Lain-lain (Rp)"] || 0);
+          return {
+            ...row,
+            "Total Bonus Lain-lain (Rp)": updated.bonus_lain,
+            "Total Potongan Lain-lain (Rp)": updated.potongan_lain,
+            "Total Bersih (Rp)": Number(row["Total Bersih (Rp)"] || 0)
+              + (updated.bonus_lain - oldBonus)
+              - (updated.potongan_lain - oldDeduction),
+          };
+        });
+        return { ...sheet, data: { ...sheet.data, rows } };
+      });
+      return {
+        ...current,
+        kpis: { ...current.kpis, total_bersih: updated.total_bersih },
+        sheets,
+      };
+    });
+  }
+
   async function handleDownloadExcel() {
     if (!result) return;
     setDownloading(true);
@@ -2015,6 +2062,8 @@ export default function ProsesPage() {
                   activeSheet.data.headers.includes("Nama") ? handleClickNama : undefined
                 }
                 onRowUpdate={() => setResult((prev) => prev ? { ...prev } : prev)}
+                onAdjustmentSaved={handleSaveAdjustment}
+                onAdjustmentError={setError}
               />
               {activeSheet.key === "perbandingan" && <SimpleBarChart sheet={activeSheet} />}
             </>

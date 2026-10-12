@@ -210,6 +210,34 @@ export const api = {
     return res.json();
   },
 
+  async updateEmploymentContract(
+    employeeId: number,
+    contractId: number,
+    payload: { start_date: string; end_date: string; status: string; keterangan: string | null },
+  ) {
+    const res = await request(`/employees/${employeeId}/contracts/${contractId}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  },
+
+  async deleteEmploymentContract(employeeId: number, contractId: number) {
+    await request(`/employees/${employeeId}/contracts/${contractId}`, { method: "DELETE" });
+  },
+
+  async updatePHLTransition(employeeId: number, transitionId: number, phlStartDate: string) {
+    const res = await request(`/employees/${employeeId}/phl-transitions/${transitionId}`, {
+      method: "PUT",
+      body: JSON.stringify({ phl_start_date: phlStartDate }),
+    });
+    return res.json();
+  },
+
+  async deletePHLTransition(employeeId: number, transitionId: number) {
+    await request(`/employees/${employeeId}/phl-transitions/${transitionId}`, { method: "DELETE" });
+  },
+
   async getAdjustments() {
     const res = await request("/employees/adjustments");
     return res.json();
@@ -301,6 +329,17 @@ export const api = {
     const res = await request(`/proses/download/${fileId}`);
     const blob = await res.blob();
     triggerBlobDownload(blob, filename);
+  },
+
+  async updateProcessedAdjustment(
+    fileId: string,
+    payload: { nama: string; bonus_lain: number; potongan_lain: number },
+  ): Promise<{ bonus_lain: number; potongan_lain: number; total_bersih: number }> {
+    const res = await request(`/proses/${fileId}/adjustments`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    return res.json();
   },
 
   async downloadAttendanceTemplate(format: "xlsx" | "csv" = "xlsx"): Promise<Blob> {

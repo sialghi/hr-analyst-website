@@ -9,7 +9,5 @@ services:
         value: 3.11.0
       - key: JWT_SECRET_KEY
         generateValue: true
-      - key: API_KEY
-        generateValue: true
       - key: FRONTEND_ORIGIN
         value: "*"

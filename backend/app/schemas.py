@@ -127,6 +127,17 @@ class EmploymentContractCreate(BaseModel):
     keterangan: Optional[str] = None
 
 
+class EmploymentContractUpdate(BaseModel):
+    start_date: date
+    end_date: date
+    status: str
+    keterangan: Optional[str] = None
+
+
+class EmployeeEmploymentTransitionUpdate(BaseModel):
+    phl_start_date: date
+
+
 class EmploymentContractOut(EmploymentContractBase):
     id: int
     employee_id: int

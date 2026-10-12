@@ -27,7 +27,6 @@ Sistem otomasi analisis absensi cerdas dan manajemen aturan bisnis SDM (Sumber D
   - [1. Database (PostgreSQL Railway / Supabase)](#1-database-postgresql-railway--supabase)
   - [2. Backend (Railway)](#2-backend-railway)
   - [3. Frontend (Vercel)](#3-frontend-vercel)
-- [Integrasi Otomasi Workflow (n8n / Webhook)](#-integrasi-otomasi-workflow-n8n--webhook)
 - [Sinkronisasi Master Karyawan dan Rekap Kehadiran](#-sinkronisasi-master-karyawan-dan-rekap-kehadiran)
 - [Peran Pengguna & Keamanan (RBAC)](#-peran-pengguna--keamanan-rbac)
 
@@ -47,9 +46,6 @@ Sistem otomasi analisis absensi cerdas dan manajemen aturan bisnis SDM (Sumber D
   Pengelolaan tanggal libur nasional dan hari libur perusahaan dengan fitur import Excel untuk perhitungan otomatis lembur dan hak uang makan.
 - 🛡️ **Role-Based Access Control (RBAC)**:
   Pemisahan hak akses antara **HR Master** (akses penuh kelola aturan & pengguna) dan **HR Staff** (akses proses absensi dan monitoring laporan).
-- 🔗 **Kompatibilitas Otomasi n8n**:
-  Menyediakan endpoint REST API terproteksi API Key untuk integrasi otomatisasi penjadwalan via n8n atau webhook internal.
-
 ---
 
 ## 🏛️ Arsitektur Sistem
@@ -58,31 +54,25 @@ Sistem otomasi analisis absensi cerdas dan manajemen aturan bisnis SDM (Sumber D
 +-----------------------------------------------------------------------------------+
 |                                 CLIENT / PENGGUNA                                 |
 +-----------------------------------------------------------------------------------+
-           |                                                       |
-    (Web Browser UI)                                        (n8n Workflow API)
-           v                                                       v
-+-----------------------+                               +-----------------------+
-|  FRONTEND (Next.js)   |                               |  FastAPI / n8n Route  |
-|  - Modern Dashboard   | ---(REST API + JWT Bearer)--->|  Header X-API-Key     |
-|  - Interactive Sheets |                               +-----------------------+
-+-----------------------+                                           |
-                                                                    v
-                                                     +------------------------------+
-                                                     |    BACKEND (FastAPI App)     |
-                                                     |  - Auth & RBAC Guard         |
-                                                     |  - Runtime Config Loader     |
-                                                     |  - Core Data Pipeline        |
-                                                     +------------------------------+
-                                                                    |
-                                        +---------------------------+---------------------------+
-                                        v                                                       v
-                         +------------------------------+                        +------------------------------+
-                         |      DATABASE STORAGE        |                        |      PIPELINE PROCESSING     |
-                         |  - SQLite (Lokal Dev)        |                        |  - Normalisasi Datetime      |
-                         |  - PostgreSQL (Production)   |                        |  - Deduplikasi Scan Ganda    |
-                         |    (Users, Profiles, Rules,  |                        |  - Koreksi Label Masuk/Keluar|
-                         |     Employees, Holidays)     |                        |  - 14 Analytical Sheets      |
-                         +------------------------------+                        +------------------------------+
+                         (Web Browser UI)
+                                |
+                                v
++-----------------------+     REST API + JWT     +------------------------------+
+|  FRONTEND (Next.js)   | ---------------------> |    BACKEND (FastAPI App)     |
+|  - HR Dashboard       |                        |  - Auth & RBAC Guard         |
+|  - Interactive Sheets|                        |  - Runtime Config Loader     |
++-----------------------+                        |  - Core Data Pipeline        |
+                                                 +------------------------------+
+                                                            |
+                                      +---------------------+---------------------+
+                                      v                                           v
+                       +------------------------------+          +------------------------------+
+                       |      DATABASE STORAGE        |          |      PIPELINE PROCESSING     |
+                       |  - SQLite (Lokal Dev)        |          |  - Normalisasi Datetime      |
+                       |  - PostgreSQL (Production)   |          |  - Deduplikasi Scan Ganda    |
+                       |    (Users, Profiles, Rules,  |          |  - Koreksi Label Masuk/Keluar|
+                       |     Employees, Holidays)     |          |  - Analytical Sheets        |
+                       +------------------------------+          +------------------------------+
 ```
 
 ---
@@ -215,7 +205,6 @@ Sesuaikan isi file `.env`:
 # Kosongkan DATABASE_URL untuk menggunakan SQLite lokal otomatis
 DATABASE_URL=
 JWT_SECRET_KEY=kunci-rahasia-jwt-super-aman-ganti-di-production
-API_KEY=kunci-api-untuk-n8n
 FRONTEND_ORIGIN=http://localhost:3000
 SEED_HR_MASTER_EMAIL=admin@perusahaan.com
 SEED_HR_MASTER_PASSWORD=ubah-password-ini
@@ -279,7 +268,6 @@ Frontend berjalan di: `http://localhost:3000`.
 3. Tambahkan **Environment Variables** di dashboard Railway:
    - `DATABASE_URL`: URI PostgreSQL di atas.
    - `JWT_SECRET_KEY`: String acak panjang aman.
-   - `API_KEY`: Kunci token untuk webhook automasi.
    - `FRONTEND_ORIGIN`: URL domain Vercel frontend Anda (mis. `https://hr-analyst.vercel.app`).
    - `SEED_HR_MASTER_EMAIL`: Email admin utama.
    - `SEED_HR_MASTER_PASSWORD`: Kata sandi admin utama.
@@ -325,29 +313,6 @@ Seeder hanya dijalankan saat menyiapkan database baru secara manual. Jika mengik
 **Jangan arahkan skrip ke database lama atau menghapus service lama sebelum cutover disetujui.** Empat file lokal di `backend\uploads` tidak memiliki referensi `foto_bukti` di database SQLite, tetapi penyimpanan file production lama belum diverifikasi; putuskan dahulu apakah bukti lama perlu diarsipkan atau tetap tersedia. Migrasi database tidak memindahkan file uploads.
 
 ---
-
-## 🤖 Integrasi Otomasi Workflow (n8n / Webhook)
-
-Aplikasi tetap mempertahankan endpoint integrasi n8n yang dapat dipanggil tanpa login web (menggunakan header API Key):
-
-### 1. Proses Absensi Otomatis
-- **Method**: `POST`
-- **Endpoint**: `https://{BACKEND_URL}/proses-absensi`
-- **Headers**:
-  - `X-API-Key`: `<API_KEY>`
-- **Body (form-data)**:
-  - `files`: Berkas absensi mentah (`.xlsx` / `.csv`)
-  - `master_karyawan` *(opsional)*: Jika tidak dikirim, otomatis memakai data tabel Master Karyawan.
-  - `file_tanggal_merah_override` *(opsional)*: Jika tidak dikirim, otomatis memakai data tabel Tanggal Merah.
-- **Response**: File biner laporan Excel (`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`).
-
-### 2. Sinkronisasi Tanggal Merah
-- **Method**: `POST`
-- **Endpoint**: `https://{BACKEND_URL}/upload-tanggal-merah`
-- **Headers**:
-  - `X-API-Key`: `<API_KEY>`
-- **Body (form-data)**:
-  - `file_tanggal_merah`: Berkas Excel daftar tanggal libur.
 
 ---
 

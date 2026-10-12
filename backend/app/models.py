@@ -265,7 +265,7 @@ class Holiday(Base):
 class LeaveRequest(Base):
     """
     Pengajuan Cuti / Izin Karyawan.
-    Bisa dibuat manual oleh HR Master/Staff di web, atau otomatis via Bot Telegram / n8n.
+    Dikelola oleh HR melalui website atau alur chatbot yang didukung aplikasi.
     Status: PENDING, APPROVED, REJECTED
     Kategori:
       - CUTI_TAHUNAN       (full day cuti tahunan — memotong 1 hari kuota)

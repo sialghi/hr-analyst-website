@@ -156,15 +156,59 @@ async function fulfillJson(route: Route, data: unknown, status = 200) {
   });
 }
 
-async function mockApi(page: Page, options: { loginFails?: boolean } = {}) {
+async function mockApi(
+  page: Page,
+  options: {
+    loginFails?: boolean;
+    historyForPhl?: boolean;
+    expiringContract?: boolean;
+    processResult?: boolean;
+  } = {},
+) {
   const leave = pendingLeave();
   const testEmployees = employees.map((employee) => ({
     ...employee,
     contracts: employee.contracts.map((contract) => ({ ...contract })),
     phl_to_pkwt_transitions: employee.phl_to_pkwt_transitions.map((transition) => ({ ...transition })),
   }));
+  if (options.historyForPhl) {
+    const phlEmployee = testEmployees.find((employee) => employee.id === 3);
+    if (phlEmployee) {
+      phlEmployee.employment_status = "PKWT";
+      phlEmployee.contracts.push({
+        id: 101,
+        contract_number: 1,
+        start_date: "2026-10-01",
+        end_date: "2027-09-30",
+        status: "ACTIVE",
+        keterangan: "Transisi PHL ke PKWT",
+      });
+      phlEmployee.phl_to_pkwt_transitions.push({
+        id: 51,
+        employment_contract_id: 101,
+        phl_start_date: "2025-04-01",
+        phl_end_date: "2026-09-30",
+        transition_date: "2026-10-01",
+        created_at: "2026-10-12T08:00:00",
+      });
+    }
+  }
   let leaveStatusUpdate: { status: string } | null = null;
   let employeeUpdatePayload: Record<string, unknown> | null = null;
+  let processResult: {
+    file_id: string;
+    filename: string;
+    kpis: Record<string, number>;
+    sheets: {
+      key: string;
+      title: string;
+      data: { headers: string[]; types: Record<string, string>; rows: Record<string, unknown>[] };
+    }[];
+    cabang_list: string[];
+    profil_list: string[];
+    periode: null;
+    upload_batch_id: number;
+  } | null = null;
 
   await page.route("**/*", async (route) => {
     const request = route.request();
@@ -211,7 +255,23 @@ async function mockApi(page: Page, options: { loginFails?: boolean } = {}) {
       return;
     }
     if (path === "/employees/contracts/expiring") {
-      await fulfillJson(route, { data: [], total: 0, reminder_days_config: 10 });
+      const data = options.expiringContract ? [{
+        employee_id: 3,
+        nama: "Budi PHL",
+        cabang: "Bandung",
+        profile_code: "OFFICE",
+        join_date: "2025-04-01",
+        tenure_display: "1 tahun",
+        contract_id: 101,
+        contract_number: 1,
+        start_date: "2026-10-01",
+        end_date: "2026-10-20",
+        days_left: 8,
+        status_label: "Segera Berakhir",
+        is_expired: false,
+        message: "Kontrak segera berakhir",
+      }] : [];
+      await fulfillJson(route, { data, total: data.length, reminder_days_config: 10 });
       return;
     }
     if (path === "/employees/whatsapp-identities" || path === "/employees/whatsapp-audit") {
@@ -220,6 +280,87 @@ async function mockApi(page: Page, options: { loginFails?: boolean } = {}) {
     }
     if (path === "/employees") {
       await fulfillJson(route, testEmployees);
+      return;
+    }
+    if (path === "/proses-absensi-manual" && method === "POST" && options.processResult) {
+      processResult = {
+        file_id: "synthetic-process-file",
+        filename: "Synthetic HR report.xlsx",
+        kpis: {
+          total_karyawan: 1,
+          total_telat: 0,
+          total_lembur: 0,
+          total_bonus_lembur: 0,
+          total_uang_makan: 1000,
+          total_bersih: 1050,
+          total_pulang_duluan: 0,
+          total_baris_scan: 2,
+        },
+        sheets: [{
+          key: "summary",
+          title: "Summary Overview",
+          data: {
+            headers: [
+              "Cabang",
+              "Nama",
+              "Profil",
+              "Total Bonus Lain-lain (Rp)",
+              "Total Potongan Lain-lain (Rp)",
+              "Total Bersih (Rp)",
+            ],
+            types: {
+              "Total Bonus Lain-lain (Rp)": "currency",
+              "Total Potongan Lain-lain (Rp)": "currency",
+              "Total Bersih (Rp)": "currency",
+            },
+            rows: [{
+              Cabang: "Bandung",
+              Nama: "Karyawan QA",
+              Profil: "OFFICE",
+              "Total Bonus Lain-lain (Rp)": 100,
+              "Total Potongan Lain-lain (Rp)": 50,
+              "Total Bersih (Rp)": 1050,
+            }],
+          },
+        }],
+        cabang_list: ["Bandung"],
+        profil_list: ["OFFICE"],
+        periode: null,
+        upload_batch_id: 77,
+      };
+      await fulfillJson(route, processResult);
+      return;
+    }
+    if (/^\/proses\/[^/]+\/adjustments$/.test(path) && method === "PATCH" && processResult) {
+      const payload = request.postDataJSON() as {
+        nama: string;
+        bonus_lain: number;
+        potongan_lain: number;
+      };
+      const row = processResult.sheets[0].data.rows.find(
+        (item) => item.Nama === payload.nama,
+      );
+      if (!row) {
+        await fulfillJson(route, { detail: "Karyawan tidak ditemukan pada ringkasan file proses ini." }, 404);
+        return;
+      }
+      const oldBonus = Number(row["Total Bonus Lain-lain (Rp)"] || 0);
+      const oldDeduction = Number(row["Total Potongan Lain-lain (Rp)"] || 0);
+      row["Total Bonus Lain-lain (Rp)"] = payload.bonus_lain;
+      row["Total Potongan Lain-lain (Rp)"] = payload.potongan_lain;
+      row["Total Bersih (Rp)"] = Number(row["Total Bersih (Rp)"] || 0)
+        + payload.bonus_lain - oldBonus - payload.potongan_lain + oldDeduction;
+      processResult.kpis.total_bersih = row["Total Bersih (Rp)"] as number;
+      await fulfillJson(route, {
+        status: "sukses",
+        ...payload,
+        updated_rows: 1,
+        total_bersih: processResult.kpis.total_bersih,
+      });
+      return;
+    }
+    if (path === "/attendance/reviews" && method === "GET") {
+      await fulfillJson(route, []);
       return;
     }
     if (/^\/employees\/\d+$/.test(path) && method === "PUT") {
@@ -253,6 +394,83 @@ async function mockApi(page: Page, options: { loginFails?: boolean } = {}) {
       await fulfillJson(route, employee);
       return;
     }
+    const contractPath = path.match(/^\/employees\/(\d+)\/contracts\/(\d+)$/);
+    if (contractPath) {
+      const employeeId = Number(contractPath[1]);
+      const contractId = Number(contractPath[2]);
+      const employee = testEmployees.find((item) => item.id === employeeId);
+      const contract = employee?.contracts.find((item) => item.id === contractId);
+      if (!employee || !contract) {
+        await fulfillJson(route, { detail: "Histori kontrak tidak ditemukan." }, 404);
+        return;
+      }
+      if (method === "PUT") {
+        const payload = request.postDataJSON() as {
+          start_date: string;
+          end_date: string;
+          status: string;
+          keterangan: string | null;
+        };
+        Object.assign(contract, payload);
+        const transition = employee.phl_to_pkwt_transitions.find(
+          (item) => item.employment_contract_id === contractId,
+        );
+        if (transition) {
+          transition.transition_date = contract.start_date;
+          const phlEnd = new Date(`${contract.start_date}T00:00:00Z`);
+          phlEnd.setUTCDate(phlEnd.getUTCDate() - 1);
+          transition.phl_end_date = phlEnd.toISOString().slice(0, 10);
+        }
+        if (contract.status === "ACTIVE") employee.employment_status = "PKWT";
+        await fulfillJson(route, contract);
+        return;
+      }
+      if (method === "DELETE") {
+        const hadTransition = employee.phl_to_pkwt_transitions.some(
+          (item) => item.employment_contract_id === contractId,
+        );
+        employee.phl_to_pkwt_transitions = employee.phl_to_pkwt_transitions.filter(
+          (item) => item.employment_contract_id !== contractId,
+        );
+        employee.contracts = employee.contracts.filter((item) => item.id !== contractId);
+        if (contract.status === "ACTIVE" && hadTransition) employee.employment_status = "PHL";
+        await fulfillJson(route, { status: "sukses" });
+        return;
+      }
+    }
+    const transitionPath = path.match(/^\/employees\/(\d+)\/phl-transitions\/(\d+)$/);
+    if (transitionPath) {
+      const employeeId = Number(transitionPath[1]);
+      const transitionId = Number(transitionPath[2]);
+      const employee = testEmployees.find((item) => item.id === employeeId);
+      const transition = employee?.phl_to_pkwt_transitions.find((item) => item.id === transitionId);
+      if (!employee || !transition) {
+        await fulfillJson(route, { detail: "Rekapan periode PHL tidak ditemukan." }, 404);
+        return;
+      }
+      if (method === "PUT") {
+        const payload = request.postDataJSON() as { phl_start_date: string };
+        const contract = employee.contracts.find((item) => item.id === transition.employment_contract_id);
+        if (!contract) {
+          await fulfillJson(route, { detail: "Kontrak terkait tidak ditemukan." }, 404);
+          return;
+        }
+        transition.phl_start_date = payload.phl_start_date;
+        transition.transition_date = contract.start_date;
+        const phlEnd = new Date(`${contract.start_date}T00:00:00Z`);
+        phlEnd.setUTCDate(phlEnd.getUTCDate() - 1);
+        transition.phl_end_date = phlEnd.toISOString().slice(0, 10);
+        await fulfillJson(route, transition);
+        return;
+      }
+      if (method === "DELETE") {
+        employee.phl_to_pkwt_transitions = employee.phl_to_pkwt_transitions.filter(
+          (item) => item.id !== transitionId,
+        );
+        await fulfillJson(route, { status: "sukses" });
+        return;
+      }
+    }
     if (path === "/holidays") {
       await fulfillJson(route, []);
       return;
@@ -278,6 +496,7 @@ async function mockApi(page: Page, options: { loginFails?: boolean } = {}) {
   return {
     leaveStatusUpdate: () => leaveStatusUpdate,
     employeeUpdatePayload: () => employeeUpdatePayload,
+    employeeSnapshot: (id: number) => testEmployees.find((employee) => employee.id === id),
   };
 }
 
@@ -367,6 +586,19 @@ test("halaman Karyawan memisahkan tab master dan linking WhatsApp", async ({ pag
   await expect(page.getByRole("row").filter({ hasText: "Andi Contoh" })).toBeVisible();
 });
 
+test("Kelola Kontrak membuka edit karyawan dan tab Kepegawaian dari widget dashboard", async ({ page }) => {
+  await mockApi(page, { historyForPhl: true, expiringContract: true });
+  await installHrMasterSession(page);
+  await page.goto("/dashboard");
+
+  await page.getByRole("link", { name: "Kelola Kontrak →" }).click();
+
+  await expect(page).toHaveURL(/\/karyawan$/);
+  await expect(page.getByRole("heading", { name: "Edit Karyawan" })).toBeVisible();
+  await expect(page.getByText("Rekapan Histori Kontrak PKWT")).toBeVisible();
+  await expect(page.getByText("Rekapan Perubahan PHL ke PKWT")).toBeVisible();
+});
+
 test("transisi PHL ke PKWT menyimpan dan menampilkan periode PHL", async ({ page }) => {
   const api = await mockApi(page);
   await installHrMasterSession(page);
@@ -399,6 +631,62 @@ test("transisi PHL ke PKWT menyimpan dan menampilkan periode PHL", async ({ page
   await page.locator("#tab-kontrak").click();
   await expect(page.getByText("Rekapan Perubahan PHL ke PKWT")).toBeVisible();
   await expect(page.getByText(/Periode PHL:.*15 Mar 2025 s\/d 30 Sep 2026/)).toBeVisible();
+});
+
+test("HR Master dapat mengedit dan menghapus histori kontrak serta periode PHL", async ({ page }) => {
+  const api = await mockApi(page, { historyForPhl: true });
+  await installHrMasterSession(page);
+  await page.goto("/karyawan");
+
+  const row = page.getByRole("row").filter({ hasText: "Budi PHL" });
+  await row.getByRole("button", { name: "Edit" }).click();
+  await page.locator("#tab-kontrak").click();
+
+  const contract = page.getByTestId("contract-history-101");
+  await contract.getByRole("button", { name: "Edit Kontrak" }).click();
+  const contractDates = contract.locator('input[type="date"]');
+  await contractDates.nth(0).fill("2026-11-01");
+  await contractDates.nth(1).fill("2027-10-31");
+  await contract.getByRole("button", { name: "Simpan", exact: true }).click();
+  await expect(contract).toContainText("01 Nov 2026 s/d 31 Okt 2027");
+  await expect(page.getByTestId("phl-history-51")).toContainText(
+    "Periode PHL: 01 Apr 2025 s/d 31 Okt 2026",
+  );
+
+  const transition = page.getByTestId("phl-history-51");
+  await transition.getByRole("button", { name: "Edit Periode PHL" }).click();
+  await transition.locator('input[type="date"]').fill("2025-05-01");
+  await transition.getByRole("button", { name: "Simpan Periode PHL" }).click();
+  await expect(transition).toContainText("Periode PHL: 01 Mei 2025 s/d 31 Okt 2026");
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await transition.getByRole("button", { name: "Hapus Rekap PHL" }).click();
+  await expect(page.getByTestId("phl-history-51")).toHaveCount(0);
+  await expect(page.getByTestId("contract-history-101")).toBeVisible();
+  expect(api.employeeSnapshot(3)?.employment_status).toBe("PKWT");
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByTestId("contract-history-101").getByRole("button", { name: "Hapus Kontrak" }).click();
+  await expect(page.getByTestId("contract-history-101")).toHaveCount(0);
+  expect(api.employeeSnapshot(3)?.employment_status).toBe("PKWT");
+});
+
+test("menghapus kontrak aktif menghapus transisi terkait dan mengembalikan status PHL", async ({ page }) => {
+  const api = await mockApi(page, { historyForPhl: true });
+  await installHrMasterSession(page);
+  await page.goto("/karyawan");
+
+  const row = page.getByRole("row").filter({ hasText: "Budi PHL" });
+  await row.getByRole("button", { name: "Edit" }).click();
+  await page.locator("#tab-kontrak").click();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByTestId("contract-history-101").getByRole("button", { name: "Hapus Kontrak" }).click();
+
+  await expect(page.getByTestId("contract-history-101")).toHaveCount(0);
+  await expect(page.getByTestId("phl-history-51")).toHaveCount(0);
+  await expect(page.getByText("Status Kepegawaian").locator("..").locator("select")).toHaveValue("PHL");
+  expect(api.employeeSnapshot(3)?.employment_status).toBe("PHL");
 });
 
 test("HR Master dapat menyetujui permohonan cuti dari daftar", async ({ page }) => {
@@ -442,4 +730,32 @@ test("rekap saldo menampilkan tahun berjalan tanpa filter tahun", async ({ page 
   await expect(page.locator('select option[value="2025"]')).toHaveCount(0);
   await expect(page.locator('select option[value="2026"]')).toHaveCount(0);
   await expect(page.locator('select option[value="2027"]')).toHaveCount(0);
+});
+
+test("bonus dan potongan lain memperbarui Total Bersih pada baris dan KPI", async ({ page }) => {
+  await mockApi(page, { processResult: true });
+  await installHrMasterSession(page);
+  await page.goto("/proses");
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "absensi-sintetis.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("Nama,Timestamp\nKaryawan QA,2026-10-01 08:00:00"),
+  });
+  await page.getByRole("button", { name: "Proses Absensi Sekarang" }).click();
+  await expect(page.getByRole("heading", { name: "Dashboard Hasil Absensi" })).toBeVisible();
+
+  const employeeRow = page.getByRole("row").filter({ hasText: "Karyawan QA" });
+  const adjustmentInputs = employeeRow.locator('input[type="number"]');
+  await expect(adjustmentInputs).toHaveCount(2);
+
+  await adjustmentInputs.nth(0).fill("250");
+  await adjustmentInputs.nth(0).press("Enter");
+  await expect(page.getByText("Rp 1.200", { exact: true })).toHaveCount(2);
+
+  await employeeRow.locator('input[type="number"]').nth(1).fill("125");
+  await employeeRow.locator('input[type="number"]').nth(1).press("Enter");
+  await expect(page.getByText("Rp 1.125", { exact: true })).toHaveCount(2);
+  await expect(employeeRow.locator('input[type="number"]').nth(0)).toHaveValue("250");
+  await expect(employeeRow.locator('input[type="number"]').nth(1)).toHaveValue("125");
 });

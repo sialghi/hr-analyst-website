@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 import datetime
-import os
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, Header, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from .. import models, schemas, auth
@@ -25,29 +24,8 @@ from .whatsapp import send_whatsapp_leave_status_notification
 
 router = APIRouter(prefix="/leaves", tags=["leaves"])
 
-BOT_API_KEY = os.environ.get("API_KEY", "").strip()
-
 # ── Referensi kategori yang memotong kuota ────────────────────────────────────
 # Dipindahkan ke leave_logic.py; di-import dari sana
-
-
-def verify_bot_or_user(
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-    db: Session = Depends(get_db),
-    current_user: Optional[models.User] = Depends(auth.get_current_user_optional),
-):
-    """
-    Mengizinkan akses baik dari Web User yang sudah login (JWT)
-    MAUPUN dari Bot Telegram / n8n via header X-API-Key.
-    """
-    if x_api_key and BOT_API_KEY and x_api_key == BOT_API_KEY:
-        return "bot"
-    if current_user:
-        return current_user
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Autentikasi diperlukan (JWT User atau X-API-Key Bot)",
-    )
 
 
 def check_leave_overlap(
@@ -440,11 +418,11 @@ def list_leave_requests(
 def create_leave_request(
     payload: schemas.LeaveRequestCreate,
     db: Session = Depends(get_db),
-    caller=Depends(verify_bot_or_user),
+    _: models.User = Depends(auth.get_current_user),
 ):
     """
     Mengajukan cuti / izin baru.
-    Bisa dipanggil oleh staf HR di web, maupun oleh Bot Telegram / n8n via X-API-Key.
+    Hanya dapat dipanggil oleh pengguna HR yang sudah login.
 
     Untuk CUTI_TAHUNAN dan CUTI_SETENGAH_HARI:
     - Validasi anniversary: tolak jika tanggal pengajuan sebelum anniversary pertama.

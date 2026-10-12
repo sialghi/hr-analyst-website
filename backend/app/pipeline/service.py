@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from . import config_runtime as config
 from .loader import (
-    load_raw_data, load_master_karyawan, load_tanggal_merah,
+    load_raw_data,
     build_master_dict, cari_nama_tidak_dikenal,
     build_master_df_from_db, build_tanggal_merah_from_db,
     build_approved_leaves_from_db, build_bpjs_dict, get_bpjs_info,
@@ -302,146 +302,6 @@ def create_absence_reviews(
 
     db.commit()
     return count
-
-
-def jalankan_pipeline_db(
-    daftar_input,
-    path_output: str,
-    db: Session,
-    override_master_path: str = None,
-    override_tanggal_merah_path: str = None,
-    upload_batch_id: int = None,
-    verbose: bool = False,
-):
-    """
-    daftar_input             : list path file absensi mentah yang sudah di-upload
-    path_output               : path file .xlsx tujuan
-    db                         : SQLAlchemy session (dipakai untuk reload config, master, tanggal merah)
-    override_master_path      : opsional, path file master karyawan (utk kompatibilitas n8n lama).
-                                 Kalau None -> master diambil dari tabel `employees` di database.
-    override_tanggal_merah_path: opsional, path file tanggal merah (utk kompatibilitas n8n lama).
-                                 Kalau None -> diambil dari tabel `holidays` di database.
-    """
-    def log(msg):
-        if verbose:
-            print(msg)
-
-    folder_output = os.path.dirname(os.path.abspath(path_output))
-    os.makedirs(folder_output, exist_ok=True)
-
-    # --- 0. SELALU reload config paling baru dari database sebelum menghitung apa pun ---
-    log("[0/5] Memuat aturan bisnis terbaru dari database...")
-    config.reload_from_db(db)
-    if not config.PROFIL_JADWAL:
-        raise ValueError(
-            "Belum ada profil/aturan bisnis di database. Minta HR Master membuat profil dulu di halaman Aturan Bisnis."
-        )
-
-    # --- 1. Master karyawan & tanggal merah ---
-    log("[1/5] Membaca master karyawan & tanggal merah...")
-    if override_master_path:
-        df_master = load_master_karyawan(override_master_path)
-    else:
-        employees = db.query(models.Employee).filter(models.Employee.active == True).all()  # noqa: E712
-        df_master = build_master_df_from_db(employees)
-
-    if override_tanggal_merah_path:
-        tanggal_merah_set = load_tanggal_merah(override_tanggal_merah_path)
-    else:
-        holidays = db.query(models.Holiday).all()
-        tanggal_merah_set = build_tanggal_merah_from_db(holidays)
-
-    master_dict = build_master_dict(df_master)
-    log(f"      -> {len(master_dict)} karyawan di master, {len(tanggal_merah_set)} tanggal merah dikenali.")
-
-    # --- 1b. Cuti & izin yang sudah APPROVED ---
-    leaves = db.query(models.LeaveRequest).filter(models.LeaveRequest.status == "APPROVED").all()
-    approved_leaves = build_approved_leaves_from_db(leaves)
-    remote_absences = build_remote_absences_from_db(db)
-    adjustments_dict = _load_adjustments_dict(db)
-    bpjs_dict = build_bpjs_dict(os.environ["BPJS_FILE_PATH"]) if "BPJS_FILE_PATH" in os.environ and os.path.exists(os.environ["BPJS_FILE_PATH"]) else {}
-    log(f"      -> {len(leaves)} pengajuan cuti/izin APPROVED, {len(remote_absences)} karyawan punya absensi jarak jauh, {len(bpjs_dict)} entri BPJS ditemukan.")
-
-    log(f"[2/5] Membaca data absensi mentah dari: {daftar_input}")
-    df_mentah = load_raw_data(daftar_input)
-    log(f"      -> {len(df_mentah)} baris scan mentah terbaca.")
-
-    df_perlu_dicek = cari_nama_tidak_dikenal(df_mentah, master_dict)
-    if not df_perlu_dicek.empty:
-        log(f"      -> PERINGATAN: {len(df_perlu_dicek)} nama di absensi TIDAK DITEMUKAN di master!")
-
-    log("[3/5] Preprocessing...")
-    df_prep = jalankan_preprocessing(df_mentah, master_dict=master_dict, tanggal_merah=tanggal_merah_set)
-
-    periode = _derive_periode(df_prep)
-    absen_manual_dict = _load_absen_manual_dict(db, *periode) if periode else {}
-
-    # --- Filter df_prep ke rentang periode absensi 25→25 ---
-    if periode:
-        from .config_runtime import get_periode_boundary
-        periode_start, periode_end = get_periode_boundary(periode[0], periode[1], tanggal_merah_set)
-        df_prep_full = df_prep.copy()  # simpan data mentah lengkap untuk ditampilkan
-        mask_periode = (
-            (pd.to_datetime(df_prep["Tanggal"]).dt.date >= periode_start) &
-            (pd.to_datetime(df_prep["Tanggal"]).dt.date <= periode_end)
-        )
-        df_prep = df_prep[mask_periode].reset_index(drop=True)
-        log(f"      -> Periode: {periode_start} s.d. {periode_end} ({mask_periode.sum()} baris setelah filter).")
-    else:
-        periode_start = periode_end = None
-        df_prep_full = df_prep.copy()
-
-    persisted_count = persist_attendance_daily(db, df_prep, upload_batch_id=upload_batch_id)
-    if upload_batch_id:
-        batch = db.query(models.AttendanceUploadBatch).get(upload_batch_id)
-        if batch:
-            batch.period_start = periode_start
-            batch.period_end = periode_end
-            batch.row_count = persisted_count
-            db.commit()
-    create_absence_reviews(
-        db,
-        periode_start,
-        periode_end,
-        upload_batch_id=upload_batch_id,
-        source_df=df_prep,
-    )
-
-    log("[4/5] Data Process (telat/lembur/uang makan/tidak masuk)...")
-    df_lengkap = df_prep[df_prep["Status_Data"] == "Lengkap"]
-    df_telat = hitung_telat(df_lengkap, approved_leaves=approved_leaves)
-    df_lembur = hitung_lembur(df_lengkap, tanggal_merah=tanggal_merah_set)
-    df_pulang_duluan = hitung_pulang_duluan(df_lengkap, approved_leaves=approved_leaves)
-    df_uang_makan = hitung_uang_makan(df_lengkap, master_dict=master_dict, tanggal_merah=tanggal_merah_set, approved_leaves=approved_leaves)
-    df_profil_exclude = hitung_rekap_profil_exclude(df_lengkap)
-
-    df_tidak_masuk = hitung_rekap_tidak_masuk(
-        df_prep, approved_leaves=approved_leaves,
-        periode_start=periode_start, periode_end=periode_end,
-    )
-    df_alpa_berulang = hitung_rekap_alpa_berulang(df_tidak_masuk)
-
-    df_tidak_masuk_export = df_tidak_masuk.drop(columns=["_senin_minggu"], errors="ignore")
-
-    log(f"[5/5] Menulis laporan Excel ke: {path_output}")
-    tulis_laporan_excel(
-        path_output, df_mentah, df_prep, df_telat, df_lembur,
-        df_pulang_duluan, df_tidak_masuk_export, df_alpa_berulang,
-        CATATAN_ASUMSI,
-        df_uang_makan=df_uang_makan,
-        df_profil_exclude=df_profil_exclude,
-        df_perlu_dicek=df_perlu_dicek,
-        adjustments_dict=adjustments_dict,
-        bpjs_dict=bpjs_dict,
-        master_dict=master_dict,
-        remote_absences=remote_absences,
-        absen_manual_dict=absen_manual_dict,
-        approved_leaves=approved_leaves,
-        periode_start=periode_start,
-        periode_end=periode_end,
-    )
-    log("Selesai.")
-    return path_output
 
 
 # ---------------------------------------------------------------------------
@@ -797,8 +657,6 @@ def jalankan_pipeline_db_json(
     daftar_input,
     path_output: str,
     db: Session,
-    override_master_path: str = None,
-    override_tanggal_merah_path: str = None,
     upload_batch_id: int = None,
     verbose: bool = False,
 ):
@@ -820,17 +678,10 @@ def jalankan_pipeline_db_json(
 
     # --- 1. Master karyawan & tanggal merah ---
     log("[1/5] Membaca master karyawan & tanggal merah...")
-    if override_master_path:
-        df_master = load_master_karyawan(override_master_path)
-    else:
-        employees = db.query(models.Employee).filter(models.Employee.active == True).all()  # noqa: E712
-        df_master = build_master_df_from_db(employees)
-
-    if override_tanggal_merah_path:
-        tanggal_merah_set = load_tanggal_merah(override_tanggal_merah_path)
-    else:
-        holidays = db.query(models.Holiday).all()
-        tanggal_merah_set = build_tanggal_merah_from_db(holidays)
+    employees = db.query(models.Employee).filter(models.Employee.active == True).all()  # noqa: E712
+    df_master = build_master_df_from_db(employees)
+    holidays = db.query(models.Holiday).all()
+    tanggal_merah_set = build_tanggal_merah_from_db(holidays)
 
     master_dict = build_master_dict(df_master)
 

@@ -69,6 +69,34 @@ def test_login_rejects_invalid_password(client):
     assert response.json()["detail"] == "Email atau password salah."
 
 
+def test_legacy_n8n_api_key_routes_and_leave_auth_bypass_are_removed(client):
+    test_client, _ = client
+
+    process_response = test_client.post(
+        "/proses-absensi",
+        headers={"X-API-Key": "synthetic-obsolete-key"},
+    )
+    holiday_response = test_client.post(
+        "/upload-tanggal-merah",
+        headers={"X-API-Key": "synthetic-obsolete-key"},
+    )
+    leave_response = test_client.post(
+        "/leaves",
+        headers={"X-API-Key": "synthetic-obsolete-key"},
+        json={
+            "nama": "Synthetic Employee",
+            "kategori": "SAKIT",
+            "tanggal_mulai": "2026-10-12",
+            "tanggal_selesai": "2026-10-12",
+            "alasan": "QA",
+        },
+    )
+
+    assert process_response.status_code == 404
+    assert holiday_response.status_code == 404
+    assert leave_response.status_code == 401
+
+
 def test_hr_staff_cannot_use_hr_master_user_management(client):
     test_client, session_factory = client
     create_test_user(session_factory, "qa.staff@example.com", models.RoleEnum.hr_staff)

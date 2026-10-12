@@ -1504,6 +1504,169 @@ def add_contract_renewal(
     return new_contract
 
 
+@router.put(
+    "/{employee_id}/contracts/{contract_id}",
+    response_model=schemas.EmploymentContractOut,
+)
+def update_employment_contract(
+    employee_id: int,
+    contract_id: int,
+    payload: schemas.EmploymentContractUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    employee = db.query(models.Employee).filter(models.Employee.id == employee_id).first()
+    if not employee:
+        raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan.")
+
+    contract = (
+        db.query(models.EmploymentContract)
+        .filter(
+            models.EmploymentContract.id == contract_id,
+            models.EmploymentContract.employee_id == employee_id,
+        )
+        .first()
+    )
+    if not contract:
+        raise HTTPException(status_code=404, detail="Histori kontrak tidak ditemukan.")
+
+    if payload.status not in {"ACTIVE", "EXPIRED", "PROMOTED_TO_PERMANENT", "RENEWED"}:
+        raise HTTPException(status_code=400, detail="Status kontrak tidak valid.")
+    if payload.end_date <= payload.start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Tanggal selesai kontrak harus setelah tanggal mulai kontrak.",
+        )
+    if payload.status == "ACTIVE":
+        other_active_contract = (
+            db.query(models.EmploymentContract)
+            .filter(
+                models.EmploymentContract.employee_id == employee_id,
+                models.EmploymentContract.status == "ACTIVE",
+                models.EmploymentContract.id != contract_id,
+            )
+            .first()
+        )
+        if other_active_contract:
+            raise HTTPException(
+                status_code=409,
+                detail="Karyawan sudah memiliki kontrak aktif lain.",
+            )
+
+    transition = contract.phl_transition
+    if transition and transition.phl_start_date >= payload.start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Kontrak harus dimulai setelah tanggal mulai periode PHL.",
+        )
+
+    contract.start_date = payload.start_date
+    contract.end_date = payload.end_date
+    contract.status = payload.status
+    contract.keterangan = payload.keterangan
+    if transition:
+        transition.transition_date = payload.start_date
+        transition.phl_end_date = payload.start_date - datetime.timedelta(days=1)
+    if payload.status == "ACTIVE":
+        employee.employment_status = "PKWT"
+
+    db.commit()
+    db.refresh(contract)
+    return contract
+
+
+@router.delete("/{employee_id}/contracts/{contract_id}")
+def delete_employment_contract(
+    employee_id: int,
+    contract_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    employee = db.query(models.Employee).filter(models.Employee.id == employee_id).first()
+    if not employee:
+        raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan.")
+
+    contract = (
+        db.query(models.EmploymentContract)
+        .filter(
+            models.EmploymentContract.id == contract_id,
+            models.EmploymentContract.employee_id == employee_id,
+        )
+        .first()
+    )
+    if not contract:
+        raise HTTPException(status_code=404, detail="Histori kontrak tidak ditemukan.")
+
+    transition = contract.phl_transition
+    if transition:
+        db.delete(transition)
+        if contract.status == "ACTIVE":
+            employee.employment_status = "PHL"
+    db.delete(contract)
+    db.commit()
+    return {"status": "sukses"}
+
+
+@router.put(
+    "/{employee_id}/phl-transitions/{transition_id}",
+    response_model=schemas.EmployeeEmploymentTransitionOut,
+)
+def update_phl_transition(
+    employee_id: int,
+    transition_id: int,
+    payload: schemas.EmployeeEmploymentTransitionUpdate,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    transition = (
+        db.query(models.EmployeeEmploymentTransition)
+        .filter(
+            models.EmployeeEmploymentTransition.id == transition_id,
+            models.EmployeeEmploymentTransition.employee_id == employee_id,
+        )
+        .first()
+    )
+    if not transition:
+        raise HTTPException(status_code=404, detail="Rekapan periode PHL tidak ditemukan.")
+
+    contract = transition.employment_contract
+    if payload.phl_start_date >= contract.start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Periode PHL harus dimulai sebelum kontrak PKWT.",
+        )
+
+    transition.phl_start_date = payload.phl_start_date
+    transition.phl_end_date = contract.start_date - datetime.timedelta(days=1)
+    transition.transition_date = contract.start_date
+    db.commit()
+    db.refresh(transition)
+    return transition
+
+
+@router.delete("/{employee_id}/phl-transitions/{transition_id}")
+def delete_phl_transition(
+    employee_id: int,
+    transition_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    transition = (
+        db.query(models.EmployeeEmploymentTransition)
+        .filter(
+            models.EmployeeEmploymentTransition.id == transition_id,
+            models.EmployeeEmploymentTransition.employee_id == employee_id,
+        )
+        .first()
+    )
+    if not transition:
+        raise HTTPException(status_code=404, detail="Rekapan periode PHL tidak ditemukan.")
+
+    db.delete(transition)
+    db.commit()
+    return {"status": "sukses"}
+
+
 @router.delete("/{employee_id}")
 def delete_employee(
     employee_id: int,

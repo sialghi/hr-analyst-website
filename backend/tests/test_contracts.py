@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base, get_db
 from app.main import app
 from app.models import (
-    User, Employee, EmploymentContract, Profile, RoleEnum,
+    User, Employee, EmploymentContract, EmployeeEmploymentTransition, Profile, RoleEnum,
     LeaveRequest, LeaveBalanceLedger, EmployeeImportCandidate,
 )
 from app.config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
@@ -207,6 +207,140 @@ class TestContractManagement(unittest.TestCase):
         self.assertEqual(saved.join_date, datetime.date(2022, 3, 1))
         self.assertEqual(len(saved.contracts), 1)
         self.assertEqual(len(saved.phl_to_pkwt_transitions), 1)
+        db.close()
+
+    def create_phl_transition_employee(self, employee_code="EMP-HISTORY-EDIT"):
+        employee = Employee(
+            employee_code=employee_code,
+            nama="Karyawan Histori",
+            profile_code="OFFICE",
+            employment_status="PHL",
+            join_date=datetime.date(2022, 3, 1),
+            active=True,
+        )
+        db = TestingSessionLocal()
+        db.add(employee)
+        db.commit()
+        employee_id = employee.id
+        db.close()
+
+        response = client.put(f"/employees/{employee_id}", json={
+            "nama": "Karyawan Histori",
+            "profile_code": "OFFICE",
+            "employment_status": "PKWT",
+            "join_date": "2022-03-01",
+            "phl_period_start_date": "2022-03-15",
+            "contract_start_date": "2024-07-01",
+            "contract_end_date": "2025-07-01",
+            "contract_keterangan": "PKWT pertama",
+        })
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        return employee_id, data["contracts"][0]["id"], data["phl_to_pkwt_transitions"][0]["id"]
+
+    def test_edit_contract_synchronizes_linked_phl_dates_and_validates_ranges(self):
+        employee_id, contract_id, transition_id = self.create_phl_transition_employee()
+
+        response = client.put(
+            f"/employees/{employee_id}/contracts/{contract_id}",
+            json={
+                "start_date": "2024-08-01",
+                "end_date": "2025-08-01",
+                "status": "ACTIVE",
+                "keterangan": "Tanggal diperbaiki",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["contract_number"], 1)
+        self.assertEqual(response.json()["start_date"], "2024-08-01")
+
+        db = TestingSessionLocal()
+        transition = db.query(EmployeeEmploymentTransition).filter_by(id=transition_id).one()
+        self.assertEqual(transition.transition_date, datetime.date(2024, 8, 1))
+        self.assertEqual(transition.phl_end_date, datetime.date(2024, 7, 31))
+        db.close()
+
+        invalid_range = client.put(
+            f"/employees/{employee_id}/contracts/{contract_id}",
+            json={
+                "start_date": "2024-08-01",
+                "end_date": "2024-08-01",
+                "status": "ACTIVE",
+                "keterangan": None,
+            },
+        )
+        invalid_status = client.put(
+            f"/employees/{employee_id}/contracts/{contract_id}",
+            json={
+                "start_date": "2024-08-01",
+                "end_date": "2025-08-01",
+                "status": "INVALID",
+                "keterangan": None,
+            },
+        )
+        self.assertEqual(invalid_range.status_code, 400)
+        self.assertEqual(invalid_status.status_code, 400)
+
+    def test_edit_phl_period_updates_start_and_rejects_start_after_contract(self):
+        employee_id, contract_id, transition_id = self.create_phl_transition_employee()
+
+        updated = client.put(
+            f"/employees/{employee_id}/phl-transitions/{transition_id}",
+            json={"phl_start_date": "2022-04-01"},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["phl_start_date"], "2022-04-01")
+        self.assertEqual(updated.json()["phl_end_date"], "2024-06-30")
+        self.assertEqual(updated.json()["transition_date"], "2024-07-01")
+
+        invalid = client.put(
+            f"/employees/{employee_id}/phl-transitions/{transition_id}",
+            json={"phl_start_date": "2024-07-01"},
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+        foreign_employee = Employee(
+            employee_code="EMP-HISTORY-OTHER",
+            nama="Karyawan Lain",
+            profile_code="OFFICE",
+        )
+        db = TestingSessionLocal()
+        db.add(foreign_employee)
+        db.commit()
+        foreign_employee_id = foreign_employee.id
+        db.close()
+        not_owned = client.put(
+            f"/employees/{foreign_employee_id}/phl-transitions/{transition_id}",
+            json={"phl_start_date": "2022-04-01"},
+        )
+        self.assertEqual(not_owned.status_code, 404)
+
+    def test_delete_phl_record_keeps_contract_and_delete_linked_active_contract_reverts_status(self):
+        employee_id, contract_id, transition_id = self.create_phl_transition_employee()
+
+        deleted_transition = client.delete(
+            f"/employees/{employee_id}/phl-transitions/{transition_id}",
+        )
+        self.assertEqual(deleted_transition.status_code, 200)
+        db = TestingSessionLocal()
+        employee = db.query(Employee).filter_by(id=employee_id).one()
+        self.assertEqual(employee.employment_status, "PKWT")
+        self.assertEqual(db.query(EmploymentContract).filter_by(id=contract_id).count(), 1)
+        self.assertEqual(db.query(EmployeeEmploymentTransition).filter_by(id=transition_id).count(), 0)
+        db.close()
+
+        employee_id, contract_id, transition_id = self.create_phl_transition_employee(
+            "EMP-HISTORY-DELETE",
+        )
+        deleted_contract = client.delete(
+            f"/employees/{employee_id}/contracts/{contract_id}",
+        )
+        self.assertEqual(deleted_contract.status_code, 200)
+        db = TestingSessionLocal()
+        employee = db.query(Employee).filter_by(id=employee_id).one()
+        self.assertEqual(employee.employment_status, "PHL")
+        self.assertEqual(db.query(EmploymentContract).filter_by(id=contract_id).count(), 0)
+        self.assertEqual(db.query(EmployeeEmploymentTransition).filter_by(id=transition_id).count(), 0)
         db.close()
 
     def test_invalid_phl_to_pkwt_transition_does_not_change_employee_or_create_history(self):
@@ -418,14 +552,76 @@ class TestContractManagement(unittest.TestCase):
             self.assertEqual(identity.employee_id, employee.id)
             self.assertEqual(identity.status, "ACTIVE")
             login_menu = next(message for _, message in sent if isinstance(message, dict))
+            guide_message = next(
+                message
+                for _, message in sent
+                if isinstance(message, str) and "Panduan HR WhatsApp" in message
+            )
+            self.assertIn("Cuti atau Izin", guide_message)
+            self.assertIn("Absen Luar", guide_message)
+            self.assertIn("Status pengajuan", guide_message)
+            self.assertIn("Profil", guide_message)
+            self.assertIn("Periksa kembali tanggal dan keterangan", guide_message)
+            self.assertIn("Ketik *panduan*", guide_message)
+            self.assertIs(sent[-2][1], guide_message)
+            self.assertIs(sent[-1][1], login_menu)
             self.assertEqual(
                 [row["id"] for row in login_menu["sections"][0]["rows"]],
                 ["menu_cuti", "menu_izin", "menu_wfl", "menu_status", "menu_profile"],
             )
             self.assertIn("Login berhasil", login_menu["body_text"])
+
+            sent.clear()
+            asyncio.run(whatsapp.process_whatsapp_incoming("08123456789", "login", None, db))
+            self.assertIn("Panduan HR WhatsApp", sent[-2][1])
+            self.assertIsInstance(sent[-1][1], dict)
         finally:
             whatsapp.send_whatsapp_text = original_send
             whatsapp.send_whatsapp_list = original_send_list
+            whatsapp.user_states.pop("08123456789", None)
+            db.close()
+
+    def test_whatsapp_panduan_commands_resend_guide_without_clearing_form_state(self):
+        db = TestingSessionLocal()
+        employee = Employee(nama="Panduan WhatsApp", profile_code="OFFICE", active=True)
+        db.add(employee)
+        db.flush()
+        db.add(whatsapp.models.WhatsAppIdentity(
+            phone_number="628123456789",
+            employee_id=employee.id,
+            status="ACTIVE",
+        ))
+        db.commit()
+        sent = []
+
+        async def fake_send(to_number, message):
+            sent.append(message)
+            return {"mocked": True}
+
+        original_send = whatsapp.send_whatsapp_text
+        whatsapp.send_whatsapp_text = fake_send
+        whatsapp.user_states["08123456789"] = {
+            "step": "pilih_kategori",
+            "data": {"preserve": True},
+        }
+        try:
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "panduan", None, db
+            ))
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "/panduan", None, db
+            ))
+
+            self.assertEqual(len(sent), 2)
+            self.assertEqual(sent[0], sent[1])
+            self.assertIn("Panduan HR WhatsApp", sent[0])
+            self.assertEqual(whatsapp.user_states["08123456789"]["step"], "pilih_kategori")
+            self.assertEqual(
+                whatsapp.user_states["08123456789"]["data"],
+                {"preserve": True},
+            )
+        finally:
+            whatsapp.send_whatsapp_text = original_send
             whatsapp.user_states.pop("08123456789", None)
             db.close()
 
@@ -917,8 +1113,6 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         db.close()
 
     def test_phl_leave_requests_are_blocked_without_changing_history(self):
-        from app.routers.leaves import verify_bot_or_user
-
         db = TestingSessionLocal()
         employee = Employee(
             employee_code="EMP-PHL-001",
@@ -938,35 +1132,31 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         db.commit()
         db.close()
 
-        app.dependency_overrides[verify_bot_or_user] = override_auth
-        try:
-            response = client.post("/leaves", json={
-                "nama": "Karyawan PHL Uji",
-                "kategori": "SAKIT",
-                "tanggal_mulai": "2026-10-10",
-                "tanggal_selesai": "2026-10-10",
-                "alasan": "Uji",
-            })
-            self.assertEqual(response.status_code, 400)
-            self.assertIn("PHL", response.json()["detail"])
+        response = client.post("/leaves", json={
+            "nama": "Karyawan PHL Uji",
+            "kategori": "SAKIT",
+            "tanggal_mulai": "2026-10-10",
+            "tanggal_selesai": "2026-10-10",
+            "alasan": "Uji",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("PHL", response.json()["detail"])
 
-            remote = client.post("/leaves", json={
-                "nama": "Karyawan PHL Uji",
-                "kategori": "WORK_FROM_LOCATION",
-                "tanggal_mulai": "2026-10-12",
-                "tanggal_selesai": "2026-10-12",
-                "alasan": "Tugas luar",
-                "tipe_absensi": "remote_work",
-                "location_cabang": "Cabang Uji",
-            })
-            self.assertEqual(remote.status_code, 200)
-            db = TestingSessionLocal()
-            self.assertEqual(db.query(LeaveRequest).count(), 2)
-            historic = db.query(LeaveRequest).filter(LeaveRequest.tanggal_mulai == datetime.date(2024, 1, 2)).one()
-            self.assertEqual(historic.status, "APPROVED")
-            db.close()
-        finally:
-            app.dependency_overrides.pop(verify_bot_or_user, None)
+        remote = client.post("/leaves", json={
+            "nama": "Karyawan PHL Uji",
+            "kategori": "WORK_FROM_LOCATION",
+            "tanggal_mulai": "2026-10-12",
+            "tanggal_selesai": "2026-10-12",
+            "alasan": "Tugas luar",
+            "tipe_absensi": "remote_work",
+            "location_cabang": "Cabang Uji",
+        })
+        self.assertEqual(remote.status_code, 200)
+        db = TestingSessionLocal()
+        self.assertEqual(db.query(LeaveRequest).count(), 2)
+        historic = db.query(LeaveRequest).filter(LeaveRequest.tanggal_mulai == datetime.date(2024, 1, 2)).one()
+        self.assertEqual(historic.status, "APPROVED")
+        db.close()
 
     def test_phl_whatsapp_cuti_and_izin_are_blocked(self):
         db = TestingSessionLocal()

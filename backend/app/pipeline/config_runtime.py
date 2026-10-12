@@ -182,9 +182,8 @@ def reload_from_db(db):
     Baca semua profil (tabel `profiles`) dan aturan global (tabel `business_rule`,
     1 baris singleton) dari database, lalu timpa semua variabel modul ini.
 
-    Dipanggil di AWAL setiap kali pipeline mau dijalankan (upload manual ATAUPUN
-    lewat endpoint n8n), jadi perubahan yang disimpan HR Master lewat web SELALU
-    langsung terpakai tanpa perlu restart server.
+    Dipanggil di awal pemrosesan absensi manual dari website, jadi perubahan
+    yang disimpan HR Master selalu langsung terpakai tanpa perlu restart server.
     """
     global PROFIL_JADWAL, PROFIL_DEFAULT
     global UANG_MAKAN_DEFAULT, POTONGAN_TELAT_SEDIKIT, POTONGAN_TELAT_BANYAK_PERSEN

@@ -321,6 +321,7 @@ function InheritancePreviewCard({ profile, globalRules }: { profile: Profile | u
 export default function KaryawanPage() {
   const [master, setMaster] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employeesLoaded, setEmployeesLoaded] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [globalRules, setGlobalRules] = useState<any>(null);
   const [filter, setFilter] = useState("");
@@ -340,6 +341,16 @@ export default function KaryawanPage() {
     keterangan: "",
   });
   const [renewing, setRenewing] = useState(false);
+  const [contractEditId, setContractEditId] = useState<number | null>(null);
+  const [contractEditForm, setContractEditForm] = useState({
+    start_date: "",
+    end_date: "",
+    status: "ACTIVE",
+    keterangan: "",
+  });
+  const [transitionEditId, setTransitionEditId] = useState<number | null>(null);
+  const [transitionStartDate, setTransitionStartDate] = useState("");
+  const [savingHistory, setSavingHistory] = useState(false);
 
   // Import modal state (import karyawan baru dari Excel)
   const [showImport, setShowImport] = useState(false);
@@ -360,13 +371,21 @@ export default function KaryawanPage() {
   const [whatsappLoading, setWhatsappLoading] = useState(false);
   const [whatsappError, setWhatsappError] = useState<string | null>(null);
   const [whatsappAudit, setWhatsappAudit] = useState<WhatsAppAudit[]>([]);
+  const handledEditParam = useRef<string | null>(null);
 
   useEffect(() => {
     setMaster(isHrMaster());
   }, []);
 
   function load() {
-    api.getEmployees().then(setEmployees).catch((e) => setError(e.message));
+    api.getEmployees()
+      .then((data) => {
+        setEmployees(data);
+        setEmployeesLoaded(true);
+      })
+      .catch((e) => {
+        setError(e.message);
+      });
     api.getProfiles().then(setProfiles).catch(() => {});
     api.getRules().then(setGlobalRules).catch(() => {});
     if (master) {
@@ -469,14 +488,50 @@ export default function KaryawanPage() {
     return date.toISOString().slice(0, 10);
   }
 
-  function startEdit(emp: Employee) {
+  function startEdit(emp: Employee, tab: "data" | "kontrak" | "aturan" = "data") {
     setEditingId(emp.id);
     setForm(empToForm(emp));
-    setActiveTab("data");
+    setActiveTab(tab);
     setShowForm(true);
     setError(null);
     setRenewalForm({ start_date: "", end_date: "", keterangan: "" });
   }
+
+  useEffect(() => {
+    const requestedId = new URLSearchParams(window.location.search).get("edit");
+    if (!requestedId || !employeesLoaded || handledEditParam.current === requestedId) return;
+
+    handledEditParam.current = requestedId;
+    const clearEditParam = () => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("edit");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    };
+
+    if (!master) {
+      setError("Hanya HR Master yang dapat mengelola kontrak karyawan.");
+      clearEditParam();
+      return;
+    }
+
+    const employeeId = Number(requestedId);
+    if (!Number.isSafeInteger(employeeId) || employeeId < 1) {
+      setError("ID karyawan pada tautan Kelola Kontrak tidak valid.");
+      clearEditParam();
+      return;
+    }
+
+    const employee = employees.find((item) => item.id === employeeId);
+    if (!employee) {
+      setError("Karyawan pada tautan Kelola Kontrak tidak ditemukan.");
+      clearEditParam();
+      return;
+    }
+
+    setPageTab("employees");
+    startEdit(employee, "kontrak");
+    clearEditParam();
+  }, [employees, employeesLoaded, master]);
 
   function handleResetOverrides() {
     setForm((f: any) => ({
@@ -564,6 +619,122 @@ export default function KaryawanPage() {
       setError(err.message);
     } finally {
       setRenewing(false);
+    }
+  }
+
+  async function refreshEmployees() {
+    const updatedEmployees = await api.getEmployees();
+    setEmployees(updatedEmployees);
+    return updatedEmployees as Employee[];
+  }
+
+  function startContractEdit(contract: EmploymentContract) {
+    setContractEditId(contract.id);
+    setContractEditForm({
+      start_date: contract.start_date,
+      end_date: contract.end_date,
+      status: contract.status,
+      keterangan: contract.keterangan || "",
+    });
+    setTransitionEditId(null);
+    setError(null);
+  }
+
+  async function handleSaveContractEdit(contractId: number) {
+    if (!editingId) return;
+    if (!contractEditForm.start_date || !contractEditForm.end_date) {
+      setError("Tanggal mulai dan selesai kontrak wajib diisi.");
+      return;
+    }
+    if (contractEditForm.end_date <= contractEditForm.start_date) {
+      setError("Tanggal selesai kontrak harus setelah tanggal mulai kontrak.");
+      return;
+    }
+    setSavingHistory(true);
+    setError(null);
+    try {
+      await api.updateEmploymentContract(editingId, contractId, {
+        ...contractEditForm,
+        keterangan: contractEditForm.keterangan.trim() || null,
+      });
+      await refreshEmployees();
+      setContractEditId(null);
+    } catch (err: any) {
+      setError(err.message || "Gagal memperbarui histori kontrak.");
+    } finally {
+      setSavingHistory(false);
+    }
+  }
+
+  async function handleDeleteContract(contract: EmploymentContract) {
+    if (!editingId) return;
+    const linkedTransition = editingEmployee?.phl_to_pkwt_transitions.some(
+      (transition) => transition.employment_contract_id === contract.id,
+    );
+    const warning = linkedTransition
+      ? `Hapus kontrak #${contract.contract_number} dan rekap periode PHL yang terkait?${contract.status === "ACTIVE" ? " Status karyawan akan dikembalikan menjadi PHL." : ""}`
+      : `Hapus histori kontrak #${contract.contract_number}?`;
+    if (!window.confirm(warning)) return;
+
+    setSavingHistory(true);
+    setError(null);
+    try {
+      await api.deleteEmploymentContract(editingId, contract.id);
+      const updatedEmployees = await refreshEmployees();
+      if (contract.status === "ACTIVE" && linkedTransition) {
+        const updatedEmployee = updatedEmployees.find((employee) => employee.id === editingId);
+        if (updatedEmployee) {
+          setForm(empToForm(updatedEmployee));
+        }
+      }
+      setContractEditId(null);
+    } catch (err: any) {
+      setError(err.message || "Gagal menghapus histori kontrak.");
+    } finally {
+      setSavingHistory(false);
+    }
+  }
+
+  function startTransitionEdit(transition: PHLToPKWTTransition) {
+    setTransitionEditId(transition.id);
+    setTransitionStartDate(transition.phl_start_date);
+    setContractEditId(null);
+    setError(null);
+  }
+
+  async function handleSaveTransitionEdit(transition: PHLToPKWTTransition) {
+    if (!editingId) return;
+    if (!transitionStartDate) {
+      setError("Tanggal mulai periode PHL wajib diisi.");
+      return;
+    }
+    setSavingHistory(true);
+    setError(null);
+    try {
+      await api.updatePHLTransition(editingId, transition.id, transitionStartDate);
+      await refreshEmployees();
+      setTransitionEditId(null);
+    } catch (err: any) {
+      setError(err.message || "Gagal memperbarui rekap periode PHL.");
+    } finally {
+      setSavingHistory(false);
+    }
+  }
+
+  async function handleDeleteTransition(transition: PHLToPKWTTransition) {
+    if (!editingId) return;
+    if (!window.confirm("Hapus rekap periode PHL ini? Kontrak PKWT terkait tetap tersimpan dan status karyawan tidak berubah.")) return;
+
+    setSavingHistory(true);
+    setError(null);
+    try {
+      await api.deletePHLTransition(editingId, transition.id);
+      await refreshEmployees();
+      setTransitionEditId(null);
+    } catch (err: any) {
+      setError(err.message || "Gagal menghapus rekap periode PHL.");
+    } finally {
+      setSavingHistory(false);
     }
   }
 
@@ -1582,7 +1753,8 @@ export default function KaryawanPage() {
                         {editingEmployee?.contracts.map((contract) => (
                           <div
                             key={contract.id}
-                            className="rounded-md border px-3 py-2 text-xs"
+                            data-testid={`contract-history-${contract.id}`}
+                            className="rounded-md border px-3 py-2 text-xs space-y-2"
                             style={{ borderColor: "var(--line)", background: "var(--surface, #fff)" }}
                           >
                             <div className="flex items-center justify-between gap-2">
@@ -1599,6 +1771,96 @@ export default function KaryawanPage() {
                             {contract.keterangan && (
                               <div className="mt-1" style={{ color: "var(--ink)" }}>
                                 Catatan: {contract.keterangan}
+                              </div>
+                            )}
+                            {contractEditId === contract.id ? (
+                              <div className="space-y-3 border-t pt-3" style={{ borderColor: "var(--line)" }}>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <Field label="Tanggal Mulai Kontrak">
+                                    <input
+                                      type="date"
+                                      required
+                                      className={inputCls}
+                                      style={inputStyle}
+                                      value={contractEditForm.start_date}
+                                      onChange={(e) => setContractEditForm({ ...contractEditForm, start_date: e.target.value })}
+                                    />
+                                  </Field>
+                                  <Field label="Tanggal Selesai Kontrak">
+                                    <input
+                                      type="date"
+                                      required
+                                      className={inputCls}
+                                      style={inputStyle}
+                                      value={contractEditForm.end_date}
+                                      onChange={(e) => setContractEditForm({ ...contractEditForm, end_date: e.target.value })}
+                                    />
+                                  </Field>
+                                </div>
+                                <Field label="Status Kontrak">
+                                  <select
+                                    className={inputCls}
+                                    style={inputStyle}
+                                    value={contractEditForm.status}
+                                    onChange={(e) => setContractEditForm({ ...contractEditForm, status: e.target.value })}
+                                  >
+                                    <option value="ACTIVE">ACTIVE</option>
+                                    <option value="EXPIRED">EXPIRED</option>
+                                    <option value="RENEWED">RENEWED</option>
+                                    <option value="PROMOTED_TO_PERMANENT">PROMOTED_TO_PERMANENT</option>
+                                  </select>
+                                </Field>
+                                <Field label="Keterangan">
+                                  <input
+                                    className={inputCls}
+                                    style={inputStyle}
+                                    value={contractEditForm.keterangan}
+                                    onChange={(e) => setContractEditForm({ ...contractEditForm, keterangan: e.target.value })}
+                                  />
+                                </Field>
+                                {editingEmployee.phl_to_pkwt_transitions.some(
+                                  (transition) => transition.employment_contract_id === contract.id,
+                                ) && (
+                                  <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                    Tanggal transisi mengikuti tanggal mulai kontrak; akhir periode PHL otomatis sehari sebelumnya.
+                                  </p>
+                                )}
+                                <div className="flex gap-2">
+                                  <Button
+                                    onClick={() => handleSaveContractEdit(contract.id)}
+                                    disabled={savingHistory}
+                                    className="px-3 py-1.5 text-xs"
+                                  >
+                                    Simpan
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    onClick={() => setContractEditId(null)}
+                                    disabled={savingHistory}
+                                    className="px-3 py-1.5 text-xs"
+                                  >
+                                    Batal
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="secondary"
+                                  onClick={() => startContractEdit(contract)}
+                                  disabled={savingHistory}
+                                  className="px-3 py-1.5 text-xs"
+                                >
+                                  Edit Kontrak
+                                </Button>
+                                <Button
+                                  variant="danger"
+                                  onClick={() => handleDeleteContract(contract)}
+                                  disabled={savingHistory}
+                                  className="px-3 py-1.5 text-xs"
+                                >
+                                  Hapus Kontrak
+                                </Button>
                               </div>
                             )}
                           </div>
@@ -1628,7 +1890,8 @@ export default function KaryawanPage() {
                           return (
                             <div
                               key={transition.id}
-                              className="rounded-md border px-3 py-2 text-xs"
+                              data-testid={`phl-history-${transition.id}`}
+                              className="rounded-md border px-3 py-2 text-xs space-y-2"
                               style={{ borderColor: "#fdba74", background: "var(--surface, #fff)" }}
                             >
                               <div style={{ color: "var(--ink)" }}>
@@ -1638,6 +1901,59 @@ export default function KaryawanPage() {
                                 Mulai PKWT: <strong>{fmtDate(transition.transition_date)}</strong>
                                 {contract && <> · Kontrak #{contract.contract_number} ({fmtDate(contract.start_date)} s/d {fmtDate(contract.end_date)})</>}
                               </div>
+                              {transitionEditId === transition.id ? (
+                                <div className="space-y-3 border-t pt-3" style={{ borderColor: "#fdba74" }}>
+                                  <Field
+                                    label="Tanggal Mulai Periode PHL"
+                                    hint={`Tanggal akhir akan mengikuti kontrak: ${fmtDate(dateBefore(transition.transition_date))}.`}
+                                  >
+                                    <input
+                                      type="date"
+                                      required
+                                      className={inputCls}
+                                      style={inputStyle}
+                                      value={transitionStartDate}
+                                      onChange={(e) => setTransitionStartDate(e.target.value)}
+                                    />
+                                  </Field>
+                                  <div className="flex gap-2">
+                                    <Button
+                                      onClick={() => handleSaveTransitionEdit(transition)}
+                                      disabled={savingHistory}
+                                      className="px-3 py-1.5 text-xs"
+                                    >
+                                      Simpan Periode PHL
+                                    </Button>
+                                    <Button
+                                      variant="secondary"
+                                      onClick={() => setTransitionEditId(null)}
+                                      disabled={savingHistory}
+                                      className="px-3 py-1.5 text-xs"
+                                    >
+                                      Batal
+                                    </Button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex gap-2">
+                                  <Button
+                                    variant="secondary"
+                                    onClick={() => startTransitionEdit(transition)}
+                                    disabled={savingHistory}
+                                    className="px-3 py-1.5 text-xs"
+                                  >
+                                    Edit Periode PHL
+                                  </Button>
+                                  <Button
+                                    variant="danger"
+                                    onClick={() => handleDeleteTransition(transition)}
+                                    disabled={savingHistory}
+                                    className="px-3 py-1.5 text-xs"
+                                  >
+                                    Hapus Rekap PHL
+                                  </Button>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
