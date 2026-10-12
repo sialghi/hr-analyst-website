@@ -559,6 +559,14 @@ async def start_cuti_flow(to_number: str, db: Session):
     employee = await require_whatsapp_login(to_number, db)
     if not employee:
         return
+    if str(employee.employment_status or "").strip().upper() == "PHL":
+        user_states.pop(to_number, None)
+        await send_whatsapp_text(
+            to_number,
+            "Pengajuan cuti tidak tersedia untuk karyawan berstatus PHL. "
+            "Jika tidak masuk kerja, hari tersebut dicatat sebagai Unpaid Leave oleh HR.",
+        )
+        return
     user_states[to_number] = make_user_state("pilih_kategori", {
         "employee_id": employee.id,
         "nama": employee.nama,
@@ -573,6 +581,14 @@ async def start_izin_flow(to_number: str, db: Session):
     """Tampilkan pilihan kategori izin sebelum melanjutkan alur pengajuan."""
     employee = await require_whatsapp_login(to_number, db)
     if not employee:
+        return
+    if str(employee.employment_status or "").strip().upper() == "PHL":
+        user_states.pop(to_number, None)
+        await send_whatsapp_text(
+            to_number,
+            "Pengajuan izin tidak tersedia untuk karyawan berstatus PHL. "
+            "Jika tidak masuk kerja, hari tersebut dicatat sebagai Unpaid Leave oleh HR.",
+        )
         return
     allowed_categories = [category for category, _ in IZIN_KATEGORI_MAP.values()]
     user_states[to_number] = make_user_state("pilih_kategori", {
@@ -1586,6 +1602,19 @@ async def process_whatsapp_incoming(
 
     # STEP KONFIRMASI (SUBMIT KE DATABASE)
     if step == "konfirmasi":
+        employee = get_active_whatsapp_employee(db, from_number)
+        if (
+            employee
+            and str(employee.employment_status or "").strip().upper() == "PHL"
+            and form_data.get("kategori") != "WORK_FROM_LOCATION"
+        ):
+            user_states.pop(from_number, None)
+            await send_whatsapp_text(
+                from_number,
+                "Pengajuan cuti/izin tidak dapat dikirim untuk karyawan berstatus PHL. "
+                "Jika tidak masuk kerja, hari tersebut dicatat sebagai Unpaid Leave oleh HR.",
+            )
+            return
         is_confirm = action_key == "confirm_submit" or lower_text in ("ya", "kirim", "yes", "ok", "oke", "1")
         if not is_confirm:
             await send_whatsapp_text(

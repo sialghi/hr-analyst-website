@@ -10,29 +10,64 @@ backend/.venv/
 .env
 .env.local
 .env.*.local
+!.env.example
+!.env.*.example
 backend/.env
 frontend/.env.local
 frontend/.env*.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.keystore
+*.jks
 
-# Database local (SQLite)
+# Local databases, backups, and database dumps
 *.db
+*.db-*
 *.sqlite
 *.sqlite3
+*.dump
+*.sql.gz
+*.bak
+*.backup
+*.backup_*
+*.db.backup*
 backend/hr_app.db
 backend/backups/
 
+# Private employee/business data and generated exports
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+backend/uploads/
+uploads/
+
 # Next.js build cache & outputs
 .next/
+.next-e2e/
 frontend/.next/
+frontend/.next-e2e/
 frontend/out/
 frontend/build/
 *.tsbuildinfo
+frontend/playwright-report/
+frontend/test-results/
+playwright-report/
+test-results/
+coverage/
 
 # Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 backend/**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Antigravity IDE / Agent artifacts
 .agents/

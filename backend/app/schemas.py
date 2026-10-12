@@ -85,7 +85,7 @@ class BusinessRuleBase(BaseModel):
     dedup_threshold_menit: int = 2
     min_hari_kerja_per_minggu: int = 4
     min_minggu_berturut_alpa: int = 2
-    uang_makan_default: int = 100_000
+    uang_makan_default: int = 0
     potongan_telat_sedikit: int = 10_000
     potongan_telat_banyak_persen: float = 0.5
     batas_telat_ringan: str = "12:00"
@@ -136,6 +136,18 @@ class EmploymentContractOut(EmploymentContractBase):
         from_attributes = True
 
 
+class EmployeeEmploymentTransitionOut(BaseModel):
+    id: int
+    employment_contract_id: int
+    phl_start_date: date
+    phl_end_date: date
+    transition_date: date
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # ---------- Employee (master karyawan) ----------
 class EmployeeBase(BaseModel):
     nama: str
@@ -159,6 +171,7 @@ class EmployeeBase(BaseModel):
     contract_start_date: Optional[date] = None
     contract_end_date: Optional[date] = None
     contract_keterangan: Optional[str] = None
+    phl_period_start_date: Optional[date] = None
 
     # Aturan Khusus per Karyawan (Cascading Override)
     has_custom_rules: bool = False
@@ -180,6 +193,7 @@ class EmployeeOut(EmployeeBase):
     id: int
     profile_needs_review: bool = False
     contracts: List[EmploymentContractOut] = []
+    phl_to_pkwt_transitions: List[EmployeeEmploymentTransitionOut] = []
     tenure_display: Optional[str] = None
     contract_reminder_status: Optional[Dict[str, Any]] = None
 

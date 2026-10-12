@@ -13,7 +13,7 @@ Isinya:
    Javapetco, dst) supaya HR Master tidak mulai dari nol -- tinggal edit
    lewat website kalau mau ubah aturannya.
 3. Membuat 1 baris aturan bisnis global (uang makan, potongan, dst) dengan
-   nilai default yang sama seperti config.py lama.
+   nilai default aplikasi saat ini.
 """
 import os
 from pathlib import Path

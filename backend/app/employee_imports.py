@@ -3,6 +3,7 @@
 import datetime
 import io
 import re
+import csv
 from collections import Counter
 
 import openpyxl
@@ -56,6 +57,179 @@ def parse_date(value):
         except ValueError:
             continue
     return False
+
+
+def _parse_active(value):
+    if _is_blank(value):
+        return True
+    normalized = str(value).strip().casefold()
+    if normalized in ("aktif", "active", "ya", "yes", "true", "1"):
+        return True
+    if normalized in ("nonaktif", "non-aktif", "inactive", "tidak", "no", "false", "0"):
+        return False
+    return False
+
+
+def parse_employee_workbook(content, filename):
+    """Parse the current employee import format; legacy layouts are intentionally rejected."""
+    aliases = {
+        "employee_code": ("kode karyawan", "id karyawan", "employee code"),
+        "nama": ("nama karyawan", "nama", "employee name"),
+        "nik": ("nik", "nik ktp"),
+        "cabang": ("cabang", "lokasi kerja"),
+        "profile_code": ("kode profil", "profil", "profil divisi"),
+        "employment_status": ("status kepegawaian",),
+        "join_date": ("tanggal masuk", "tanggal join"),
+        "active": ("status aktif",),
+        "jabatan": ("jabatan",),
+        "id_mesin": ("id mesin absensi", "id mesin absen"),
+    }
+    extension = str(filename or "").lower().rsplit(".", 1)[-1]
+    if extension == "csv":
+        try:
+            reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+            source_headers = list(reader.fieldnames or [])
+            source_rows = list(reader)
+            header_row = 1
+        except (UnicodeDecodeError, csv.Error) as exc:
+            raise ValueError("File CSV tidak valid; gunakan UTF-8.") from exc
+        sheet_name = None
+        normalized_headers = {
+            normalize_header(header): index
+            for index, header in enumerate(source_headers)
+            if header is not None
+        }
+    elif extension in ("xlsx", "xlsm"):
+        workbook = _read_workbook(content)
+        sheet = None
+        header_row = None
+        normalized_headers = None
+        for candidate in workbook.worksheets:
+            if candidate.title.casefold() not in ("data karyawan", "data karyawan "):
+                continue
+            for row_number, values in enumerate(
+                candidate.iter_rows(min_row=1, max_row=min(candidate.max_row, 10), values_only=True),
+                start=1,
+            ):
+                headers = {
+                    normalize_header(value): index
+                    for index, value in enumerate(values)
+                    if value is not None
+                }
+                if all(name in headers for name in ("kode karyawan", "nama karyawan", "kode profil", "status kepegawaian")):
+                    sheet, header_row, normalized_headers = candidate, row_number, headers
+                    break
+            if sheet:
+                break
+        if sheet is None:
+            raise ValueError("Format workbook tidak dikenali. Gunakan sheet 'Data Karyawan' dari template terbaru.")
+        source_headers = next(
+            sheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True)
+        )
+        source_rows = sheet.iter_rows(min_row=header_row + 1, values_only=True)
+        sheet_name = sheet.title
+    else:
+        raise ValueError("Format file tidak didukung. Gunakan .xlsx, .xlsm, atau .csv dengan format template terbaru.")
+
+    column_indexes = {}
+    for field, candidates in aliases.items():
+        for candidate in candidates:
+            if candidate in normalized_headers:
+                column_indexes[field] = normalized_headers[candidate]
+                break
+    for required in ("employee_code", "nama", "cabang", "profile_code", "employment_status"):
+        if required not in column_indexes:
+            label = {
+                "employee_code": "Kode Karyawan",
+                "nama": "Nama Karyawan",
+                "cabang": "Cabang",
+                "profile_code": "Kode Profil",
+                "employment_status": "Status Kepegawaian",
+            }[required]
+            raise ValueError(f"Kolom wajib '{label}' tidak ditemukan pada file.")
+
+    parsed_rows = []
+    errors = []
+    for row_number, values in enumerate(source_rows, start=header_row + 1):
+        if isinstance(values, dict):
+            if not any(not _is_blank(value) for value in values.values()):
+                continue
+            values = [values.get(header) for header in source_headers]
+        elif not any(not _is_blank(value) for value in values):
+            continue
+
+        def value_for(field):
+            index = column_indexes.get(field)
+            return values[index] if index is not None and index < len(values) else None
+
+        code_raw = value_for("employee_code")
+        code = "" if _is_blank(code_raw) else str(code_raw).strip()
+        name_raw = value_for("nama")
+        name = "" if _is_blank(name_raw) else " ".join(str(name_raw).split())
+        branch_raw = value_for("cabang")
+        branch = "" if _is_blank(branch_raw) else " ".join(str(branch_raw).split())
+        profile_raw = value_for("profile_code")
+        profile_code = "" if _is_blank(profile_raw) else str(profile_raw).strip()
+        status_raw = value_for("employment_status")
+        employment_status = "" if _is_blank(status_raw) else str(status_raw).strip().upper()
+        if employment_status in ("TETAP", "KARYAWAN TETAP"):
+            employment_status = "PKWTT"
+        row_errors = []
+        if not code or not name or not branch or not profile_code:
+            row_errors.append("Kode Karyawan, Nama Karyawan, Cabang, dan Kode Profil wajib diisi.")
+        if employment_status not in ("PKWTT", "PKWT", "PHL"):
+            row_errors.append("Status Kepegawaian harus PKWTT, PKWT, atau PHL.")
+
+        nik = clean_nik(value_for("nik"))
+        if nik is False:
+            row_errors.append("NIK harus 16 digit atau dikosongkan.")
+        join_date = parse_date(value_for("join_date"))
+        if join_date is False:
+            row_errors.append("Tanggal Masuk tidak dikenali.")
+        active_raw = value_for("active")
+        active = _parse_active(active_raw)
+        if not _is_blank(active_raw) and str(active_raw).strip().casefold() not in (
+            "aktif", "active", "ya", "yes", "true", "1",
+            "nonaktif", "non-aktif", "inactive", "tidak", "no", "false", "0",
+        ):
+            row_errors.append("Status Aktif harus Aktif atau Nonaktif.")
+        if row_errors:
+            errors.append({"row": row_number, "employee_code": code or None, "reason": " ".join(row_errors)})
+            continue
+        parsed_rows.append({
+            "source_row": row_number,
+            "employee_code": code,
+            "nama": name,
+            "nik": nik,
+            "cabang": branch,
+            "profile_code": profile_code,
+            "employment_status": employment_status,
+            "join_date": join_date,
+            "active": active,
+            "active_provided": not _is_blank(active_raw),
+            "jabatan": None if _is_blank(value_for("jabatan")) else str(value_for("jabatan")).strip(),
+            "id_mesin": None if _is_blank(value_for("id_mesin")) else str(value_for("id_mesin")).strip(),
+        })
+
+    code_counts = Counter(row["employee_code"] for row in parsed_rows)
+    nik_counts = Counter(row["nik"] for row in parsed_rows if row["nik"])
+    for row in parsed_rows:
+        reasons = []
+        if code_counts[row["employee_code"]] > 1:
+            reasons.append("Kode Karyawan duplikat di file.")
+        if row["nik"] and nik_counts[row["nik"]] > 1:
+            reasons.append("NIK duplikat di file.")
+        if reasons:
+            errors.append({
+                "row": row["source_row"],
+                "employee_code": row["employee_code"],
+                "reason": " ".join(reasons),
+            })
+    error_rows = {error["row"] for error in errors}
+    parsed_rows = [row for row in parsed_rows if row["source_row"] not in error_rows]
+    if not parsed_rows and not errors:
+        raise ValueError("Workbook tidak berisi baris karyawan.")
+    return parsed_rows, errors
 
 
 def parse_money(value):

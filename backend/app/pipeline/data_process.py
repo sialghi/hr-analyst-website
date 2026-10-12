@@ -347,7 +347,7 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None, approved
     BARU v2: Hitung uang makan per karyawan per hari.
 
     Aturan:
-    - Hari kerja biasa: uang makan = Rp100.000 (atau override dari master)
+    - Hari kerja biasa: uang makan mengikuti default global (Rp0) atau override karyawan
     - Potongan telat (hanya untuk profil ikut_telat, hanya di hari kerja biasa):
       * Jam masuk ≤ 12:00 → potongan Rp10.000
       * Jam masuk 12:00-15:00 → potongan 50% uang makan
@@ -355,8 +355,8 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None, approved
       * Pulang < 15:00 → potongan 50% uang makan
       * Pulang 15:00 - sebelum 16:00 → potongan Rp10.000
     - Tanggal merah (profil ikut_bonus_tanggal_merah, scan lengkap):
-      * Karyawan yang MASUK hanya dapat bonus Rp100.000 (tidak dapat base uang makan
-        karena tanggal merah bukan hari kerja biasa)
+      * Karyawan yang MASUK hanya dapat bonus sebesar nominal dasar (tidak dapat base
+        uang makan karena tanggal merah bukan hari kerja biasa)
     - Fitur Cuti & Izin (REVISI v3):
       * Jika ada IZIN_TELAT (APPROVED), potongan telat = 0.
       * Jika ada IZIN_PULANG_CEPAT (APPROVED), potongan pulang duluan = 0.
@@ -382,7 +382,9 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None, approved
         # Uang makan base (dari master override atau default)
         nama_n = config.normalisasi_nama(row["Nama"])
         info_master = master_dict.get(nama_n, {})
-        uang_makan_nominal = info_master.get("Uang_Makan", config.UANG_MAKAN_DEFAULT)
+        uang_makan_nominal = info_master.get("Uang_Makan")
+        if uang_makan_nominal is None:
+            uang_makan_nominal = config.UANG_MAKAN_DEFAULT
         status_raw = str(info_master.get("Status_Raw", "")).lower()
         cabang_raw = str(row.get("Cabang", "")).lower()
         is_idd = "idd" in status_raw or "idd" in cabang_raw
@@ -392,7 +394,7 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None, approved
 
         # --- Logika tanggal merah vs hari biasa ---
         if is_tanggal_merah and is_idd:
-            # Khusus Toko IDD (PIK): kalau tanggal merah dikali 2 uang makan (base + bonus = 2x)
+            # Perlakuan IDD yang sudah ada: nominal dasar diberikan sebagai base dan bonus.
             # Tanpa potongan telat / pulang duluan
             uang_base = uang_makan_nominal
             potongan = 0
@@ -400,7 +402,7 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None, approved
             bonus_merah = uang_makan_nominal  # Total Uang Makan = 2 × uang_makan_nominal
         elif is_tanggal_merah and profil["ikut_bonus_tanggal_merah"]:
             # Tanggal merah: TIDAK dapat base uang makan (bukan hari kerja biasa)
-            # Hanya dapat bonus karena masuk di hari libur → total = 100k
+            # Hanya dapat bonus sebesar nominal dasar karena masuk di hari libur.
             uang_base = 0
             potongan = 0  # Tidak ada potongan telat di tanggal merah
             potongan_pulang = 0  # Tidak ada potongan pulang duluan di tanggal merah
@@ -461,6 +463,9 @@ def hitung_uang_makan(df_lengkap, master_dict=None, tanggal_merah=None, approved
                             # Pulang 15:00 - sebelum 16:00 → potongan Rp10.000
                             potongan_pulang = config.POTONGAN_PULANG_DULUAN_SEDIKIT
 
+        # Potongan tidak boleh mengurangi uang makan lebih dari nominal yang tersedia.
+        potongan = min(potongan, uang_base)
+        potongan_pulang = min(potongan_pulang, max(0, uang_base - potongan))
         total = uang_base - potongan - potongan_pulang + bonus_merah
 
         hasil_rows.append({

@@ -54,7 +54,7 @@ PROFIL_JADWAL = {}
 PROFIL_DEFAULT = "OFFICE"
 
 # --- Uang Makan & potongan (akan DIISI oleh reload_from_db() dari tabel `business_rules`) ---
-UANG_MAKAN_DEFAULT = 100_000
+UANG_MAKAN_DEFAULT = 0
 POTONGAN_TELAT_SEDIKIT = 10_000
 POTONGAN_TELAT_BANYAK_PERSEN = 0.5
 BATAS_TELAT_RINGAN = datetime.time(12, 0)

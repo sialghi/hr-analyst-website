@@ -458,6 +458,19 @@ def create_leave_request(
 
     tipe_absensi = "remote_work" if kategori_norm == "WORK_FROM_LOCATION" else "normal"
 
+    employee = db.query(models.Employee).filter(
+        models.Employee.nama.ilike(payload.nama.strip())
+    ).first()
+    if (
+        employee
+        and str(employee.employment_status or "").strip().upper() == "PHL"
+        and kategori_norm != "WORK_FROM_LOCATION"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Karyawan berstatus PHL tidak dapat mengajukan cuti atau izin. Ketidakhadiran dicatat HR sebagai Unpaid Leave.",
+        )
+
     tgl_m = payload.tanggal_mulai
     tgl_s = payload.tanggal_selesai
 

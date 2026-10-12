@@ -261,6 +261,7 @@ def list_attendance_reviews(
         "id": row.id,
         "employee_id": row.employee_id,
         "nama": row.employee.nama if row.employee else None,
+        "employment_status": row.employee.employment_status if row.employee else None,
         "tanggal": row.attendance_date,
         "status": row.status,
         "decision": row.decision,
@@ -294,11 +295,16 @@ def resolve_attendance_review(
 
     decision = str(payload.get("decision") or "").strip().upper()
     note = str(payload.get("note") or "").strip() or None
+    employee = review.employee
+    if employee and str(employee.employment_status or "").strip().upper() == "PHL" and decision != "UNPAID_LEAVE":
+        raise HTTPException(
+            status_code=400,
+            detail="Untuk karyawan PHL, review absensi hanya dapat diselesaikan sebagai Unpaid Leave.",
+        )
     allowed = {"ANNUAL_LEAVE", "UNPAID_LEAVE", "SICK_OR_PERMISSION", "CORRECTED", "IGNORED"}
     if decision not in allowed:
         raise HTTPException(status_code=400, detail="Keputusan tidak valid.")
 
-    employee = review.employee
     leave_request_id = None
     if decision == "ANNUAL_LEAVE":
         balance = max(0.0, get_ledger_balance(db, employee.id, review.attendance_date.year))

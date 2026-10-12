@@ -182,7 +182,7 @@ def _sheet_readme(wb, ringkasan_info):
         "- SETUP_BLOK_C     : Sen-Sab 08-16",
         "- OFFICE_BOY       : 07-15",
         "",
-        "Uang Makan: Rp100.000/hari (bisa di-override per orang).",
+        "Default uang makan global: Rp0/hari untuk semua cabang; nominal karyawan dapat di-override secara eksplisit.",
         "Potongan telat: ≤12:00 = Rp10.000, 12:00-15:00 = 50% uang makan.",
         "Bonus tanggal merah: +1× uang makan kalau masuk di tanggal merah nasional (profil tertentu).",
         "Bonus lembur: Rp10.000/jam (pembulatan: ≥31 menit sisa = 1 jam).",

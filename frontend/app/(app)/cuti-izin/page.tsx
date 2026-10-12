@@ -61,7 +61,7 @@ export default function CutiIzinPage() {
   // Balance tab states
   const [balanceData, setBalanceData] = useState<AnnualBalanceItem[]>([]);
   const [balanceLoading, setBalanceLoading] = useState(false);
-  const [balanceYear, setBalanceYear] = useState<number>(2026);
+  const balanceYear = new Date().getFullYear();
   const [filterBalanceStatus, setFilterBalanceStatus] = useState<string>("ALL");
   const [searchBalanceNama, setSearchBalanceNama] = useState<string>("");
   const [syncingQuota, setSyncingQuota] = useState(false);
@@ -196,7 +196,23 @@ export default function CutiIzinPage() {
     return employees.filter((emp: any) => emp.cabang === formCabang);
   }, [employees, formCabang]);
 
-  const currentYear = new Date().getFullYear();
+  const currentYear = balanceYear;
+  const selectedEmployee = employees.find(
+    (employee: any) => employee.nama?.trim().toLocaleLowerCase() === formNama.trim().toLocaleLowerCase(),
+  );
+  const isSelectedEmployeePhl = selectedEmployee?.employment_status?.toUpperCase() === "PHL";
+
+  function handleFormNamaChange(nama: string) {
+    const employee = employees.find(
+      (item: any) => item.nama?.trim().toLocaleLowerCase() === nama.trim().toLocaleLowerCase(),
+    );
+    setFormNama(nama);
+    setFormKategori(
+      employee?.employment_status?.toUpperCase() === "PHL"
+        ? "WORK_FROM_LOCATION"
+        : "CUTI_TAHUNAN",
+    );
+  }
 
   function formatQuotaNumber(value: number) {
     if (!Number.isFinite(value)) return "0";
@@ -278,6 +294,12 @@ export default function CutiIzinPage() {
       alert("Nama dan tanggal wajib diisi.");
       return;
     }
+    if (isSelectedEmployeePhl) {
+      if (formKategori !== "WORK_FROM_LOCATION") {
+        alert("Karyawan PHL tidak dapat mengajukan cuti atau izin. Ketidakhadiran dicatat HR sebagai Unpaid Leave.");
+        return;
+      }
+    }
 
     // Validasi client-side hak cuti tahunan
     if (formKategori === "CUTI_TAHUNAN" || formKategori === "CUTI_SETENGAH_HARI") {
@@ -322,6 +344,7 @@ export default function CutiIzinPage() {
       setModalOpen(false);
       // Reset form
       setFormNama("");
+      setFormKategori("CUTI_TAHUNAN");
       setFormTglMulai("");
       setFormTglSelesai("");
       setFormJamIzin("");
@@ -572,15 +595,7 @@ export default function CutiIzinPage() {
               className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 w-48"
             />
 
-            <select
-              value={balanceYear}
-              onChange={(e) => setBalanceYear(Number(e.target.value))}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-700 font-semibold focus:outline-none focus:border-indigo-500 cursor-pointer"
-            >
-              <option value={2026}>Tahun 2026</option>
-              <option value={2025}>Tahun 2025</option>
-              <option value={2027}>Tahun 2027</option>
-            </select>
+            <span className="text-xs font-semibold text-slate-600">Tahun {balanceYear}</span>
 
             <select
               value={filterBalanceStatus}
@@ -1003,7 +1018,7 @@ export default function CutiIzinPage() {
                     value={formCabang}
                     onChange={(e) => {
                       setFormCabang(e.target.value);
-                      setFormNama("");
+                      handleFormNamaChange("");
                     }}
                     className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500 cursor-pointer"
                   >
@@ -1023,7 +1038,7 @@ export default function CutiIzinPage() {
                       type="button"
                       onClick={() => {
                         setIsManualNama(!isManualNama);
-                        setFormNama("");
+                        handleFormNamaChange("");
                       }}
                       className="text-[10px] text-indigo-600 hover:underline cursor-pointer"
                     >
@@ -1037,14 +1052,14 @@ export default function CutiIzinPage() {
                       required
                       placeholder="Ketik nama karyawan..."
                       value={formNama}
-                      onChange={(e) => setFormNama(e.target.value)}
+                      onChange={(e) => handleFormNamaChange(e.target.value)}
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500"
                     />
                   ) : (
                     <select
                       required
                       value={formNama}
-                      onChange={(e) => setFormNama(e.target.value)}
+                      onChange={(e) => handleFormNamaChange(e.target.value)}
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500 cursor-pointer"
                     >
                       <option value="">-- Pilih Karyawan ({employeesByCabang.length}) --</option>
@@ -1101,18 +1116,29 @@ export default function CutiIzinPage() {
                 <div>
                 <label className="block font-semibold text-slate-700 mb-1">Kategori Permohonan *</label>
                 <select
-                  value={formKategori}
-                  onChange={(e) => setFormKategori(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500 cursor-pointer"
-                >
-                  <option value="CUTI_TAHUNAN">Cuti Tahunan (Full Day)</option>
-                  <option value="CUTI_SETENGAH_HARI">Cuti 1/2 Hari / CS (potong 0.5 hari)</option>
-                  <option value="SAKIT">Izin Sakit / SKD (Full Day)</option>
-                  <option value="IZIN_PULANG_CEPAT">Izin Pulang Lebih Awal (Parsial)</option>
-                  <option value="IZIN_TELAT">Izin Datang Terlambat (Parsial)</option>
-                  <option value="LAINNYA">Izin Lainnya</option>
-                  <option value="WORK_FROM_LOCATION">Absensi Jarak Jauh</option>
-                </select>
+                    value={formKategori}
+                    onChange={(e) => setFormKategori(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                  >
+                    {isSelectedEmployeePhl ? (
+                      <option value="WORK_FROM_LOCATION">Absensi Jarak Jauh</option>
+                    ) : (
+                      <>
+                        <option value="CUTI_TAHUNAN">Cuti Tahunan (Full Day)</option>
+                        <option value="CUTI_SETENGAH_HARI">Cuti 1/2 Hari / CS (potong 0.5 hari)</option>
+                        <option value="SAKIT">Izin Sakit / SKD (Full Day)</option>
+                        <option value="IZIN_PULANG_CEPAT">Izin Pulang Lebih Awal (Parsial)</option>
+                        <option value="IZIN_TELAT">Izin Datang Terlambat (Parsial)</option>
+                        <option value="LAINNYA">Izin Lainnya</option>
+                        <option value="WORK_FROM_LOCATION">Absensi Jarak Jauh</option>
+                      </>
+                    )}
+                  </select>
+                  {isSelectedEmployeePhl && (
+                    <p role="alert" className="text-xs text-rose-700 mt-2 rounded border border-rose-200 bg-rose-50 p-2">
+                      Karyawan PHL tidak dapat mengajukan cuti atau izin. Ketidakhadiran PHL dicatat HR sebagai Unpaid Leave; permohonan Absensi Jarak Jauh tetap tersedia.
+                    </p>
+                  )}
                 {formKategori === "CUTI_SETENGAH_HARI" && (
                   <p className="text-[10px] text-slate-600 mt-1.5 bg-slate-50 rounded px-2 py-1 border border-slate-200">
                     Cuti Setengah Hari (CS) memotong <strong>0.5 hari</strong> dari kuota cuti tahunan.

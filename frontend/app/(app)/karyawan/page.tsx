@@ -14,6 +14,15 @@ interface EmploymentContract {
   keterangan: string | null;
 }
 
+interface PHLToPKWTTransition {
+  id: number;
+  employment_contract_id: number;
+  phl_start_date: string;
+  phl_end_date: string;
+  transition_date: string;
+  created_at: string;
+}
+
 interface ContractReminderStatus {
   contract_id: number;
   contract_number: number;
@@ -44,6 +53,7 @@ interface Employee {
   join_date: string | null;
   tenure_display: string | null;
   contracts: EmploymentContract[];
+  phl_to_pkwt_transitions: PHLToPKWTTransition[];
   contract_reminder_status: ContractReminderStatus | null;
   // Override fields
   has_custom_rules: boolean;
@@ -56,6 +66,7 @@ interface Employee {
 interface Profile {
   code: string;
   nama: string;
+  cabang: string[] | null;
   jam_masuk: { default: string; [key: string]: string } | null;
   jam_keluar: { default: string; [key: string]: string } | null;
 }
@@ -90,6 +101,7 @@ interface ImportResult {
   skipped: number;
   errors: string[];
   pesan: string;
+  contract_required?: string[];
 }
 
 interface MasterUpdateResult {
@@ -100,15 +112,19 @@ interface MasterUpdateResult {
   total_nik_conflict: number;
   total_invalid_nik: number;
   total_invalid_status: number;
-  total_unmapped_branch: number;
+  total_invalid_profile: number;
+  total_invalid_join_date: number;
+  total_contract_required: number;
   detail: {
-    updated: { nama: string; fields: string }[];
-    skipped: string[];
+    updated: { nama: string; employee_code: string; fields: string }[];
+    skipped: { row: number; employee_code?: string; reason?: string }[];
     not_found: string[];
-    nik_conflict: { nama: string; nik: string; konflik_dengan: string }[];
-    invalid_nik: { nama: string; nik_raw: string }[];
-    invalid_status: { nama: string; status: string }[];
-    unmapped_branch: { nama: string; lokasi: string }[];
+    nik_conflict: { employee_code: string; nik: string; konflik_dengan: string }[];
+    invalid_nik: { employee_code: string; nik_raw: string }[];
+    invalid_status: { employee_code: string; status: string }[];
+    invalid_profile: { employee_code: string; profile_code: string }[];
+    invalid_join_date: { employee_code: string; value: string }[];
+    contract_required: string[];
   };
 }
 
@@ -132,7 +148,7 @@ const BLANK_FORM = {
   id_mesin: "",
   profile_code: "",
   cabang: "",
-  uang_makan_override: "0",
+  uang_makan_override: "",
   bpjs_kesehatan: "",
   bpjs_tk: "",
   active: true,
@@ -142,6 +158,7 @@ const BLANK_FORM = {
   contract_start_date: "",
   contract_end_date: "",
   contract_keterangan: "",
+  phl_period_start_date: "",
   // Override fields
   has_custom_rules: false,
   jam_masuk_override: "",
@@ -159,7 +176,7 @@ function empToForm(emp: Employee) {
     id_mesin: emp.id_mesin || "",
     profile_code: emp.profile_code,
     cabang: emp.cabang || "",
-    uang_makan_override: emp.uang_makan_override?.toString() || "0",
+    uang_makan_override: emp.uang_makan_override?.toString() || "",
     bpjs_kesehatan: emp.bpjs_kesehatan != null ? emp.bpjs_kesehatan.toString() : "",
     bpjs_tk: emp.bpjs_tk != null ? emp.bpjs_tk.toString() : "",
     active: emp.active,
@@ -169,6 +186,7 @@ function empToForm(emp: Employee) {
     contract_start_date: activeContract?.start_date || "",
     contract_end_date: activeContract?.end_date || "",
     contract_keterangan: activeContract?.keterangan || "",
+    phl_period_start_date: emp.phl_to_pkwt_transitions?.[0]?.phl_start_date || emp.join_date || "",
     // Override fields
     has_custom_rules: emp.has_custom_rules ?? false,
     jam_masuk_override: emp.jam_masuk_override || "",
@@ -187,7 +205,7 @@ function formToPayload(form: typeof BLANK_FORM) {
     id_mesin: form.id_mesin || null,
     profile_code: form.profile_code,
     cabang: form.cabang || null,
-    uang_makan_override: form.uang_makan_override.trim() === "" ? 0 : parseInt(form.uang_makan_override, 10) || 0,
+    uang_makan_override: form.uang_makan_override.trim() === "" ? null : parseInt(form.uang_makan_override, 10) || 0,
     bpjs_kesehatan: form.bpjs_kesehatan ? parseInt(form.bpjs_kesehatan) : 0,
     bpjs_tk: form.bpjs_tk ? parseInt(form.bpjs_tk) : 0,
     active: form.active,
@@ -197,6 +215,7 @@ function formToPayload(form: typeof BLANK_FORM) {
     contract_start_date: isPKWT && form.contract_start_date ? form.contract_start_date : null,
     contract_end_date: isPKWT && form.contract_end_date ? form.contract_end_date : null,
     contract_keterangan: isPKWT && form.contract_keterangan ? form.contract_keterangan : null,
+    phl_period_start_date: form.phl_period_start_date || null,
     // Override fields
     has_custom_rules: form.has_custom_rules,
     jam_masuk_override: form.has_custom_rules && form.jam_masuk_override ? form.jam_masuk_override : null,
@@ -257,7 +276,7 @@ function InheritancePreviewCard({ profile, globalRules }: { profile: Profile | u
   const jamMasuk = profile?.jam_masuk?.default || globalRules?.jam_masuk_standar || "08:00";
   const jamKeluar = profile?.jam_keluar?.default || globalRules?.jam_keluar_standar || "16:00";
   const toleransi = globalRules?.toleransi_telat_max_menit ?? 10;
-  const uangMakan = globalRules?.uang_makan_default ?? 100000;
+  const uangMakan = globalRules?.uang_makan_default ?? 0;
   const lemburJam = globalRules?.bonus_lembur_per_jam ?? 10000;
 
   return (
@@ -308,6 +327,7 @@ export default function KaryawanPage() {
   const [filterStatus, setFilterStatus] = useState("ALL");
   const [filterProfile, setFilterProfile] = useState("ALL");
   const [filterEmploymentStatus, setFilterEmploymentStatus] = useState("ALL");
+  const [pageTab, setPageTab] = useState<"employees" | "whatsapp">("employees");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<any>({ ...BLANK_FORM });
@@ -326,6 +346,7 @@ export default function KaryawanPage() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [downloadingTemplate, setDownloadingTemplate] = useState(false);
+  const [downloadingMasterTemplate, setDownloadingMasterTemplate] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -364,6 +385,10 @@ export default function KaryawanPage() {
   const profileName = (code: string) => profiles.find((p) => p.code === code)?.nama || code;
   const activeProfile = profiles.find((p) => p.code === form.profile_code);
   const editingEmployee = editingId ? employees.find((emp) => emp.id === editingId) : undefined;
+  const branchOptions = Array.from(new Set([
+    ...profiles.flatMap((profile) => profile.cabang || []),
+    ...employees.map((employee) => employee.cabang || ""),
+  ].map((branch) => branch.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
 
   function startCreate() {
     if (profiles.length === 0) {
@@ -437,6 +462,13 @@ export default function KaryawanPage() {
     return new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" });
   }
 
+  function dateBefore(value: string) {
+    if (!value) return "";
+    const date = new Date(`${value}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() - 1);
+    return date.toISOString().slice(0, 10);
+  }
+
   function startEdit(emp: Employee) {
     setEditingId(emp.id);
     setForm(empToForm(emp));
@@ -454,7 +486,7 @@ export default function KaryawanPage() {
       jam_keluar_override: "",
       toleransi_telat_menit_override: "",
       bonus_lembur_per_jam_override: "",
-      uang_makan_override: "0",
+      uang_makan_override: "",
     }));
   }
 
@@ -484,6 +516,23 @@ export default function KaryawanPage() {
         (!form.contract_start_date || !form.contract_end_date)
       ) {
         setError("Untuk PKWT, tanggal mulai dan selesai kontrak wajib diisi.");
+        setActiveTab("kontrak");
+        return;
+      }
+      const isPhlToPkwt =
+        !!editingEmployee &&
+        normalizeEmploymentStatus(editingEmployee.employment_status) === "PHL" &&
+        employmentStatus === "PKWT";
+      if (isPhlToPkwt && !form.phl_period_start_date) {
+        setError("Tanggal mulai periode PHL wajib diisi untuk merekap perubahan status.");
+        setActiveTab("kontrak");
+        return;
+      }
+      if (
+        isPhlToPkwt &&
+        form.contract_start_date <= form.phl_period_start_date
+      ) {
+        setError("Kontrak PKWT harus dimulai setelah periode PHL berakhir.");
         setActiveTab("kontrak");
         return;
       }
@@ -541,10 +590,22 @@ export default function KaryawanPage() {
     }
   }
 
+  async function handleDownloadMasterTemplate() {
+    setDownloadingMasterTemplate(true);
+    try {
+      const blob = await api.downloadNikImportTemplate();
+      triggerBlobDownload(blob, "template_update_master_karyawan.xlsx");
+    } catch (err: any) {
+      setMasterUpdateError("Gagal mengunduh template pembaruan: " + err.message);
+    } finally {
+      setDownloadingMasterTemplate(false);
+    }
+  }
+
   async function handleImportSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!importFile) {
-      setImportError("Silakan pilih file Excel (.xlsx/.xls) atau CSV terlebih dahulu.");
+      setImportError("Silakan pilih file .xlsx/.xlsm atau CSV dengan template terbaru.");
       return;
     }
     setImporting(true);
@@ -565,8 +626,8 @@ export default function KaryawanPage() {
     const file = files?.[0];
     if (!file) return;
     const ext = file.name.split(".").pop()?.toLowerCase();
-    if (!["xlsx", "xls"].includes(ext || "")) {
-      setMasterUpdateError("File pembaruan master harus berformat Excel (.xlsx atau .xls).");
+    if (!["xlsx", "xlsm"].includes(ext || "")) {
+      setMasterUpdateError("File pembaruan master harus berformat .xlsx atau .xlsm dari template terbaru.");
       return;
     }
 
@@ -605,8 +666,8 @@ export default function KaryawanPage() {
     if (!files || files.length === 0) return;
     const file = files[0];
     const ext = file.name.split(".").pop()?.toLowerCase();
-    if (!["xlsx", "xls", "csv"].includes(ext || "")) {
-      setImportError("File harus berformat Excel (.xlsx, .xls) atau CSV (.csv)");
+    if (!["xlsx", "xlsm", "csv"].includes(ext || "")) {
+      setImportError("File harus berformat Excel (.xlsx/.xlsm) atau CSV (.csv) dengan template terbaru.");
       return;
     }
     setImportFile(file);
@@ -649,17 +710,28 @@ export default function KaryawanPage() {
     <div>
       <PageHeader
         title="Karyawan"
-        description="Daftar karyawan dan profil/divisi masing-masing. Dipakai otomatis saat memproses absensi."
+        description={
+          pageTab === "employees"
+            ? "Daftar karyawan dan profil/divisi masing-masing. Dipakai otomatis saat memproses absensi."
+            : "Kelola nomor WhatsApp yang terhubung dengan karyawan dan lihat riwayat tindakannya."
+        }
         action={
-          master && (
+          pageTab === "employees" && master && (
             <div className="flex items-center gap-2.5">
               <input
                 ref={masterUpdateInputRef}
                 type="file"
-                accept=".xlsx,.xls"
+                accept=".xlsx,.xlsm"
                 className="hidden"
                 onChange={(e) => handleMasterUpdateSelect(e.target.files)}
               />
+              <Button
+                variant="secondary"
+                onClick={handleDownloadMasterTemplate}
+                disabled={downloadingMasterTemplate}
+              >
+                {downloadingMasterTemplate ? "Mengunduh..." : "Unduh Template Update"}
+              </Button>
               <Button
                 variant="secondary"
                 onClick={() => masterUpdateInputRef.current?.click()}
@@ -683,9 +755,42 @@ export default function KaryawanPage() {
         }
       />
 
-      {error && <Banner kind="error">{error}</Banner>}
+      <div
+        role="tablist"
+        aria-label="Informasi karyawan"
+        className="flex items-center border-b mt-3"
+        style={{ borderColor: "var(--line)" }}
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={pageTab === "employees"}
+          onClick={() => setPageTab("employees")}
+          style={tabStyle(pageTab === "employees")}
+        >
+          Informasi Karyawan
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={pageTab === "whatsapp"}
+          aria-disabled={!master}
+          disabled={!master}
+          onClick={() => setPageTab("whatsapp")}
+          style={{
+            ...tabStyle(pageTab === "whatsapp"),
+            opacity: master ? 1 : 0.5,
+            cursor: master ? "pointer" : "not-allowed",
+          }}
+          title={master ? undefined : "Hanya HR Master yang dapat mengelola linking WhatsApp."}
+        >
+          Informasi Linking WhatsApp Karyawan
+        </button>
+      </div>
 
-      {master && (
+      {pageTab === "employees" && error && <Banner kind="error">{error}</Banner>}
+
+      {master && pageTab === "whatsapp" && (
         <Card className="mt-4 p-4">
           <div className="flex items-center justify-between gap-3 mb-3">
             <div>
@@ -807,6 +912,7 @@ export default function KaryawanPage() {
         </Card>
       )}
 
+      <div hidden={pageTab !== "employees"}>
       {(masterUpdateLoading || masterUpdateError || masterUpdatePreview) && (
         <Card className="mt-4 p-4 space-y-3">
           <div className="flex items-center justify-between">
@@ -845,18 +951,22 @@ export default function KaryawanPage() {
                 <div>Diubah: <strong>{masterUpdatePreview.total_updated}</strong></div>
                 <div>Tidak ditemukan: <strong>{masterUpdatePreview.total_not_found}</strong></div>
                 <div>Konflik NIK: <strong>{masterUpdatePreview.total_nik_conflict}</strong></div>
-                <div>Cabang perlu review: <strong>{masterUpdatePreview.total_unmapped_branch}</strong></div>
+                <div>PKWT perlu kontrak: <strong>{masterUpdatePreview.total_contract_required}</strong></div>
               </div>
               {(masterUpdatePreview.total_not_found > 0 ||
                 masterUpdatePreview.total_nik_conflict > 0 ||
                 masterUpdatePreview.total_invalid_status > 0 ||
-                masterUpdatePreview.total_unmapped_branch > 0) && (
+                masterUpdatePreview.total_invalid_profile > 0 ||
+                masterUpdatePreview.total_invalid_join_date > 0 ||
+                masterUpdatePreview.total_contract_required > 0) && (
                 <div className="text-xs space-y-1" style={{ color: "var(--clay)" }}>
                   <strong>Perhatian sebelum menerapkan:</strong>
-                  {masterUpdatePreview.total_not_found > 0 && <div>• Ada nama yang tidak ditemukan di master.</div>}
+                  {masterUpdatePreview.total_not_found > 0 && <div>• Ada Kode Karyawan yang tidak ditemukan.</div>}
                   {masterUpdatePreview.total_nik_conflict > 0 && <div>• Ada NIK yang sudah digunakan karyawan lain.</div>}
                   {masterUpdatePreview.total_invalid_status > 0 && <div>• Ada status kepegawaian yang tidak valid.</div>}
-                  {masterUpdatePreview.total_unmapped_branch > 0 && <div>• Ada nama cabang yang belum memiliki mapping baku.</div>}
+                  {masterUpdatePreview.total_invalid_profile > 0 && <div>• Ada Kode Profil yang tidak ditemukan.</div>}
+                  {masterUpdatePreview.total_invalid_join_date > 0 && <div>• Ada Tanggal Masuk yang tidak valid.</div>}
+                  {masterUpdatePreview.total_contract_required > 0 && <div>• Karyawan PKWT tanpa kontrak aktif akan dinonaktifkan sampai data kontrak dilengkapi di form Karyawan.</div>}
                 </div>
               )}
               <div className="flex justify-end gap-2">
@@ -1125,6 +1235,7 @@ export default function KaryawanPage() {
           </table>
         </div>
       </Card>
+      </div>
 
       {/* ─── Modal Tambah / Edit Karyawan (Tabbed) ───────────────────────────── */}
       {showForm && (
@@ -1280,13 +1391,18 @@ export default function KaryawanPage() {
                         onChange={(e) => setForm({ ...form, id_mesin: e.target.value })}
                       />
                     </Field>
-                    <Field label="Cabang (opsional)">
-                      <input
+                    <Field label="Cabang (opsional)" hint="Pilihan mencakup cabang Profil dan nilai lama pada data karyawan.">
+                      <select
                         className={inputCls}
                         style={inputStyle}
                         value={form.cabang}
                         onChange={(e) => setForm({ ...form, cabang: e.target.value })}
-                      />
+                      >
+                        <option value="">Pilih cabang...</option>
+                        {branchOptions.map((branch) => (
+                          <option key={branch} value={branch}>{branch}</option>
+                        ))}
+                      </select>
                     </Field>
                   </div>
 
@@ -1315,7 +1431,7 @@ export default function KaryawanPage() {
 
                   <Field
                     label="Uang Makan (Rp/hari)"
-                    hint="Isi 0 jika karyawan tidak menerima uang makan."
+                    hint="Kosong mengikuti default global Rp0 untuk semua cabang; isi nominal hanya jika ada override karyawan."
                   >
                     <input
                       type="number"
@@ -1350,7 +1466,18 @@ export default function KaryawanPage() {
                       className={inputCls}
                       style={inputStyle}
                       value={form.employment_status}
-                      onChange={(e) => setForm({ ...form, employment_status: e.target.value })}
+                      onChange={(e) => {
+                        const nextStatus = e.target.value;
+                        setForm({
+                          ...form,
+                          employment_status: nextStatus,
+                          phl_period_start_date:
+                            normalizeEmploymentStatus(form.employment_status) === "PHL" &&
+                            nextStatus === "PKWT"
+                              ? form.phl_period_start_date || form.join_date
+                              : form.phl_period_start_date,
+                        });
+                      }}
                     >
                       <option value="PKWTT">PKWTT — Karyawan Tetap</option>
                       <option value="PKWT">PKWT — Karyawan Kontrak</option>
@@ -1372,6 +1499,32 @@ export default function KaryawanPage() {
                   {/* Kontrak PKWT — hanya tampil jika PKWT */}
                   {form.employment_status === "PKWT" && (
                     <>
+                      {editingEmployee &&
+                        normalizeEmploymentStatus(editingEmployee.employment_status) === "PHL" && (
+                          <div
+                            className="rounded-lg p-3 space-y-2 text-xs"
+                            style={{ background: "#fff7ed", border: "1px solid #fdba74", color: "#9a3412" }}
+                          >
+                            <strong>Perubahan status PHL ke PKWT</strong>
+                            <p>
+                              Periode PHL dicatat terpisah. Tanggal Masuk utama tidak berubah; periode PHL berakhir sehari sebelum kontrak dimulai.
+                            </p>
+                            <Field label="Tanggal Mulai Periode PHL" hint="Terisi dari Tanggal Masuk dan dapat dikoreksi khusus untuk histori.">
+                              <input
+                                type="date"
+                                required
+                                className={inputCls}
+                                style={inputStyle}
+                                value={form.phl_period_start_date}
+                                onChange={(e) => setForm({ ...form, phl_period_start_date: e.target.value })}
+                              />
+                            </Field>
+                            <p>
+                              Akhir periode PHL: <strong>{fmtDate(dateBefore(form.contract_start_date))}</strong>
+                              {form.contract_start_date ? ` (sehari sebelum ${fmtDate(form.contract_start_date)})` : " — isi tanggal mulai kontrak PKWT."}
+                            </p>
+                          </div>
+                        )}
                       <div
                         className="rounded-lg p-3 text-xs"
                         style={{ background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1e40af" }}
@@ -1450,6 +1603,44 @@ export default function KaryawanPage() {
                             )}
                           </div>
                         ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {editingId && (editingEmployee?.phl_to_pkwt_transitions?.length ?? 0) > 0 && (
+                    <div
+                      className="rounded-lg p-3 space-y-3"
+                      style={{ background: "#fff7ed", border: "1px solid #fdba74" }}
+                    >
+                      <div>
+                        <p className="text-xs font-semibold" style={{ color: "#9a3412" }}>
+                          Rekapan Perubahan PHL ke PKWT
+                        </p>
+                        <p className="text-[11px] mt-0.5" style={{ color: "#9a3412" }}>
+                          Histori ini hanya mencatat transisi yang direkam melalui aplikasi.
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        {editingEmployee?.phl_to_pkwt_transitions.map((transition) => {
+                          const contract = editingEmployee.contracts.find(
+                            (item) => item.id === transition.employment_contract_id,
+                          );
+                          return (
+                            <div
+                              key={transition.id}
+                              className="rounded-md border px-3 py-2 text-xs"
+                              style={{ borderColor: "#fdba74", background: "var(--surface, #fff)" }}
+                            >
+                              <div style={{ color: "var(--ink)" }}>
+                                Periode PHL: <strong>{fmtDate(transition.phl_start_date)} s/d {fmtDate(transition.phl_end_date)}</strong>
+                              </div>
+                              <div className="mt-1" style={{ color: "var(--ink)" }}>
+                                Mulai PKWT: <strong>{fmtDate(transition.transition_date)}</strong>
+                                {contract && <> · Kontrak #{contract.contract_number} ({fmtDate(contract.start_date)} s/d {fmtDate(contract.end_date)})</>}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -1689,7 +1880,7 @@ export default function KaryawanPage() {
                   Import Master Karyawan
                 </h3>
                 <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                  Unggah file Excel (.xlsx/.xls) atau CSV untuk menambahkan/memperbarui karyawan sekaligus.
+                  Unggah template terbaru (.xlsx/.xlsm atau CSV) untuk menambahkan atau memperbarui karyawan berdasarkan Kode Karyawan.
                 </p>
               </div>
               <button
@@ -1717,6 +1908,12 @@ export default function KaryawanPage() {
                   <div>Data diperbarui: <strong>{importResult.updated}</strong></div>
                   <div>Baris dilewati: <strong>{importResult.skipped}</strong></div>
                 </div>
+                {!!importResult.contract_required?.length && (
+                  <p className="text-xs" style={{ color: "var(--clay)" }}>
+                    PKWT belum memiliki kontrak aktif dan disimpan nonaktif: {importResult.contract_required.join(", ")}.
+                    Lengkapi tanggal kontrak melalui form Karyawan sebelum mengaktifkannya.
+                  </p>
+                )}
                 {importResult.errors && importResult.errors.length > 0 && (
                   <div
                     className="mt-2 pt-2 border-t text-xs"
@@ -1752,14 +1949,14 @@ export default function KaryawanPage() {
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-x-3 gap-y-1" style={{ color: "var(--text-muted)" }}>
-                <div>• <strong>Status</strong>: Cabang/Divisi (Gudang C, dsb.)</div>
-                <div>• <strong>Nama</strong>: Nama lengkap (wajib)</div>
-                <div>• <strong>NIK</strong>: 16 digit KTP</div>
-                <div>• <strong>Tanggal Masuk</strong>: Join Date (YYYY-MM-DD)</div>
-                <div>• <strong>Waktu Berakhir</strong>: Akhir Kontrak PKWT</div>
-                <div>• <strong>Uang_Makan</strong>: Nominal/hari</div>
-                <div>• <strong>BPJS Kesehatan</strong>: Potongan Rp</div>
-                <div>• <strong>BPJS TK</strong>: Potongan Rp</div>
+                <div>• <strong>Kode Karyawan</strong>: Kunci pencocokan wajib</div>
+                <div>• <strong>Nama, Cabang</strong>: Identitas dan lokasi kerja</div>
+                <div>• <strong>Kode Profil</strong>: Kode dari menu Profil/Divisi</div>
+                <div>• <strong>Status Kepegawaian</strong>: PKWTT, PKWT, atau PHL</div>
+                <div>• <strong>NIK</strong>: Opsional, 16 digit</div>
+                <div>• <strong>Tanggal Masuk</strong>: Wajib untuk karyawan baru</div>
+                <div>• <strong>Status Aktif</strong>: Aktif atau Nonaktif</div>
+                <div>• PKWT tanpa kontrak aktif diimpor nonaktif; lengkapi kontraknya di form.</div>
               </div>
             </div>
 
@@ -1767,7 +1964,7 @@ export default function KaryawanPage() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".xlsx,.xls,.csv"
+                accept=".xlsx,.xlsm,.csv"
                 className="hidden"
                 onChange={(e) => handleFileSelect(e.target.files)}
               />
@@ -1805,7 +2002,7 @@ export default function KaryawanPage() {
                     <p className="text-sm font-medium" style={{ color: "var(--ink)" }}>
                       Klik untuk pilih file atau seret file ke sini
                     </p>
-                    <p className="text-xs text-gray-500 mt-1">Mendukung format .xlsx, .xls, atau .csv</p>
+                    <p className="text-xs text-gray-500 mt-1">Mendukung template terbaru .xlsx, .xlsm, atau .csv</p>
                   </div>
                 )}
               </div>

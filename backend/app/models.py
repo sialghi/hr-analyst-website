@@ -68,7 +68,7 @@ class BusinessRule(Base):
     min_hari_kerja_per_minggu = Column(Integer, default=4)
     min_minggu_berturut_alpa = Column(Integer, default=2)
 
-    uang_makan_default = Column(Integer, default=100_000)
+    uang_makan_default = Column(Integer, default=0)
     potongan_telat_sedikit = Column(Integer, default=10_000)
     potongan_telat_banyak_persen = Column(Float, default=0.5)
     batas_telat_ringan = Column(String, default="12:00")
@@ -101,7 +101,7 @@ class Employee(Base):
     cabang = Column(String, nullable=True)
     jabatan = Column(String, nullable=True)
     payroll_status = Column(String, nullable=True)
-    uang_makan_override = Column(Integer, nullable=True)  # null -> pakai default global
+    uang_makan_override = Column(Integer, nullable=True)  # null -> pakai default global (Rp0)
     bpjs_kesehatan = Column(Integer, nullable=True, default=0)
     bpjs_tk = Column(Integer, nullable=True, default=0)
     active = Column(Boolean, default=True)
@@ -132,6 +132,12 @@ class Employee(Base):
 
     profile = relationship("Profile", back_populates="employees")
     contracts = relationship("EmploymentContract", back_populates="employee", cascade="all, delete-orphan", order_by="EmploymentContract.contract_number.desc()")
+    phl_to_pkwt_transitions = relationship(
+        "EmployeeEmploymentTransition",
+        back_populates="employee",
+        cascade="all, delete-orphan",
+        order_by="EmployeeEmploymentTransition.transition_date.desc()",
+    )
 
 
 class EmployeeImportCandidate(Base):
@@ -178,6 +184,32 @@ class EmploymentContract(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     employee = relationship("Employee", back_populates="contracts")
+    phl_transition = relationship(
+        "EmployeeEmploymentTransition",
+        back_populates="employment_contract",
+        uselist=False,
+    )
+
+
+class EmployeeEmploymentTransition(Base):
+    """Riwayat periode PHL saat karyawan beralih ke kontrak PKWT."""
+    __tablename__ = "employee_employment_transitions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    employment_contract_id = Column(
+        Integer,
+        ForeignKey("employment_contracts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    phl_start_date = Column(Date, nullable=False)
+    phl_end_date = Column(Date, nullable=False)
+    transition_date = Column(Date, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    employee = relationship("Employee", back_populates="phl_to_pkwt_transitions")
+    employment_contract = relationship("EmploymentContract", back_populates="phl_transition")
 
 
 class WhatsAppIdentity(Base):

@@ -45,6 +45,7 @@ interface AttendanceReview {
   id: number;
   employee_id: number;
   nama: string;
+  employment_status?: string | null;
   tanggal: string;
   status: string;
   decision?: string | null;
@@ -1863,14 +1864,22 @@ export default function ProsesPage() {
                             >
                               <div className="text-[11px] text-slate-700">{review.tanggal}</div>
                               <div className="text-[11px] font-semibold text-slate-800">
-                                Sisa cuti: {review.sisa_cuti_tahunan} / {review.kuota_cuti_tahunan} hari
+                                {review.employment_status?.toUpperCase() === "PHL"
+                                  ? "PHL: ketidakhadiran dicatat sebagai Unpaid Leave"
+                                  : `Sisa cuti: ${review.sisa_cuti_tahunan} / ${review.kuota_cuti_tahunan} hari`}
                               </div>
                               <div className="flex flex-wrap gap-1">
-                                <button onClick={() => handleAttendanceReview(review.id, "ANNUAL_LEAVE")} className="px-1.5 py-0.5 rounded bg-amber-100 text-[10px] text-amber-800 hover:bg-amber-200">Cuti</button>
-                                <button onClick={() => handleAttendanceReview(review.id, "UNPAID_LEAVE")} className="px-1.5 py-0.5 rounded bg-rose-100 text-[10px] text-rose-800 hover:bg-rose-200">Unpaid</button>
-                                <button onClick={() => handleAttendanceReview(review.id, "SICK_OR_PERMISSION")} className="px-1.5 py-0.5 rounded bg-sky-100 text-[10px] text-sky-800 hover:bg-sky-200">Sakit/Izin</button>
-                                <button onClick={() => handleAttendanceReview(review.id, "CORRECTED")} className="px-1.5 py-0.5 rounded bg-emerald-100 text-[10px] text-emerald-800 hover:bg-emerald-200">Hadir</button>
-                                <button onClick={() => handleAttendanceReview(review.id, "IGNORED")} className="px-1.5 py-0.5 rounded bg-white text-[10px] text-slate-700 hover:bg-slate-100 border border-amber-200">Abaikan</button>
+                                {review.employment_status?.toUpperCase() === "PHL" ? (
+                                  <button onClick={() => handleAttendanceReview(review.id, "UNPAID_LEAVE")} className="px-1.5 py-0.5 rounded bg-rose-100 text-[10px] text-rose-800 hover:bg-rose-200">Tetapkan Unpaid Leave</button>
+                                ) : (
+                                  <>
+                                    <button onClick={() => handleAttendanceReview(review.id, "ANNUAL_LEAVE")} className="px-1.5 py-0.5 rounded bg-amber-100 text-[10px] text-amber-800 hover:bg-amber-200">Cuti</button>
+                                    <button onClick={() => handleAttendanceReview(review.id, "UNPAID_LEAVE")} className="px-1.5 py-0.5 rounded bg-rose-100 text-[10px] text-rose-800 hover:bg-rose-200">Unpaid</button>
+                                    <button onClick={() => handleAttendanceReview(review.id, "SICK_OR_PERMISSION")} className="px-1.5 py-0.5 rounded bg-sky-100 text-[10px] text-sky-800 hover:bg-sky-200">Sakit/Izin</button>
+                                    <button onClick={() => handleAttendanceReview(review.id, "CORRECTED")} className="px-1.5 py-0.5 rounded bg-emerald-100 text-[10px] text-emerald-800 hover:bg-emerald-200">Hadir</button>
+                                    <button onClick={() => handleAttendanceReview(review.id, "IGNORED")} className="px-1.5 py-0.5 rounded bg-white text-[10px] text-slate-700 hover:bg-slate-100 border border-amber-200">Abaikan</button>
+                                  </>
+                                )}
                               </div>
                             </div>
                           ))}

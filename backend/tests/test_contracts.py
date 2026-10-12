@@ -15,11 +15,10 @@ from app.models import (
 )
 from app.config import CONTRACT_REMINDER_DAYS, calculate_tenure, get_today_jakarta
 from app.auth import get_current_user, require_hr_master
-from app.pipeline.loader import build_master_df_from_db
 from app.routers import whatsapp
 
 from sqlalchemy.pool import StaticPool
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -161,6 +160,98 @@ class TestContractManagement(unittest.TestCase):
         self.assertEqual(updated_emp["contracts"][0]["status"], "PROMOTED_TO_PERMANENT")
         self.assertIn("Diangkat menjadi PKWTT", updated_emp["contracts"][0]["keterangan"])
 
+    def test_phl_to_pkwt_records_phl_period_and_active_contract(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            employee_code="EMP-PHL-TO-PKWT",
+            nama="Rina PHL ke PKWT",
+            profile_code="OFFICE",
+            employment_status="PHL",
+            join_date=datetime.date(2022, 3, 1),
+            active=True,
+        )
+        db.add(employee)
+        db.commit()
+        employee_id = employee.id
+        db.close()
+
+        response = client.put(f"/employees/{employee_id}", json={
+            "nama": "Rina PHL ke PKWT",
+            "profile_code": "OFFICE",
+            "employment_status": "PKWT",
+            "join_date": "2022-03-01",
+            "phl_period_start_date": "2022-03-15",
+            "contract_start_date": "2024-07-01",
+            "contract_end_date": "2025-07-01",
+            "contract_keterangan": "PKWT pertama",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["employment_status"], "PKWT")
+        self.assertEqual(data["join_date"], "2022-03-01")
+        self.assertEqual(data["contracts"][0]["contract_number"], 1)
+        self.assertEqual(data["contracts"][0]["status"], "ACTIVE")
+        self.assertIn("Perubahan status PHL ke PKWT", data["contracts"][0]["keterangan"])
+        self.assertEqual(len(data["phl_to_pkwt_transitions"]), 1)
+        self.assertEqual(data["phl_to_pkwt_transitions"][0]["phl_start_date"], "2022-03-15")
+        self.assertEqual(data["phl_to_pkwt_transitions"][0]["phl_end_date"], "2024-06-30")
+        self.assertEqual(data["phl_to_pkwt_transitions"][0]["transition_date"], "2024-07-01")
+        self.assertEqual(
+            data["phl_to_pkwt_transitions"][0]["employment_contract_id"],
+            data["contracts"][0]["id"],
+        )
+
+        db = TestingSessionLocal()
+        saved = db.query(Employee).filter(Employee.id == employee_id).one()
+        self.assertEqual(saved.join_date, datetime.date(2022, 3, 1))
+        self.assertEqual(len(saved.contracts), 1)
+        self.assertEqual(len(saved.phl_to_pkwt_transitions), 1)
+        db.close()
+
+    def test_invalid_phl_to_pkwt_transition_does_not_change_employee_or_create_history(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            employee_code="EMP-PHL-INVALID",
+            nama="Budi PHL",
+            profile_code="OFFICE",
+            employment_status="PHL",
+            join_date=datetime.date(2023, 1, 1),
+            active=True,
+        )
+        db.add(employee)
+        db.commit()
+        employee_id = employee.id
+        db.close()
+
+        base_payload = {
+            "nama": "Budi PHL",
+            "profile_code": "OFFICE",
+            "employment_status": "PKWT",
+            "join_date": "2023-01-01",
+            "phl_period_start_date": "2023-02-01",
+        }
+        missing_dates = client.put(f"/employees/{employee_id}", json=base_payload)
+        self.assertEqual(missing_dates.status_code, 400)
+
+        overlapping_dates = client.put(
+            f"/employees/{employee_id}",
+            json={
+                **base_payload,
+                "contract_start_date": "2023-02-01",
+                "contract_end_date": "2024-02-01",
+            },
+        )
+        self.assertEqual(overlapping_dates.status_code, 400)
+
+        db = TestingSessionLocal()
+        unchanged = db.query(Employee).filter(Employee.id == employee_id).one()
+        self.assertEqual(unchanged.employment_status, "PHL")
+        self.assertEqual(unchanged.join_date, datetime.date(2023, 1, 1))
+        self.assertEqual(db.query(EmploymentContract).filter_by(employee_id=employee_id).count(), 0)
+        self.assertEqual(db.query(whatsapp.models.EmployeeEmploymentTransition).filter_by(employee_id=employee_id).count(), 0)
+        db.close()
+
     def test_5_contract_renewal(self):
         today = get_today_jakarta()
         t1_start = today - datetime.timedelta(days=100)
@@ -201,9 +292,10 @@ class TestContractManagement(unittest.TestCase):
 
     def test_6_master_workbook_dry_run_and_apply(self):
         employee = Employee(
+            employee_code="EMP-MASTER-001",
             nama="Rina Cabang",
             profile_code="OFFICE",
-            employment_status="TETAP",
+            employment_status="PKWTT",
             active=True,
         )
         db = TestingSessionLocal()
@@ -213,23 +305,25 @@ class TestContractManagement(unittest.TestCase):
 
         workbook = Workbook()
         sheet = workbook.active
-        sheet.title = "Hasil Merge"
+        sheet.title = "Pembaruan Master"
         sheet.append([
-            "No",
-            "Nama (Summary)",
+            "Kode Karyawan",
+            "Nama Karyawan",
             "NIK",
+            "Cabang",
+            "Kode Profil",
             "Status Kepegawaian",
-            "Tanggal Join",
-            "Lokasi Kerja Valid",
-            "Status Aktif (Master)",
+            "Tanggal Masuk",
+            "Status Aktif",
         ])
         sheet.append([
-            1,
+            "EMP-MASTER-001",
             "Rina Cabang",
             "3201010101010001",
+            "Cab. Bandung",
+            "OFFICE",
             "PKWTT",
             datetime.date(2024, 1, 15),
-            "Cab. Bandung",
             "Aktif",
         ])
         output = io.BytesIO()
@@ -245,10 +339,10 @@ class TestContractManagement(unittest.TestCase):
         self.assertEqual(dry_run.json()["total_updated"], 1)
 
         db = TestingSessionLocal()
-        unchanged = db.query(Employee).filter(Employee.nama == "Rina Cabang").one()
+        unchanged = db.query(Employee).filter(Employee.employee_code == "EMP-MASTER-001").one()
         self.assertIsNone(unchanged.cabang)
         self.assertIsNone(unchanged.nik)
-        self.assertEqual(unchanged.employment_status, "TETAP")
+        self.assertEqual(unchanged.employment_status, "PKWTT")
         db.close()
 
         output.seek(0)
@@ -260,28 +354,19 @@ class TestContractManagement(unittest.TestCase):
         self.assertFalse(applied.json()["dry_run"])
 
         db = TestingSessionLocal()
-        updated = db.query(Employee).filter(Employee.nama == "Rina Cabang").one()
-        self.assertEqual(updated.cabang, "BANDUNG")
+        updated = db.query(Employee).filter(Employee.employee_code == "EMP-MASTER-001").one()
+        self.assertEqual(updated.cabang, "Cab. Bandung")
         self.assertEqual(updated.nik, "3201010101010001")
         self.assertEqual(updated.join_date, datetime.date(2024, 1, 15))
         self.assertEqual(updated.employment_status, "PKWTT")
         db.close()
 
-    def test_7_meal_allowance_blank_is_zero_and_zero_does_not_fallback(self):
-        db = TestingSessionLocal()
-        db.add_all([
-            Employee(nama="Andi Makan", profile_code="OFFICE", uang_makan_override=100000, active=True),
-            Employee(nama="Budi Tanpa Makan", profile_code="OFFICE", uang_makan_override=None, active=True),
-        ])
-        db.commit()
-        db.close()
-
+    def test_7_legacy_payroll_import_template_is_rejected(self):
         workbook = Workbook()
         sheet = workbook.active
         sheet.title = "HO"
         sheet.append(["Status", "Nama", "Uang Makan ", "Gaji Pokok "])
-        sheet.append(["Office A", "Andi Makan", 0, None])
-        sheet.append(["Office A", "Budi Tanpa Makan", None, None])
+        sheet.append(["Office A", "Pegawai Lama", 0, None])
         output = io.BytesIO()
         workbook.save(output)
         output.seek(0)
@@ -290,20 +375,8 @@ class TestContractManagement(unittest.TestCase):
             "/employees/import",
             files={"file": ("data-uangmakan-posisi.xlsx", output.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
         )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["updated"], 2)
-
-        db = TestingSessionLocal()
-        employees = {
-            e.nama: e
-            for e in db.query(Employee).filter(Employee.nama.in_(["Andi Makan", "Budi Tanpa Makan"])).all()
-        }
-        self.assertEqual(employees["Andi Makan"].uang_makan_override, 0)
-        self.assertEqual(employees["Budi Tanpa Makan"].uang_makan_override, 0)
-        master = build_master_df_from_db(list(employees.values()))
-        self.assertEqual(master.loc[master["Nama_Asli"] == "Andi Makan", "Uang_Makan"].iloc[0], 0)
-        self.assertEqual(master.loc[master["Nama_Asli"] == "Budi Tanpa Makan", "Uang_Makan"].iloc[0], 0)
-        db.close()
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Format workbook tidak dikenali", response.json()["detail"])
 
     def test_8_whatsapp_login_links_phone_to_nik_after_confirmation(self):
         db = TestingSessionLocal()
@@ -746,6 +819,233 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         preserved = db.query(Employee).filter(Employee.id == employee_id).one()
         self.assertEqual(preserved.jabatan, "Admin")
         self.assertEqual(preserved.payroll_status, "Bulanan")
+        db.close()
+
+    def test_current_employee_template_uses_hr_fields_without_pay_or_contract_end_columns(self):
+        response = client.get("/employees/template")
+        self.assertEqual(response.status_code, 200)
+        workbook = load_workbook(io.BytesIO(response.content), data_only=True)
+        self.assertEqual(workbook.sheetnames, ["Data Karyawan", "Referensi", "Petunjuk"])
+        headers = [cell.value for cell in workbook["Data Karyawan"][1]]
+        self.assertIn("Kode Karyawan", headers)
+        self.assertIn("Kode Profil", headers)
+        self.assertIn("Status Kepegawaian", headers)
+        self.assertNotIn("Gaji Pokok", headers)
+        self.assertNotIn("Waktu Berakhir", headers)
+        profile_codes = [workbook["Referensi"].cell(row, 1).value for row in range(2, workbook["Referensi"].max_row + 1)]
+        self.assertIn("OFFICE", profile_codes)
+
+    def test_new_import_format_requires_code_and_keeps_pkwt_inactive_until_contract(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Data Karyawan"
+        sheet.append([
+            "Kode Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
+            "Status Kepegawaian", "Tanggal Masuk", "Status Aktif", "Jabatan", "ID Mesin Absensi",
+        ])
+        sheet.append([
+            "EMP-TEST-001", "Pegawai Uji", "9999999999999999", "Cabang Uji",
+            "OFFICE", "PKWT", datetime.date(2025, 1, 2), "Aktif", "Staff", "M-001",
+        ])
+        response = client.post(
+            "/employees/import",
+            files=self._upload(workbook, "master_karyawan.xlsx"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["inserted"], 1)
+        self.assertEqual(response.json()["contract_required"], ["EMP-TEST-001"])
+        db = TestingSessionLocal()
+        employee = db.query(Employee).filter(Employee.employee_code == "EMP-TEST-001").one()
+        self.assertEqual(employee.nik, "9999999999999999")
+        self.assertEqual(employee.employment_status, "PKWT")
+        self.assertFalse(employee.active)
+        self.assertEqual(employee.contracts, [])
+        db.close()
+
+        legacy = Workbook()
+        old_sheet = legacy.active
+        old_sheet.title = "HO"
+        old_sheet.append(["Status", "Nama", "Gaji Pokok", "Waktu Berakhir"])
+        old_sheet.append(["Office", "Pegawai Lama", "", ""])
+        rejected = client.post(
+            "/employees/import",
+            files=self._upload(legacy, "template_lama.xlsx"),
+        )
+        self.assertEqual(rejected.status_code, 400)
+
+    def test_master_update_matches_by_employee_code_and_does_not_touch_contract_history(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            employee_code="EMP-UPDATE-001",
+            nama="Pegawai Uji",
+            nik="9999999999999998",
+            profile_code="OFFICE",
+            employment_status="PKWTT",
+            join_date=datetime.date(2022, 1, 1),
+            active=True,
+            cabang="Cabang Lama",
+        )
+        db.add(employee)
+        db.commit()
+        db.close()
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Pembaruan Master"
+        sheet.append([
+            "Kode Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
+            "Status Kepegawaian", "Tanggal Masuk", "Status Aktif", "Jabatan", "ID Mesin Absensi",
+        ])
+        sheet.append([
+            "EMP-UPDATE-001", "Pegawai Uji", "9999999999999997", "Cabang Baru",
+            "OFFICE", "PKWT", datetime.date(2023, 2, 3), "Aktif", "Admin", "M-002",
+        ])
+        response = client.post(
+            "/employees/import/nik",
+            files=self._upload(workbook, "update_master.xlsx"),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["total_updated"], 1)
+        self.assertEqual(response.json()["detail"]["contract_required"], ["EMP-UPDATE-001"])
+        db = TestingSessionLocal()
+        updated = db.query(Employee).filter(Employee.employee_code == "EMP-UPDATE-001").one()
+        self.assertEqual(updated.nik, "9999999999999997")
+        self.assertEqual(updated.cabang, "Cabang Baru")
+        self.assertEqual(updated.employment_status, "PKWT")
+        self.assertFalse(updated.active)
+        self.assertEqual(db.query(EmploymentContract).filter(EmploymentContract.employee_id == updated.id).count(), 0)
+        db.close()
+
+    def test_phl_leave_requests_are_blocked_without_changing_history(self):
+        from app.routers.leaves import verify_bot_or_user
+
+        db = TestingSessionLocal()
+        employee = Employee(
+            employee_code="EMP-PHL-001",
+            nama="Karyawan PHL Uji",
+            profile_code="OFFICE",
+            employment_status="PHL",
+            active=True,
+        )
+        db.add(employee)
+        db.add(LeaveRequest(
+            nama="Karyawan PHL Uji",
+            kategori="SAKIT",
+            tanggal_mulai=datetime.date(2024, 1, 2),
+            tanggal_selesai=datetime.date(2024, 1, 2),
+            status="APPROVED",
+        ))
+        db.commit()
+        db.close()
+
+        app.dependency_overrides[verify_bot_or_user] = override_auth
+        try:
+            response = client.post("/leaves", json={
+                "nama": "Karyawan PHL Uji",
+                "kategori": "SAKIT",
+                "tanggal_mulai": "2026-10-10",
+                "tanggal_selesai": "2026-10-10",
+                "alasan": "Uji",
+            })
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("PHL", response.json()["detail"])
+
+            remote = client.post("/leaves", json={
+                "nama": "Karyawan PHL Uji",
+                "kategori": "WORK_FROM_LOCATION",
+                "tanggal_mulai": "2026-10-12",
+                "tanggal_selesai": "2026-10-12",
+                "alasan": "Tugas luar",
+                "tipe_absensi": "remote_work",
+                "location_cabang": "Cabang Uji",
+            })
+            self.assertEqual(remote.status_code, 200)
+            db = TestingSessionLocal()
+            self.assertEqual(db.query(LeaveRequest).count(), 2)
+            historic = db.query(LeaveRequest).filter(LeaveRequest.tanggal_mulai == datetime.date(2024, 1, 2)).one()
+            self.assertEqual(historic.status, "APPROVED")
+            db.close()
+        finally:
+            app.dependency_overrides.pop(verify_bot_or_user, None)
+
+    def test_phl_whatsapp_cuti_and_izin_are_blocked(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            employee_code="EMP-PHL-WA",
+            nama="PHL WhatsApp",
+            profile_code="OFFICE",
+            employment_status="PHL",
+            active=True,
+        )
+        db.add(employee)
+        db.flush()
+        db.add(whatsapp.models.WhatsAppIdentity(
+            phone_number="628123456789",
+            employee_id=employee.id,
+            status="ACTIVE",
+        ))
+        db.commit()
+        sent = []
+        original_send = whatsapp.send_whatsapp_text
+
+        async def fake_send(to_number, message):
+            sent.append(message)
+            return {"mocked": True}
+
+        whatsapp.send_whatsapp_text = fake_send
+        whatsapp.user_states.pop("08123456789", None)
+        try:
+            asyncio.run(whatsapp.process_whatsapp_incoming("08123456789", "", "menu_cuti", db))
+            self.assertIn("PHL", sent[-1])
+            self.assertNotIn("08123456789", whatsapp.user_states)
+            asyncio.run(whatsapp.process_whatsapp_incoming("08123456789", "", "menu_izin", db))
+            self.assertIn("PHL", sent[-1])
+            self.assertNotIn("08123456789", whatsapp.user_states)
+        finally:
+            whatsapp.send_whatsapp_text = original_send
+            whatsapp.user_states.pop("08123456789", None)
+            db.close()
+
+    def test_phl_attendance_review_only_allows_unpaid_leave(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            employee_code="EMP-PHL-REVIEW",
+            nama="PHL Review",
+            profile_code="OFFICE",
+            employment_status="PHL",
+            active=True,
+        )
+        db.add(employee)
+        db.flush()
+        review = whatsapp.models.AttendanceReview(
+            employee_id=employee.id,
+            attendance_date=datetime.date(2026, 10, 11),
+            status="PENDING",
+        )
+        db.add(review)
+        db.commit()
+        review_id = review.id
+        db.close()
+
+        rejected = client.patch(
+            f"/attendance/reviews/{review_id}",
+            json={"decision": "ANNUAL_LEAVE"},
+        )
+        self.assertEqual(rejected.status_code, 400)
+        db = TestingSessionLocal()
+        self.assertEqual(db.query(whatsapp.models.AttendanceReview).filter_by(id=review_id).one().status, "PENDING")
+        db.close()
+
+        accepted = client.patch(
+            f"/attendance/reviews/{review_id}",
+            json={"decision": "UNPAID_LEAVE"},
+        )
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.json()["decision"], "UNPAID_LEAVE")
+        db = TestingSessionLocal()
+        leave = db.query(LeaveRequest).one()
+        self.assertEqual(leave.kategori, "UNPAID_LEAVE")
+        self.assertEqual(leave.status, "APPROVED")
         db.close()
 
     def test_recap_import_quarantines_missing_ids_and_is_idempotent(self):

@@ -61,7 +61,12 @@ export default function AturanGlobalPage() {
           <Card>
             <h3 className="text-sm font-semibold mb-4" style={{ color: "var(--ink)" }}>Uang Makan &amp; Potongan Telat</h3>
             <div className="grid grid-cols-2 gap-4">
-              <Field label="Uang Makan Default (Rp/hari)"><input type="number" className={inputCls} style={inputStyle} {...num("uang_makan_default")} /></Field>
+              <Field
+                label="Uang Makan Default (Rp/hari)"
+                hint="Nilai awal Rp0 berlaku sama untuk semua cabang."
+              >
+                <input type="number" min="0" className={inputCls} style={inputStyle} {...num("uang_makan_default")} />
+              </Field>
               <Field label="Toleransi Telat (menit)" hint="Telat pertama di bawah ini bebas denda"><input type="number" className={inputCls} style={inputStyle} {...num("toleransi_telat_max_menit")} /></Field>
               <Field label="Batas Telat Ringan (jam masuk ≤)"><input type="time" className={inputCls} style={inputStyle} {...time("batas_telat_ringan")} /></Field>
               <Field label="Potongan Telat Ringan (Rp)"><input type="number" className={inputCls} style={inputStyle} {...num("potongan_telat_sedikit")} /></Field>
