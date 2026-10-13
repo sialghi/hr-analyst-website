@@ -562,17 +562,18 @@ class TestContractManagement(unittest.TestCase):
             self.assertIn("Absen Luar", guide_message)
             self.assertIn("Status pengajuan", guide_message)
             self.assertIn("Profil", guide_message)
+            self.assertIn("Slip gaji per periode", guide_message)
             self.assertIn("Periksa kembali tanggal dan keterangan", guide_message)
             self.assertIn("Ketik *panduan*", guide_message)
             self.assertIs(sent[-2][1], guide_message)
             self.assertIs(sent[-1][1], login_menu)
             self.assertEqual(
                 [row["id"] for row in login_menu["sections"][0]["rows"]],
-                ["menu_cuti", "menu_izin", "menu_wfl", "menu_status", "menu_profile"],
+                ["menu_cuti", "menu_izin", "menu_wfl", "menu_status", "menu_profile", "menu_slip_gaji"],
             )
             self.assertEqual(
                 [row["title"] for row in login_menu["sections"][0]["rows"]],
-                ["Cuti", "Izin", "Absen Luar", "Status", "Profil"],
+                ["Cuti", "Izin", "Absen Luar", "Status", "Profil", "Slip Gaji"],
             )
             self.assertIn("Login berhasil", login_menu["body_text"])
 

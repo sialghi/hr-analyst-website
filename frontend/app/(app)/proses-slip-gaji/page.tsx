@@ -109,6 +109,7 @@ export default function ProsesSlipGajiPage() {
   // UI state
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [isArchiving, setIsArchiving] = useState<boolean>(false);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
   const [filterDept, setFilterDept] = useState<string>("ALL");
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -341,6 +342,34 @@ export default function ProsesSlipGajiPage() {
       showAlert("error", err.message || "Gagal mengunduh file Excel rekap.");
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  const handleArchiveAllSlips = async () => {
+    if (!sessionId) return;
+    const previousSelectedIndex = selectedIndex;
+    setIsArchiving(true);
+    try {
+      const pdfs: File[] = [];
+      for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+        pdfs.push(await createPreviewPdf(rowIndex));
+      }
+      const result = await api.archivePayrollSlips(sessionId, pdfs);
+      const replacedText = result.replaced_count
+        ? ` ${result.replaced_count} slip periode ini diperbarui dan masa simpannya dimulai ulang.`
+        : "";
+      showAlert(
+        "success",
+        `${result.saved_count} slip gaji periode ${result.periode} tersimpan di database. Masa simpan 1 tahun dimulai saat ini.${replacedText}`,
+      );
+    } catch (err) {
+      showAlert(
+        "error",
+        err instanceof Error ? err.message : "Gagal menyimpan semua slip gaji.",
+      );
+    } finally {
+      setSelectedIndex(previousSelectedIndex);
+      setIsArchiving(false);
     }
   };
 
@@ -606,6 +635,19 @@ export default function ProsesSlipGajiPage() {
           {/* Action Buttons in Header */}
           {sessionId && (
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleArchiveAllSlips}
+                disabled={isArchiving}
+                className="px-3.5 py-2 text-xs font-medium bg-white text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-50 flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+                title="Simpan seluruh PDF slip periode ini ke arsip database"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path d="M5 5h11l3 3v11H5zM8 5v5h8V5M8 19v-5h8v5" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" />
+                </svg>
+                {isArchiving ? "Menyimpan..." : "Simpan Semua Slip"}
+              </button>
+
               <button
                 type="button"
                 onClick={handlePrintSlip}

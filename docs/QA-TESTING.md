@@ -53,7 +53,7 @@ server on port 3000 or modify the configured local HR database. Ensure port
 | Leave quota, ledger reconciliation, reversal, and leave rules | Backend business-logic tests | `backend/tests/test_leave_logic.py` |
 | Database migration and local employee rebuild safety | Backend migration tests | `backend/tests/test_database_migration.py`, `test_local_employee_rebuild.py` |
 | WhatsApp login/menu/profile, automatic post-login guide and `panduan` command, authorization, deduplication, and HR linking | Bot logic and webhook/API contract tests | `backend/tests/test_contracts.py`, `test_qa_api_contracts.py` |
-| Payroll slip recipient resolution by employee code, active-link revalidation, preview-rendered PDF validation/upload, individual/bulk delivery results, and delivery history | Synthetic PDF fixtures with mocked WhatsApp and Cloudinary | `backend/tests/test_payroll_whatsapp.py` |
+| Payroll slip recipient resolution by employee code, active-link revalidation, preview-rendered PDF validation/upload, individual/bulk delivery results, delivery history, archive overwrite, employee-only WhatsApp retrieval, and expiry cleanup | Synthetic PDF fixtures with mocked WhatsApp and Cloudinary | `backend/tests/test_payroll_whatsapp.py` |
 | HR login/dashboard, employee code/NIK search, branch dropdown, employee/WhatsApp page tabs, dashboard-to-contract deep link, linked PKWT/PHL history editing and deletion, leave approval, PHL form restriction, PHL-to-PKWT recap, current-year balance UI, and live Total Bersih recalculation | Browser smoke tests with mocked API | `frontend/tests/e2e/hr.spec.ts` |
 | Saving bonus/deduction adjustments and synchronizing the active report workbook and KPI | Backend API/workbook regression tests | `backend/tests/test_process_adjustments.py`, `test_summary_net_total.py` |
 | Attendance processing/imports, rules, holidays, users, reports, remote attendance, and additional HR workflows | Existing flows need a feature-by-feature gap review and incremental tests | Backend routes and remaining UI pages |
@@ -68,7 +68,11 @@ Payroll PDFs for both download and WhatsApp are rasterized from the same
 from their text, recipient amount/name boxes center their contents vertically,
 and the slip is fitted to A4 landscape. Bulk delivery renders and sends one
 employee at a time through the individual endpoint; the legacy bulk endpoint
-is disabled so it cannot generate a differently formatted PDF.
+is disabled so it cannot generate a differently formatted PDF. **Simpan Semua
+Slip** archives those same preview-rendered PDFs in the database. WhatsApp
+retrieval is limited to the employee linked to the authenticated phone number;
+period archives are replaced on re-save and deleted one year after their latest
+save.
 
 The repository-wide `npm run lint` still reports ESLint violations, including
 explicit `any` types and React Hooks rule findings in application pages. CI

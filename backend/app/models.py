@@ -3,7 +3,7 @@ import datetime
 import enum
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, Float, Date, DateTime, ForeignKey, JSON, Enum, Text,
+    Column, Integer, String, Boolean, Float, Date, DateTime, ForeignKey, JSON, Enum, Text, LargeBinary,
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -249,6 +249,27 @@ class PayrollWhatsAppDelivery(Base):
     error_detail = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)
+
+
+class PayrollSlipArchive(Base):
+    """PDF slip payroll final yang dapat diambil karyawan selama masa retensi."""
+    __tablename__ = "payroll_slip_archives"
+
+    id = Column(Integer, primary_key=True, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    payroll_period = Column(String, nullable=False, index=True)
+    employee_name = Column(String, nullable=False)
+    pdf_bytes = Column(LargeBinary, nullable=False)
+    saved_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    saved_at = Column(DateTime, nullable=False, default=datetime.datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+
+    employee = relationship("Employee")
+    saved_by = relationship("User")
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "payroll_period", name="uq_payroll_slip_employee_period"),
+    )
 
 
 class WhatsAppAuditLog(Base):

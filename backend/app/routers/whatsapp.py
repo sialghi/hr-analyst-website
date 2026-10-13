@@ -481,6 +481,7 @@ async def send_welcome_menu(to_number: str, login_success: bool = False):
         )
         + "Silakan pilih layanan yang Anda butuhkan. Anda juga dapat mengetik "
         + "*cuti*, *izin*, *absen luar*, *status*, atau *profil*.\n\n"
+        + "Ketik *slip gaji* untuk mengambil arsip slip Anda.\n\n"
         + "Semua pengajuan diteruskan ke Website HR Analyst untuk diverifikasi HR Master."
     )
 
@@ -513,6 +514,11 @@ async def send_welcome_menu(to_number: str, login_success: bool = False):
                     "title": "Profil",
                     "description": "Lihat data profil karyawan Anda",
                 },
+                {
+                    "id": "menu_slip_gaji",
+                    "title": "Slip Gaji",
+                    "description": "Unduh slip gaji per periode",
+                },
             ],
         }
     ]
@@ -533,7 +539,8 @@ async def send_help_guide(to_number: str):
         "• Cuti atau Izin\n"
         "• Absen Luar\n"
         "• Status pengajuan\n"
-        "• Profil\n\n"
+        "• Profil\n"
+        "• Slip gaji per periode\n\n"
         "Periksa kembali tanggal dan keterangan sebelum mengirim pengajuan.\n\n"
         "Ketik *panduan* kapan saja untuk membuka panduan ini lagi."
     )
@@ -543,6 +550,152 @@ async def send_help_guide(to_number: str):
 async def send_login_guide_and_menu(to_number: str):
     await send_help_guide(to_number)
     await send_welcome_menu(to_number, login_success=True)
+
+
+async def send_whatsapp_pdf(
+    to_number: str,
+    pdf_bytes: bytes,
+    filename: str,
+    caption: str,
+) -> Optional[dict]:
+    """Upload a private PDF to Meta and send it as a WhatsApp document."""
+    token = get_env_var("WHATSAPP_ACCESS_TOKEN")
+    phone_id = get_env_var("WHATSAPP_PHONE_NUMBER_ID")
+    if not token or not phone_id:
+        print("[WhatsApp] WHATSAPP_ACCESS_TOKEN atau WHATSAPP_PHONE_NUMBER_ID belum disetel.")
+        return {"error": "Konfigurasi WhatsApp belum tersedia."}
+
+    headers = {"Authorization": f"******"}
+    media_url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{phone_id}/media"
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            media_response = await client.post(
+                media_url,
+                data={"messaging_product": "whatsapp"},
+                files={"file": (filename, pdf_bytes, "application/pdf")},
+                headers=headers,
+            )
+            media_data = media_response.json()
+            media_id = media_data.get("id")
+            if media_response.status_code >= 400 or not media_id:
+                print(f"[WhatsApp] Gagal upload slip PDF: {media_data}")
+                return {"error": "Upload PDF ke WhatsApp gagal."}
+    except Exception as exc:
+        print(f"[WhatsApp] Error upload slip PDF: {exc}")
+        return {"error": "Upload PDF ke WhatsApp gagal."}
+
+    return await send_whatsapp_raw({
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": normalize_whatsapp_number(to_number),
+        "type": "document",
+        "document": {
+            "id": media_id,
+            "filename": filename,
+            "caption": caption,
+        },
+    })
+
+
+async def _send_payroll_archive_menu(
+    to_number: str,
+    employee_id: int,
+    db: Session,
+    offset: int = 0,
+) -> None:
+    now = datetime.datetime.utcnow()
+    archives = (
+        db.query(
+            models.PayrollSlipArchive.id,
+            models.PayrollSlipArchive.payroll_period,
+            models.PayrollSlipArchive.expires_at,
+        )
+        .filter(
+            models.PayrollSlipArchive.employee_id == employee_id,
+            models.PayrollSlipArchive.expires_at > now,
+        )
+        .order_by(models.PayrollSlipArchive.saved_at.desc(), models.PayrollSlipArchive.id.desc())
+        .all()
+    )
+    if not archives:
+        await send_whatsapp_text(
+            to_number,
+            "Belum ada arsip slip gaji yang tersedia untuk nomor ini. Hubungi HR jika slip Anda seharusnya sudah disimpan.",
+        )
+        return
+
+    page_size = 8
+    if offset < 0 or offset >= len(archives) or offset % page_size:
+        await send_whatsapp_text(to_number, "Halaman periode slip tidak valid. Ketik *slip gaji* untuk membuka daftar lagi.")
+        return
+
+    page_archives = archives[offset : offset + page_size]
+    menu_rows = [
+        {
+            "id": f"slip_archive_{archive.id}",
+            "title": archive.payroll_period[:24],
+            "description": f"Tersedia sampai {archive.expires_at.strftime('%d-%m-%Y')}",
+        }
+        for archive in page_archives
+    ]
+    if offset > 0:
+        menu_rows.append({
+            "id": f"slip_page_{max(0, offset - page_size)}",
+            "title": "Periode sebelumnya",
+            "description": "Kembali ke pilihan periode sebelumnya",
+        })
+    if offset + page_size < len(archives):
+        menu_rows.append({
+            "id": f"slip_page_{offset + page_size}",
+            "title": "Periode berikutnya",
+            "description": "Lihat pilihan periode selanjutnya",
+        })
+
+    await send_whatsapp_list(
+        to_number=to_number,
+        body_text="Pilih periode slip gaji yang ingin Anda terima.",
+        button_label="Pilih Periode",
+        sections=[{"title": "Arsip Slip Gaji", "rows": menu_rows}],
+        header_text="Slip Gaji Karyawan",
+    )
+
+
+async def _send_archived_payroll_slip(
+    to_number: str,
+    employee_id: int,
+    archive_id: int,
+    db: Session,
+) -> None:
+    archive = (
+        db.query(models.PayrollSlipArchive)
+        .filter(
+            models.PayrollSlipArchive.id == archive_id,
+            models.PayrollSlipArchive.employee_id == employee_id,
+            models.PayrollSlipArchive.expires_at > datetime.datetime.utcnow(),
+        )
+        .first()
+    )
+    if not archive:
+        await send_whatsapp_text(
+            to_number,
+            "Slip gaji tersebut sudah tidak tersedia. Ketik *slip gaji* untuk melihat periode yang masih berlaku.",
+        )
+        return
+
+    safe_name = re.sub(r"[^\w\-]", "_", archive.employee_name).strip("_") or "Karyawan"
+    safe_period = re.sub(r"[^\w\-]", "_", archive.payroll_period).strip("_") or "Periode"
+    filename = f"SlipGaji_{safe_name}_{safe_period}.pdf"
+    result = await send_whatsapp_pdf(
+        to_number,
+        bytes(archive.pdf_bytes),
+        filename,
+        f"Slip Gaji Resmi - {archive.employee_name} - Periode {archive.payroll_period}",
+    )
+    if not result or result.get("error") or not result.get("messages"):
+        await send_whatsapp_text(
+            to_number,
+            "Slip tersedia, tetapi pengiriman PDF gagal. Silakan coba lagi atau hubungi HR.",
+        )
 
 
 async def start_cuti_flow(to_number: str, db: Session):
@@ -1050,6 +1203,40 @@ async def process_whatsapp_incoming(
         "/panduan",
     ):
         await send_help_guide(from_number)
+        return
+
+    if action_key == "menu_slip_gaji" or lower_text in (
+        "/slip_gaji",
+        "slip gaji",
+        "slipgaji",
+    ):
+        employee = await require_whatsapp_login(from_number, db)
+        if employee:
+            await _send_payroll_archive_menu(from_number, employee.id, db)
+        return
+
+    if action_key.startswith("slip_page_"):
+        employee = await require_whatsapp_login(from_number, db)
+        if not employee:
+            return
+        try:
+            page_offset = int(action_key.removeprefix("slip_page_"))
+        except ValueError:
+            await send_whatsapp_text(from_number, "Pilihan halaman tidak valid. Ketik *slip gaji* untuk membuka daftar lagi.")
+            return
+        await _send_payroll_archive_menu(from_number, employee.id, db, page_offset)
+        return
+
+    if action_key.startswith("slip_archive_"):
+        employee = await require_whatsapp_login(from_number, db)
+        if not employee:
+            return
+        try:
+            archive_id = int(action_key.removeprefix("slip_archive_"))
+        except ValueError:
+            await send_whatsapp_text(from_number, "Pilihan slip tidak valid. Ketik *slip gaji* untuk membuka daftar lagi.")
+            return
+        await _send_archived_payroll_slip(from_number, employee.id, archive_id, db)
         return
 
     if action_key == "cancel_submit" or lower_text in ("/batal", "batal", "cancel"):

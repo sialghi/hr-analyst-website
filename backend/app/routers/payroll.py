@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response, JSONResponse
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .. import models, auth
@@ -34,6 +35,13 @@ router = APIRouter(tags=["payroll"])
 
 PAYROLL_ALLOWED_EXT = (".xlsx", ".xls", ".csv")
 PAYROLL_PDF_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _one_year_from(value: datetime.datetime) -> datetime.datetime:
+    try:
+        return value.replace(year=value.year + 1)
+    except ValueError:
+        return value.replace(year=value.year + 1, month=2, day=28)
 
 # ---------------------------------------------------------------------------
 # Kolom template (input dari HR)
@@ -958,6 +966,126 @@ def download_slip_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="SlipGaji_{safe_name}_{periode}.pdf"'},
     )
+
+
+@router.post("/payroll/{session_id}/archive-all")
+async def archive_all_payroll_slips(
+    session_id: str,
+    pdfs: List[UploadFile] = File(..., description="PDF slip hasil render dari pratinjau final"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Simpan PDF final semua slip pada periode payroll di database."""
+    entry = _file_store.get(f"payroll_{session_id}")
+    if not entry:
+        raise HTTPException(status_code=404, detail="Sesi payroll tidak ditemukan atau sudah kedaluwarsa.")
+
+    rows: List[Dict[str, Any]] = entry.get("rows") or []
+    period = str(entry.get("periode") or "").strip()
+    if not rows:
+        raise HTTPException(status_code=422, detail="Tidak ada slip gaji untuk disimpan.")
+    if not period or len(period) > 100:
+        raise HTTPException(status_code=422, detail="Periode payroll tidak valid.")
+    if len(pdfs) != len(rows):
+        raise HTTPException(
+            status_code=422,
+            detail="Jumlah PDF tidak cocok dengan jumlah karyawan pada sesi payroll.",
+        )
+
+    employee_ids = [row.get("_employee_id") for row in rows]
+    if any(not isinstance(employee_id, int) for employee_id in employee_ids):
+        raise HTTPException(
+            status_code=422,
+            detail="Semua baris payroll harus cocok dengan karyawan yang terdaftar di database sebelum disimpan.",
+        )
+    if len(set(employee_ids)) != len(employee_ids):
+        raise HTTPException(
+            status_code=422,
+            detail="Ada karyawan yang muncul lebih dari sekali pada periode ini; perbaiki data payroll terlebih dahulu.",
+        )
+    if any(_resolve_payroll_employee(db, row)["employee_id"] != row["_employee_id"] for row in rows):
+        raise HTTPException(
+            status_code=422,
+            detail="Pemetaan kode karyawan berubah sejak file payroll diunggah. Unggah ulang data sebelum menyimpan.",
+        )
+
+    existing_employee_ids = {
+        employee.id
+        for employee in db.query(models.Employee.id)
+        .filter(models.Employee.id.in_(employee_ids))
+        .all()
+    }
+    if existing_employee_ids != set(employee_ids):
+        raise HTTPException(status_code=422, detail="Data karyawan payroll sudah tidak tersedia.")
+
+    rendered_slips = []
+    for row, uploaded_pdf in zip(rows, pdfs):
+        if uploaded_pdf.content_type not in (None, "application/pdf"):
+            raise HTTPException(status_code=400, detail="Semua arsip harus berupa file PDF.")
+        pdf_bytes = await uploaded_pdf.read(PAYROLL_PDF_MAX_BYTES + 1)
+        if not pdf_bytes.startswith(b"%PDF-"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"PDF slip untuk {row.get('Nama') or 'karyawan'} tidak valid.",
+            )
+        if len(pdf_bytes) > PAYROLL_PDF_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Ukuran PDF slip {row.get('Nama') or 'karyawan'} melebihi batas 10 MB.",
+            )
+        rendered_slips.append((row, pdf_bytes))
+
+    saved_at = datetime.datetime.utcnow()
+    expires_at = _one_year_from(saved_at)
+    try:
+        existing_slips = {
+            slip.employee_id: slip
+            for slip in db.query(models.PayrollSlipArchive)
+            .filter(
+                models.PayrollSlipArchive.employee_id.in_(employee_ids),
+                models.PayrollSlipArchive.payroll_period == period,
+            )
+            .all()
+        }
+        replaced_count = 0
+        for row, pdf_bytes in rendered_slips:
+            employee_id = row["_employee_id"]
+            archived_slip = existing_slips.get(employee_id)
+            if archived_slip:
+                archived_slip.employee_name = str(row.get("Nama") or "Karyawan")
+                archived_slip.pdf_bytes = pdf_bytes
+                archived_slip.saved_by_user_id = current_user.id
+                archived_slip.saved_at = saved_at
+                archived_slip.expires_at = expires_at
+                replaced_count += 1
+            else:
+                db.add(models.PayrollSlipArchive(
+                    employee_id=employee_id,
+                    payroll_period=period,
+                    employee_name=str(row.get("Nama") or "Karyawan"),
+                    pdf_bytes=pdf_bytes,
+                    saved_by_user_id=current_user.id,
+                    saved_at=saved_at,
+                    expires_at=expires_at,
+                ))
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Arsip periode ini berubah bersamaan. Muat ulang payroll lalu coba simpan kembali.",
+        ) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Gagal menyimpan arsip slip gaji ke database.") from exc
+
+    return {
+        "status": "SAVED",
+        "periode": period,
+        "saved_count": len(rendered_slips),
+        "replaced_count": replaced_count,
+        "expires_at": expires_at.isoformat(),
+    }
 
 
 # ---------------------------------------------------------------------------

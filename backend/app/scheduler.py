@@ -4,9 +4,11 @@ import os
 import datetime
 from typing import Set
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from .config import CONTRACT_REMINDER_DAYS, get_today_jakarta, JAKARTA_TZ
 from .database import SessionLocal
-from .models import Employee
+from .models import Employee, PayrollSlipArchive
 from .routers.employees import _enrich_employee_data
 from .routers.whatsapp import send_whatsapp_text
 
@@ -122,20 +124,42 @@ def run_leave_quota_jobs_sync():
         db.close()
 
 
+def run_expired_payroll_slip_cleanup_sync() -> None:
+    """Permanently delete payroll PDF archives past their retention deadline."""
+    db = SessionLocal()
+    try:
+        now = datetime.datetime.utcnow()
+        deleted_count = (
+            db.query(PayrollSlipArchive)
+            .filter(PayrollSlipArchive.expires_at <= now)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        print(f"[Scheduler/PayrollArchive] {now.date()}: deleted={deleted_count}")
+    except SQLAlchemyError as exc:
+        db.rollback()
+        print(f"[Scheduler/PayrollArchive] Failed to delete expired payslips: {exc}")
+    finally:
+        db.close()
+
+
 async def start_daily_contract_scheduler():
     """
     Background Loop: Berjalan terus dan mengecek sekali sehari (pada startup dan setiap 24 jam).
-    Menggabungkan dua job:
+    Menggabungkan job:
     1. Kontrak reminder (WhatsApp notifikasi)
     2. Leave quota (anniversary grant + annual reset)
+    3. Penghapusan arsip slip gaji kedaluwarsa
     """
-    print("[Scheduler] Daily Job initialized (Asia/Jakarta) — kontrak reminder + leave quota.")
+    print("[Scheduler] Daily Job initialized (Asia/Jakarta) — kontrak, leave quota, payroll archive.")
     while True:
         try:
             # Job 1: Kontrak reminder via WhatsApp
             await check_and_send_contract_reminders()
             # Job 2: Leave quota jobs (anniversary grant + 1 Jan reset)
             run_leave_quota_jobs_sync()
+            # Job 3: Permanently remove payroll PDFs past their one-year retention
+            run_expired_payroll_slip_cleanup_sync()
             # Sleep 24 jam (86400 detik)
             await asyncio.sleep(86400)
         except asyncio.CancelledError:

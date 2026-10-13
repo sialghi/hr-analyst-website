@@ -85,6 +85,16 @@ erDiagram
         string message_id UK
         datetime processed_at
     }
+    PAYROLL_SLIP_ARCHIVES {
+        int id PK
+        int employee_id FK
+        string payroll_period
+        string employee_name
+        binary pdf_bytes
+        int saved_by_user_id FK
+        datetime saved_at
+        datetime expires_at
+    }
     HOLIDAYS {
         int id PK
         date tanggal UK
@@ -167,6 +177,8 @@ erDiagram
     EMPLOYEES ||--o{ EMPLOYEE_EMPLOYMENT_TRANSITIONS : "employee_id"
     EMPLOYMENT_CONTRACTS ||--o| EMPLOYEE_EMPLOYMENT_TRANSITIONS : "employment_contract_id unique"
     EMPLOYEES ||--o{ WHATSAPP_IDENTITIES : "employee_id"
+    EMPLOYEES ||--o{ PAYROLL_SLIP_ARCHIVES : "employee_id"
+    USERS o|--o{ PAYROLL_SLIP_ARCHIVES : "saved_by_user_id nullable"
     EMPLOYEES o|--o{ WHATSAPP_AUDIT_LOGS : "employee_id nullable"
     EMPLOYEES o|--o{ EMPLOYEE_IMPORT_CANDIDATES : "approved_employee_id nullable"
     EMPLOYEES ||--o{ ATTENDANCE_DAILY : "employee_id"
@@ -185,5 +197,6 @@ erDiagram
 - `EMPLOYEE_IMPORT_CANDIDATES.approved_employee_id`, relasi leave pada review/ledger, relasi upload batch, dan relasi karyawan pada rekap/WhatsApp audit dapat bernilai `NULL` sesuai model.
 - `EMPLOYEE_EMPLOYMENT_TRANSITIONS` merekam periode PHL hanya pada proses transisi PHL → PKWT yang baru disimpan; tidak ada data transisi lama yang di-backfill otomatis.
 - `EMPLOYEE_CODE` pada rekap kehadiran merupakan nilai sumber untuk rekonsiliasi, bukan FK ke `EMPLOYEES.employee_code`.
+- `PAYROLL_SLIP_ARCHIVES` memiliki batas unik gabungan `(employee_id, payroll_period)`; PDF disimpan sebagai BLOB dan kedaluwarsa berdasarkan `expires_at`.
 - Tabel konfigurasi global, akun, pesan webhook yang sudah diproses, hari libur, penyesuaian, absen manual, dan arsip migrasi tidak memiliki FK langsung lain pada model.
 - Field ringkas yang ditampilkan bukan daftar lengkap kolom fisik. Gunakan model SQLAlchemy dan skema database pada environment sasaran sebagai referensi lengkap.

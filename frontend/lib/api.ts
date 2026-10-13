@@ -78,29 +78,32 @@ class ApiError extends Error {
   }
 }
 
-async function request(path: string, options: RequestInit = {}) {
+type ApiRequestOptions = RequestInit & { timeoutMs?: number };
+
+async function request(path: string, options: ApiRequestOptions = {}) {
+  const { timeoutMs = 15_000, ...requestOptions } = options;
   const token = getToken();
   const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string>),
+    ...(requestOptions.headers as Record<string, string>),
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  if (!(options.body instanceof FormData) && options.body) {
+  if (!(requestOptions.body instanceof FormData) && requestOptions.body) {
     headers["Content-Type"] = "application/json";
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
-      ...options,
+      ...requestOptions,
       headers,
-      signal: options.signal ?? controller.signal,
+      signal: requestOptions.signal ?? controller.signal,
     });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new ApiError(
-        "Server tidak merespons dalam 15 detik. Periksa status backend Railway.",
+        `Server tidak merespons dalam ${Math.ceil(timeoutMs / 1000)} detik. Periksa status backend Railway.`,
         408
       );
     }
@@ -517,6 +520,23 @@ export const api = {
     const res = await request(`/payroll/${sessionId}/export-excel`);
     const blob = await res.blob();
     triggerBlobDownload(blob, `Rekap_SlipGaji_${periode}.xlsx`);
+  },
+
+  async archivePayrollSlips(sessionId: string, pdfs: File[]): Promise<{
+    status: "SAVED";
+    periode: string;
+    saved_count: number;
+    replaced_count: number;
+    expires_at: string;
+  }> {
+    const form = new FormData();
+    for (const pdf of pdfs) form.append("pdfs", pdf);
+    const res = await request(`/payroll/${sessionId}/archive-all`, {
+      method: "POST",
+      body: form,
+      timeoutMs: 120_000,
+    });
+    return res.json();
   },
 
   async downloadSlipPdf(sessionId: string, rowIndex: number, nama: string, periode: string) {

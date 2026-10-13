@@ -1,4 +1,6 @@
 import csv
+import asyncio
+import datetime
 import io
 from collections.abc import Generator
 from unittest.mock import AsyncMock
@@ -9,10 +11,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app import auth, models
+from app import auth, models, scheduler
 from app.database import Base, get_db
 from app.main import app
-from app.routers import payroll
+from app.routers import payroll, whatsapp
 
 PREVIEW_PDF = b"%PDF-1.7\npreview-rendered-slip\n%%EOF"
 
@@ -117,6 +119,14 @@ def upload_payroll(client: TestClient, data: bytes) -> dict:
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def archive_payroll(client: TestClient, session_id: str, *pdfs: bytes):
+    files = [
+        ("pdfs", (f"SlipGaji_{index}.pdf", pdf_bytes, "application/pdf"))
+        for index, pdf_bytes in enumerate(pdfs)
+    ]
+    return client.post(f"/payroll/{session_id}/archive-all", files=files)
 
 
 def send_preview_pdf(client: TestClient, url: str, pdf: bytes = PREVIEW_PDF):
@@ -359,3 +369,203 @@ def test_legacy_bulk_send_is_disabled_to_require_preview_rendered_pdfs(payroll_c
 
     assert response.status_code == 409
     assert "pratinjau" in response.json()["detail"]
+
+
+def test_archive_all_saves_final_pdfs_and_replaces_same_period(payroll_client):
+    client, session_factory = payroll_client
+    employee_id = add_employee(session_factory, code="EMP-ARCHIVE", name="Karyawan Arsip")
+    session = upload_payroll(client, payroll_csv({
+        "Kode Karyawan": "EMP-ARCHIVE",
+        "Nama": "Karyawan Arsip",
+        "No. Rekening": "1234567890",
+        "Departemen": "QA",
+        "Gaji Pokok": "5000000",
+    }))
+
+    first = archive_payroll(client, session["session_id"], b"%PDF-first")
+
+    assert first.status_code == 200, first.text
+    assert first.json()["saved_count"] == 1
+    assert first.json()["replaced_count"] == 0
+    with session_factory() as db:
+        archived = db.query(models.PayrollSlipArchive).filter_by(employee_id=employee_id).one()
+        original_id = archived.id
+        original_saved_at = archived.saved_at
+        assert archived.payroll_period == "Okt-26"
+        assert archived.pdf_bytes == b"%PDF-first"
+        assert archived.expires_at > archived.saved_at
+
+    second = archive_payroll(client, session["session_id"], b"%PDF-updated")
+
+    assert second.status_code == 200, second.text
+    assert second.json()["saved_count"] == 1
+    assert second.json()["replaced_count"] == 1
+    with session_factory() as db:
+        archived = db.query(models.PayrollSlipArchive).filter_by(employee_id=employee_id).one()
+        assert archived.id == original_id
+        assert archived.pdf_bytes == b"%PDF-updated"
+        assert archived.saved_at >= original_saved_at
+
+
+def test_archive_all_rejects_unmatched_payroll_rows_without_partial_save(payroll_client):
+    client, session_factory = payroll_client
+    session = upload_payroll(client, payroll_csv({
+        "Kode Karyawan": "EMP-MISSING",
+        "Nama": "Tidak Dikenal",
+        "No. Rekening": "1234567890",
+        "Departemen": "QA",
+        "Gaji Pokok": "5000000",
+    }))
+
+    response = archive_payroll(client, session["session_id"], b"%PDF-missing-employee")
+
+    assert response.status_code == 422
+    assert "cocok dengan karyawan" in response.json()["detail"]
+    with session_factory() as db:
+        assert db.query(models.PayrollSlipArchive).count() == 0
+
+
+def test_whatsapp_payslip_selection_only_sends_the_linked_employees_archive(
+    payroll_client,
+    monkeypatch,
+):
+    _, session_factory = payroll_client
+    employee_id = add_employee(session_factory, code="EMP-WA-ARCHIVE", name="Pemilik Slip")
+    other_employee_id = add_employee(session_factory, code="EMP-WA-OTHER", name="Karyawan Lain")
+    phone = "628123456789"
+    add_identity(session_factory, employee_id, phone)
+    now = datetime.datetime.utcnow()
+    with session_factory() as db:
+        own_archive = models.PayrollSlipArchive(
+            employee_id=employee_id,
+            payroll_period="Okt-26",
+            employee_name="Pemilik Slip",
+            pdf_bytes=b"%PDF-owned",
+            saved_at=now,
+            expires_at=now + datetime.timedelta(days=365),
+        )
+        other_archive = models.PayrollSlipArchive(
+            employee_id=other_employee_id,
+            payroll_period="Sep-26",
+            employee_name="Karyawan Lain",
+            pdf_bytes=b"%PDF-other",
+            saved_at=now,
+            expires_at=now + datetime.timedelta(days=365),
+        )
+        db.add_all([own_archive, other_archive])
+        db.commit()
+        own_archive_id = own_archive.id
+        other_archive_id = other_archive.id
+
+    send_list = AsyncMock()
+    send_pdf = AsyncMock(return_value={"messages": [{"id": "wamid.test"}]})
+    send_text = AsyncMock()
+    monkeypatch.setattr(whatsapp, "send_whatsapp_list", send_list)
+    monkeypatch.setattr(whatsapp, "send_whatsapp_pdf", send_pdf)
+    monkeypatch.setattr(whatsapp, "send_whatsapp_text", send_text)
+
+    with session_factory() as db:
+        asyncio.run(whatsapp.process_whatsapp_incoming(phone, "slip gaji", None, db))
+        assert send_list.await_count == 1
+        menu_rows = send_list.await_args.kwargs["sections"][0]["rows"]
+        assert menu_rows[0]["id"] == f"slip_archive_{own_archive_id}"
+        asyncio.run(whatsapp.process_whatsapp_incoming(
+            phone,
+            "",
+            f"slip_archive_{own_archive_id}",
+            db,
+        ))
+        asyncio.run(whatsapp.process_whatsapp_incoming(
+            phone,
+            "",
+            f"slip_archive_{other_archive_id}",
+            db,
+        ))
+
+    send_pdf.assert_awaited_once()
+    assert send_pdf.await_args.args[1] == b"%PDF-owned"
+    assert send_text.await_count == 1
+
+
+def test_whatsapp_pdf_delivery_uploads_private_media_then_sends_document(monkeypatch):
+    calls = []
+
+    class MockResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    class MockAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("/media"):
+                return MockResponse({"id": "media-id"})
+            return MockResponse({"messages": [{"id": "wamid.test"}]})
+
+    monkeypatch.setattr(
+        whatsapp,
+        "get_env_var",
+        lambda name: {"WHATSAPP_ACCESS_TOKEN": "test-token", "WHATSAPP_PHONE_NUMBER_ID": "phone-id"}.get(name, ""),
+    )
+    monkeypatch.setattr(whatsapp.httpx, "AsyncClient", MockAsyncClient)
+
+    result = asyncio.run(whatsapp.send_whatsapp_pdf(
+        "08123456789",
+        b"%PDF-private",
+        "SlipGaji_Test.pdf",
+        "Slip gaji periode tes",
+    ))
+
+    assert result == {"messages": [{"id": "wamid.test"}]}
+    assert len(calls) == 2
+    assert calls[0][1]["data"] == {"messaging_product": "whatsapp"}
+    assert calls[0][1]["files"]["file"][1] == b"%PDF-private"
+    assert calls[1][1]["json"]["to"] == "628123456789"
+    assert calls[1][1]["json"]["document"]["id"] == "media-id"
+    assert calls[1][1]["json"]["document"]["filename"] == "SlipGaji_Test.pdf"
+
+
+def test_expired_payroll_slips_are_deleted_by_daily_cleanup(payroll_client, monkeypatch):
+    _, session_factory = payroll_client
+    employee_id = add_employee(session_factory, code="EMP-ARCHIVE-EXPIRY")
+    now = datetime.datetime.utcnow()
+    with session_factory() as db:
+        db.add_all([
+            models.PayrollSlipArchive(
+                employee_id=employee_id,
+                payroll_period="Expired",
+                employee_name="Karyawan Sama",
+                pdf_bytes=b"%PDF-expired",
+                saved_at=now - datetime.timedelta(days=366),
+                expires_at=now - datetime.timedelta(seconds=1),
+            ),
+            models.PayrollSlipArchive(
+                employee_id=employee_id,
+                payroll_period="Current",
+                employee_name="Karyawan Sama",
+                pdf_bytes=b"%PDF-current",
+                saved_at=now,
+                expires_at=now + datetime.timedelta(days=365),
+            ),
+        ])
+        db.commit()
+
+    monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+    scheduler.run_expired_payroll_slip_cleanup_sync()
+
+    with session_factory() as db:
+        remaining = db.query(models.PayrollSlipArchive).all()
+        assert [archive.payroll_period for archive in remaining] == ["Current"]
