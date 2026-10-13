@@ -28,6 +28,16 @@ export interface PayrollWhatsAppDelivery {
   completed_at: string | null;
 }
 
+export interface PayrollWhatsAppSendResult {
+  status: "SENT" | "PARTIAL" | "FAILED";
+  nama: string;
+  wa_number: string;
+  text_sent: boolean;
+  pdf_sent: boolean;
+  detail: string | null;
+  delivery_id: number;
+}
+
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("hr_token");
@@ -516,16 +526,16 @@ export const api = {
     triggerBlobDownload(blob, `SlipGaji_${safeName}_${periode}.pdf`);
   },
 
-  async sendSlipWhatsApp(sessionId: string, rowIndex: number): Promise<any> {
+  async sendSlipWhatsApp(
+    sessionId: string,
+    rowIndex: number,
+    pdf: File
+  ): Promise<PayrollWhatsAppSendResult> {
+    const form = new FormData();
+    form.append("pdf", pdf);
     const res = await request(`/payroll/${sessionId}/send-whatsapp/${rowIndex}`, {
       method: "POST",
-    });
-    return res.json();
-  },
-
-  async sendSlipWhatsAppAll(sessionId: string): Promise<any> {
-    const res = await request(`/payroll/${sessionId}/send-whatsapp-all`, {
-      method: "POST",
+      body: form,
     });
     return res.json();
   },

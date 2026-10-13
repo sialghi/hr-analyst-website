@@ -7,6 +7,7 @@ import {
   triggerBlobDownload,
   type PayrollWhatsAppDelivery,
   type PayrollWhatsAppRecipient,
+  type PayrollWhatsAppSendResult,
 } from "@/lib/api";
 
 interface PayrollRow {
@@ -52,6 +53,27 @@ interface PayrollKPIs {
   total_karyawan: number;
 }
 
+interface PayrollBlastResult {
+  row_index: number;
+  nama: string;
+  wa_number?: string | null;
+  status: PayrollWhatsAppSendResult["status"] | "SKIP";
+  reason?: string;
+  detail?: string | null;
+  delivery_id?: number;
+  text_sent?: boolean;
+  pdf_sent?: boolean;
+}
+
+interface PayrollBlastSummary {
+  total: number;
+  sent: number;
+  skip: number;
+  failed: number;
+  partial: number;
+  results: PayrollBlastResult[];
+}
+
 function whatsappStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     ACTIVE: "WhatsApp aktif",
@@ -95,7 +117,7 @@ export default function ProsesSlipGajiPage() {
   // WhatsApp blast modal
   const [waModalOpen, setWaModalOpen] = useState<boolean>(false);
   const [waSending, setWaSending] = useState<boolean>(false);
-  const [waResults, setWaResults] = useState<any | null>(null);
+  const [waResults, setWaResults] = useState<PayrollBlastSummary | null>(null);
   const [waPreview, setWaPreview] = useState<PayrollWhatsAppRecipient[]>([]);
   const [waPreviewLoading, setWaPreviewLoading] = useState<boolean>(false);
   const [waHistory, setWaHistory] = useState<PayrollWhatsAppDelivery[]>([]);
@@ -104,6 +126,7 @@ export default function ProsesSlipGajiPage() {
   const [singleWaSending, setSingleWaSending] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const slipPreviewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const userRole = getRole();
@@ -126,6 +149,86 @@ export default function ProsesSlipGajiPage() {
   const formatRupiah = (val: number | string | undefined | null): string => {
     const num = Number(val) || 0;
     return new Intl.NumberFormat("id-ID").format(Math.round(num));
+  };
+
+  const createPreviewPdf = async (rowIndex: number): Promise<File> => {
+    if (selectedIndex !== rowIndex) {
+      setSelectedIndex(rowIndex);
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+    }
+    const preview = slipPreviewRef.current;
+    if (!preview) throw new Error("Pratinjau slip tidak tersedia untuk dibuat menjadi PDF.");
+
+    await document.fonts.ready;
+    await Promise.all(
+      Array.from(preview.querySelectorAll("img")).map((image) =>
+        image.complete ? Promise.resolve() : image.decode()
+      )
+    );
+
+    const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+      import("html2canvas"),
+      import("jspdf"),
+    ]);
+    const canvas = await html2canvas(preview, {
+      backgroundColor: "#ffffff",
+      scale: 2,
+      useCORS: true,
+      onclone: (clonedDocument) => {
+        const styles = clonedDocument.createElement("style");
+        styles.textContent = `
+          #printable-slip {
+            color: #000000 !important;
+            border-color: #000000 !important;
+            outline-color: #000000 !important;
+            text-decoration-color: #000000 !important;
+            box-shadow: none !important;
+            text-shadow: none !important;
+          }
+          #printable-slip * {
+            border-color: #000000 !important;
+            outline-color: #000000 !important;
+            text-decoration-color: #000000 !important;
+            box-shadow: none !important;
+            text-shadow: none !important;
+          }
+          #printable-slip { background-color: #ffffff !important; }
+          #printable-slip .text-red-600 { color: #dc2626 !important; }
+          #printable-slip .text-red-600 * { color: #dc2626 !important; }
+          #printable-slip .border-emerald-700 { border-color: #047857 !important; }
+          #printable-slip .bg-white { background-color: #ffffff !important; }
+        `;
+        clonedDocument.head.appendChild(styles);
+      },
+    });
+    const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 8;
+    const fitScale = Math.min(
+      (pageWidth - margin * 2) / canvas.width,
+      (pageHeight - margin * 2) / canvas.height
+    );
+    const imageWidth = canvas.width * fitScale;
+    const imageHeight = canvas.height * fitScale;
+    pdf.addImage(
+      canvas.toDataURL("image/png"),
+      "PNG",
+      (pageWidth - imageWidth) / 2,
+      (pageHeight - imageHeight) / 2,
+      imageWidth,
+      imageHeight,
+      undefined,
+      "FAST"
+    );
+
+    const row = rows[rowIndex];
+    const safeName = (row?.Nama || `karyawan_${rowIndex}`).replace(/[^\w\-]/g, "_");
+    return new File([pdf.output("blob")], `SlipGaji_${safeName}_${periode}.pdf`, {
+      type: "application/pdf",
+    });
   };
 
   // 1. Download Template
@@ -246,7 +349,8 @@ export default function ProsesSlipGajiPage() {
     if (!sessionId || !selectedEmployee) return;
     setIsDownloadingPdf(true);
     try {
-      await api.downloadSlipPdf(sessionId, selectedIndex, selectedEmployee.Nama, periode);
+      const pdf = await createPreviewPdf(selectedIndex);
+      triggerBlobDownload(pdf, pdf.name);
       showAlert("success", `PDF Slip Gaji ${selectedEmployee.Nama} berhasil diunduh.`);
     } catch (err: any) {
       showAlert("error", err.message || "Gagal mengunduh PDF slip gaji.");
@@ -273,7 +377,8 @@ export default function ProsesSlipGajiPage() {
       if (!confirmed) return;
 
       setSingleWaSending(true);
-      const res = await api.sendSlipWhatsApp(sessionId, selectedIndex);
+      const pdf = await createPreviewPdf(selectedIndex);
+      const res = await api.sendSlipWhatsApp(sessionId, selectedIndex, pdf);
       if (res.status === "SENT") {
         showAlert("success", `Rincian dan PDF slip berhasil dikirim ke ${res.nama} (${res.wa_number}).`);
       } else if (res.status === "PARTIAL") {
@@ -329,8 +434,49 @@ export default function ProsesSlipGajiPage() {
 
     setWaSending(true);
     setWaResults(null);
+    const previousIndex = selectedIndex;
     try {
-      const res = await api.sendSlipWhatsAppAll(sessionId);
+      const results: PayrollBlastResult[] = waPreview
+        .filter((recipient) => recipient.status !== "ACTIVE")
+        .map((recipient) => ({
+          row_index: recipient.row_index,
+          nama: recipient.nama,
+          wa_number: recipient.wa_number,
+          status: "SKIP",
+          reason: recipient.status,
+        }));
+
+      for (const recipient of readyRecipients) {
+        try {
+          const pdf = await createPreviewPdf(recipient.row_index);
+          const result = await api.sendSlipWhatsApp(sessionId, recipient.row_index, pdf);
+          results.push({ row_index: recipient.row_index, ...result });
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error
+            ? err.message
+            : "PDF gagal dibuat atau pengiriman tidak berhasil.";
+          const errorStatus = err instanceof Error && "status" in err
+            && typeof err.status === "number"
+            ? err.status
+            : undefined;
+          results.push({
+            row_index: recipient.row_index,
+            nama: recipient.nama,
+            wa_number: recipient.wa_number,
+            status: errorStatus === 409 ? "SKIP" : "FAILED",
+            detail: errorMessage,
+          });
+        }
+      }
+
+      const res = {
+        total: waPreview.length,
+        sent: results.filter((result) => result.status === "SENT").length,
+        skip: results.filter((result) => result.status === "SKIP").length,
+        failed: results.filter((result) => result.status === "FAILED").length,
+        partial: results.filter((result) => result.status === "PARTIAL").length,
+        results,
+      };
       setWaResults(res);
       setWaHistory(await api.getPayrollWhatsAppHistory(sessionId));
       const resultSummary =
@@ -340,6 +486,7 @@ export default function ProsesSlipGajiPage() {
     } catch (err: any) {
       showAlert("error", err.message || "Gagal mengirim pesan WhatsApp blast.");
     } finally {
+      setSelectedIndex(previousIndex);
       setWaSending(false);
     }
   };
@@ -1072,6 +1219,7 @@ export default function ProsesSlipGajiPage() {
                 <div
                   className="bg-white border-2 border-slate-800 rounded-none shadow-md max-w-4xl mx-auto p-8 font-sans text-black"
                   id="printable-slip"
+                  ref={slipPreviewRef}
                 >
                   {/* Document Header (Kop Surat) */}
                   <div className="mb-3">
@@ -1192,15 +1340,14 @@ export default function ProsesSlipGajiPage() {
                       </div>
 
                       {/* Subtotal Pendapatan with Double Border Bottom */}
-                      <div className="mt-4 pt-1 border-t border-black">
-                        <div className="border-b-[2px] border-black pb-0.5">
-                          <div className="flex justify-between items-center font-bold">
-                            <span className="w-36">Total Pendapatan</span>
-                            <span className="w-8">: Rp</span>
-                            <span className="flex-1 text-right">{formatRupiah(selectedEmployee["Sub Total"])}</span>
-                          </div>
+                      <div className="mt-4 pt-2 border-t border-black">
+                        <div className="flex justify-between items-center font-bold leading-5 pb-2">
+                          <span data-testid="income-subtotal-text" className="w-36">Total Pendapatan</span>
+                          <span className="w-8">: Rp</span>
+                          <span className="flex-1 text-right">{formatRupiah(selectedEmployee["Sub Total"])}</span>
                         </div>
-                        <div className="border-b border-black mt-[1px]" />
+                        <div data-testid="income-subtotal-rule" className="border-b-[2px] border-black" />
+                        <div className="border-b border-black mt-1" />
                       </div>
                     </div>
 
@@ -1212,42 +1359,42 @@ export default function ProsesSlipGajiPage() {
                         </div>
                         <div className="space-y-1">
                           <div className="flex justify-between items-center">
-                            <span className="w-56 truncate">Denda Keterlambatan / Keluar awal</span>
+                            <span className="w-56 whitespace-normal leading-4">Denda Keterlambatan / Keluar awal</span>
                             <span className="w-8">: Rp</span>
                             <span className="flex-1 text-right">
                               {(selectedEmployee["Potongan Denda/SO"] || selectedEmployee["Pot Denda/SO"]) ? formatRupiah(selectedEmployee["Potongan Denda/SO"] ?? selectedEmployee["Pot Denda/SO"]) : "-"}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
-                            <span className="w-56 truncate">BPJS Kesehatan & Ketenagakerjaan</span>
+                            <span className="w-56 whitespace-normal leading-4">BPJS Kesehatan & Ketenagakerjaan</span>
                             <span className="w-8">: Rp</span>
                             <span className="flex-1 text-right">
                               {(selectedEmployee["Potongan BPJS"] || selectedEmployee["Pot BPJS"]) ? formatRupiah(selectedEmployee["Potongan BPJS"] ?? selectedEmployee["Pot BPJS"]) : "-"}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
-                            <span className="w-56 truncate">Pinjaman / Kasbon</span>
+                            <span className="w-56 whitespace-normal leading-4">Pinjaman / Kasbon</span>
                             <span className="w-8">: Rp</span>
                             <span className="flex-1 text-right">
                               {selectedEmployee["Kasbon Bulan Ini"] ? formatRupiah(selectedEmployee["Kasbon Bulan Ini"]) : "-"}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
-                            <span className="w-56 truncate">Tidak Hadir / Prorata</span>
+                            <span className="w-56 whitespace-normal leading-4">Tidak Hadir / Prorata</span>
                             <span className="w-8">: Rp</span>
                             <span className="flex-1 text-right">
                               {(selectedEmployee["Potongan Nominal"] || selectedEmployee["Pot Nominal"]) ? formatRupiah(selectedEmployee["Potongan Nominal"] ?? selectedEmployee["Pot Nominal"]) : "-"}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
-                            <span className="w-56 truncate">Potongan Telat</span>
+                            <span className="w-56 whitespace-normal leading-4">Potongan Telat</span>
                             <span className="w-8">: Rp</span>
                             <span className="flex-1 text-right">
                               {(selectedEmployee["Potongan Telat"] || selectedEmployee["Pot Telat"]) ? formatRupiah(selectedEmployee["Potongan Telat"] ?? selectedEmployee["Pot Telat"]) : "-"}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
-                            <span className="w-56 truncate">Potongan Lain - Lain</span>
+                            <span className="w-56 whitespace-normal leading-4">Potongan Lain - Lain</span>
                             <span className="w-8">: Rp</span>
                             <span className="flex-1 text-right">
                               {(selectedEmployee["Potongan Lain"] || selectedEmployee["Pot Lain"]) ? formatRupiah(selectedEmployee["Potongan Lain"] ?? selectedEmployee["Pot Lain"]) : "-"}
@@ -1257,15 +1404,14 @@ export default function ProsesSlipGajiPage() {
                       </div>
 
                       {/* Subtotal Potongan with Double Border Bottom */}
-                      <div className="mt-4 pt-1 border-t border-black">
-                        <div className="border-b-[2px] border-black pb-0.5">
-                          <div className="flex justify-between items-center font-bold">
-                            <span className="w-36">Total Potongan</span>
-                            <span className="w-8">: Rp</span>
-                            <span className="flex-1 text-right">{formatRupiah(selectedEmployee["Total Potongan"])}</span>
-                          </div>
+                      <div className="mt-4 pt-2 border-t border-black">
+                        <div className="flex justify-between items-center font-bold leading-5 pb-2">
+                          <span data-testid="deduction-subtotal-text" className="w-36">Total Potongan</span>
+                          <span className="w-8">: Rp</span>
+                          <span className="flex-1 text-right">{formatRupiah(selectedEmployee["Total Potongan"])}</span>
                         </div>
-                        <div className="border-b border-black mt-[1px]" />
+                        <div data-testid="deduction-subtotal-rule" className="border-b-[2px] border-black" />
+                        <div className="border-b border-black mt-1" />
                       </div>
                     </div>
                   </div>
@@ -1276,9 +1422,9 @@ export default function ProsesSlipGajiPage() {
                       {/* TOTAL JUMLAH DITERIMA with Exact Excel Border Box Style */}
                       <div className="flex items-center">
                         <span className="font-bold italic mr-4 tracking-wide w-44">TOTAL JUMLAH DITERIMA</span>
-                        <div className="border border-black px-4 py-1 font-bold flex items-center justify-between min-w-[210px] bg-white">
+                        <div data-testid="net-pay-box" className="border border-black px-4 py-2 font-bold flex items-center justify-between min-h-10 min-w-[210px] leading-5 bg-white">
                           <span className="italic font-bold">Rp</span>
-                          <span className="font-bold tracking-tight text-sm">{formatRupiah(selectedEmployee.THP)}</span>
+                          <span data-testid="net-pay-value" className="font-bold tracking-tight text-sm">{formatRupiah(selectedEmployee.THP)}</span>
                         </div>
                       </div>
                       {/* Sisa Pinjaman (Red, Italic exact styling) */}
@@ -1294,8 +1440,8 @@ export default function ProsesSlipGajiPage() {
                     {/* Signature Section Right Side */}
                     <div className="text-center w-52 pt-1">
                       <p className="text-xs mb-14 text-black">Penerima</p>
-                      <div className="border border-emerald-700 py-1 px-3 text-xs text-black font-semibold bg-white inline-block w-full">
-                        <span>{selectedEmployee.Nama}</span>
+                      <div data-testid="recipient-name-box" className="border border-emerald-700 px-3 py-2 min-h-10 text-xs text-black font-semibold bg-white flex items-center justify-center leading-5">
+                        <span data-testid="recipient-name">{selectedEmployee.Nama}</span>
                       </div>
                     </div>
                   </div>
@@ -1415,7 +1561,10 @@ export default function ProsesSlipGajiPage() {
                 <div className="max-h-32 overflow-y-auto divide-y divide-slate-200">
                   {waResults.results?.map((result: any) => (
                     <div key={`${result.row_index}-${result.delivery_id}`} className="flex justify-between gap-3 py-1.5">
-                      <span>{result.nama} ({result.wa_number || result.reason || "tanpa nomor"})</span>
+                      <span>
+                        {result.nama} ({result.wa_number || result.reason || "tanpa nomor"})
+                        {result.detail && <span className="block text-slate-500">{result.detail}</span>}
+                      </span>
                       <span className="font-semibold">{result.status}</span>
                     </div>
                   ))}

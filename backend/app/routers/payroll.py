@@ -33,6 +33,7 @@ from .whatsapp import (
 router = APIRouter(tags=["payroll"])
 
 PAYROLL_ALLOWED_EXT = (".xlsx", ".xls", ".csv")
+PAYROLL_PDF_MAX_BYTES = 10 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # Kolom template (input dari HR)
@@ -266,6 +267,7 @@ async def _send_payroll_slip(
     periode: str,
     wa_number: str,
     row_index: int,
+    pdf_bytes: bytes,
 ) -> Dict[str, Any]:
     errors = []
     try:
@@ -279,35 +281,31 @@ async def _send_payroll_slip(
 
     pdf_sent = False
     try:
-        pdf_bytes = _generate_slip_pdf_bytes(emp, periode)
-        if not pdf_bytes:
-            errors.append("PDF tidak berhasil dibuat.")
+        safe_name = re.sub(r"[^\w\-]", "_", emp.get("Nama", f"karyawan_{row_index}"))
+        pdf_filename = f"SlipGaji_{safe_name}_{periode}.pdf"
+        cloudinary_url = upload_to_cloudinary(
+            file_bytes=pdf_bytes,
+            filename=pdf_filename,
+            folder="hr_slip_gaji",
+            resource_type="raw",
+        )
+        if not cloudinary_url:
+            errors.append("PDF gagal diunggah untuk pengiriman WhatsApp.")
         else:
-            safe_name = re.sub(r"[^\w\-]", "_", emp.get("Nama", f"karyawan_{row_index}"))
-            pdf_filename = f"SlipGaji_{safe_name}_{periode}.pdf"
-            cloudinary_url = upload_to_cloudinary(
-                file_bytes=pdf_bytes,
-                filename=pdf_filename,
-                folder="hr_slip_gaji",
-                resource_type="raw",
-            )
-            if not cloudinary_url:
-                errors.append("PDF gagal diunggah untuk pengiriman WhatsApp.")
-            else:
-                doc_result = await send_whatsapp_raw({
-                    "messaging_product": "whatsapp",
-                    "recipient_type": "individual",
-                    "to": wa_number,
-                    "type": "document",
-                    "document": {
-                        "link": cloudinary_url,
-                        "filename": pdf_filename,
-                        "caption": f"📎 Slip Gaji Resmi — {emp.get('Nama', '')} — Periode {periode}",
-                    },
-                })
-                pdf_sent = _wa_send_succeeded(doc_result)
-                if not pdf_sent:
-                    errors.append("Pengiriman dokumen PDF gagal.")
+            doc_result = await send_whatsapp_raw({
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": wa_number,
+                "type": "document",
+                "document": {
+                    "link": cloudinary_url,
+                    "filename": pdf_filename,
+                    "caption": f"Slip Gaji Resmi - {emp.get('Nama', '')} - Periode {periode}",
+                },
+            })
+            pdf_sent = _wa_send_succeeded(doc_result)
+            if not pdf_sent:
+                errors.append("Pengiriman dokumen PDF gagal.")
     except Exception as exc:
         errors.append(f"Proses PDF gagal: {exc}")
 
@@ -1042,12 +1040,21 @@ def _finish_delivery(
 async def send_slip_whatsapp(
     session_id: str,
     row_index: int,
+    pdf: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """
-    Revalidasi linking dari employee_code ke WhatsAppIdentity aktif, lalu kirim teks dan PDF.
+    Revalidasi linking lalu kirim teks dan PDF yang dirender dari pratinjau slip.
     """
+    if pdf.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Berkas yang dikirim harus berformat PDF.")
+    pdf_bytes = await pdf.read(PAYROLL_PDF_MAX_BYTES + 1)
+    if len(pdf_bytes) > PAYROLL_PDF_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Ukuran PDF slip melebihi batas 10 MB.")
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="Berkas PDF slip tidak valid.")
+
     key = f"payroll_{session_id}"
     entry = _file_store.get(key)
     if not entry:
@@ -1083,7 +1090,7 @@ async def send_slip_whatsapp(
     delivery = _record_payroll_delivery(
         db, entry, row_index, audit_row, current_user, wa_number,
     )
-    result = await _send_payroll_slip(emp, periode, wa_number, row_index)
+    result = await _send_payroll_slip(emp, periode, wa_number, row_index, pdf_bytes)
     _finish_delivery(db, delivery, result)
     return {
         "status": result["status"],
@@ -1103,68 +1110,10 @@ async def send_slip_whatsapp(
 @router.post("/payroll/{session_id}/send-whatsapp-all")
 async def send_slip_whatsapp_all(
     session_id: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user),
+    _: models.User = Depends(auth.get_current_user),
 ):
-    """Kirim slip ke semua baris yang memiliki linking aktif saat pengiriman dimulai."""
-    key = f"payroll_{session_id}"
-    entry = _file_store.get(key)
-    if not entry:
-        raise HTTPException(status_code=404, detail="Sesi payroll tidak ditemukan.")
-
-    rows: List[Dict] = entry["rows"]
-    periode = entry.get("periode", "")
-
-    results = []
-    for idx, emp in enumerate(rows):
-        resolved = _resolve_payroll_employee(db, emp)
-        audit_row = {**emp, "_employee_id": resolved["employee_id"]}
-        if resolved["status"] != "ACTIVE":
-            delivery = _record_payroll_delivery(
-                db,
-                entry,
-                idx,
-                audit_row,
-                current_user,
-                resolved["phone_number"],
-                status="SKIPPED",
-            )
-            results.append({
-                "row_index": idx,
-                "nama": emp.get("Nama"),
-                "status": "SKIP",
-                "reason": resolved["status"],
-                "delivery_id": delivery.id,
-            })
-            continue
-
-        wa_number = resolved["phone_number"]
-        delivery = _record_payroll_delivery(
-            db, entry, idx, audit_row, current_user, wa_number,
-        )
-        result = await _send_payroll_slip(emp, periode, wa_number, idx)
-        _finish_delivery(db, delivery, result)
-        results.append({
-            "row_index": idx,
-            "nama": emp.get("Nama"),
-            "wa_number": wa_number,
-            "status": result["status"],
-            "text_sent": result["text_sent"],
-            "pdf_sent": result["pdf_sent"],
-            "detail": result["error_detail"],
-            "delivery_id": delivery.id,
-        })
-
-    total_sent = sum(1 for r in results if r["status"] == "SENT")
-    total_skip = sum(1 for r in results if r["status"] == "SKIP")
-    total_failed = sum(1 for r in results if r["status"] == "FAILED")
-    total_partial = sum(1 for r in results if r["status"] == "PARTIAL")
-
-    return {
-        "total": len(rows),
-        "sent": total_sent,
-        "skip": total_skip,
-        "failed": total_failed,
-        "partial": total_partial,
-        "results": results,
-    }
+    """Bulk legacy endpoint disabled to prevent sending PDFs outside the preview renderer."""
+    raise HTTPException(
+        status_code=409,
+        detail="Buat PDF dari pratinjau untuk setiap karyawan, lalu gunakan endpoint pengiriman individual.",
+    )

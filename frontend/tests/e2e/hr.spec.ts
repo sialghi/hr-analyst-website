@@ -1,4 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 interface BrowserEmployee {
   id: number;
@@ -211,6 +214,7 @@ async function mockApi(
     upload_batch_id: number;
   } | null = null;
   let payrollHistory: Record<string, unknown>[] = [];
+  let payrollPdfUploaded = false;
 
   await page.route("**/*", async (route) => {
     const request = route.request();
@@ -338,9 +342,19 @@ async function mockApi(
     }
     if (
       options.payroll &&
-      path === "/payroll/synthetic-payroll-session/send-whatsapp-all" &&
+      path === "/payroll/synthetic-payroll-session/send-whatsapp/0" &&
       method === "POST"
     ) {
+      const requestBody = request.postDataBuffer();
+      const pdfStart = requestBody?.indexOf("%PDF-") ?? -1;
+      const pdfEnd = requestBody?.indexOf("%%EOF", pdfStart) ?? -1;
+      payrollPdfUploaded = pdfStart >= 0 && pdfEnd >= pdfStart;
+      if (payrollPdfUploaded && requestBody) {
+        writeFileSync(
+          join(tmpdir(), "preview-rendered-payroll-test.pdf"),
+          requestBody.subarray(pdfStart, pdfEnd + 5),
+        );
+      }
       payrollHistory = [{
         id: 501,
         row_index: 0,
@@ -356,27 +370,12 @@ async function mockApi(
         completed_at: "2026-10-13T08:00:01",
       }];
       await fulfillJson(route, {
-        total: 2,
-        sent: 1,
-        skip: 1,
-        failed: 0,
-        partial: 0,
-        results: [
-          {
-            row_index: 0,
-            nama: "Karyawan Tertaut",
-            wa_number: "628100000101",
-            status: "SENT",
-            delivery_id: 501,
-          },
-          {
-            row_index: 1,
-            nama: "Karyawan Belum Tertaut",
-            status: "SKIP",
-            reason: "WHATSAPP_NOT_LINKED",
-            delivery_id: 502,
-          },
-        ],
+        status: "SENT",
+        nama: "Karyawan Tertaut",
+        wa_number: "628100000101",
+        text_sent: true,
+        pdf_sent: true,
+        delivery_id: 501,
       });
       return;
     }
@@ -627,6 +626,7 @@ async function mockApi(
     leaveStatusUpdate: () => leaveStatusUpdate,
     employeeUpdatePayload: () => employeeUpdatePayload,
     employeeSnapshot: (id: number) => testEmployees.find((employee) => employee.id === id),
+    payrollPdfUploaded: () => payrollPdfUploaded,
   };
 }
 
@@ -893,7 +893,7 @@ test("bonus dan potongan lain memperbarui Total Bersih pada baris dan KPI", asyn
 });
 
 test("payroll meninjau penerima WhatsApp dan melaporkan hasil parsial pengiriman", async ({ page }) => {
-  await mockApi(page, { payroll: true });
+  const mock = await mockApi(page, { payroll: true });
   await installHrMasterSession(page);
   await page.goto("/proses-slip-gaji");
 
@@ -905,6 +905,28 @@ test("payroll meninjau penerima WhatsApp dan melaporkan hasil parsial pengiriman
   await page.getByRole("button", { name: "Proses Slip Gaji Sekarang" }).click();
   await expect(page.getByRole("heading", { name: "Pemrosesan Payroll & Slip Gaji Interaktif" })).toBeVisible();
 
+  for (const [textTestId, ruleTestId] of [
+    ["income-subtotal-text", "income-subtotal-rule"],
+    ["deduction-subtotal-text", "deduction-subtotal-rule"],
+  ]) {
+    const text = await page.getByTestId(textTestId).boundingBox();
+    const rule = await page.getByTestId(ruleTestId).boundingBox();
+    expect(text).not.toBeNull();
+    expect(rule).not.toBeNull();
+    expect(rule!.y).toBeGreaterThan(text!.y + text!.height + 3);
+  }
+
+  for (const [boxTestId, textTestId] of [
+    ["net-pay-box", "net-pay-value"],
+    ["recipient-name-box", "recipient-name"],
+  ]) {
+    const box = await page.getByTestId(boxTestId).boundingBox();
+    const text = await page.getByTestId(textTestId).boundingBox();
+    expect(box).not.toBeNull();
+    expect(text).not.toBeNull();
+    expect(Math.abs((box!.y + box!.height / 2) - (text!.y + text!.height / 2))).toBeLessThan(2);
+  }
+
   await page.getByRole("button", { name: "Kirim No WA Karyawan" }).click();
   await expect(page.getByText("628100000101")).toBeVisible();
   await expect(page.getByRole("cell", { name: "WhatsApp belum tertaut", exact: true })).toBeVisible();
@@ -913,6 +935,7 @@ test("payroll meninjau penerima WhatsApp dan melaporkan hasil parsial pengiriman
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Mulai Kirim Sekarang" }).click();
+  await expect.poll(mock.payrollPdfUploaded).toBe(true);
   await expect(page.getByText("Hasil Pengiriman Blast:")).toBeVisible();
   await expect(page.getByText("Pengiriman selesai: 1 lengkap, 0 sebagian, 1 dilewati, 0 gagal.")).toBeVisible();
   await page.getByText("Riwayat percobaan pengiriman (1)").click();

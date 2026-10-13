@@ -14,6 +14,8 @@ from app.database import Base, get_db
 from app.main import app
 from app.routers import payroll
 
+PREVIEW_PDF = b"%PDF-1.7\npreview-rendered-slip\n%%EOF"
+
 
 @pytest.fixture
 def payroll_client() -> Generator[tuple[TestClient, sessionmaker], None, None]:
@@ -117,6 +119,13 @@ def upload_payroll(client: TestClient, data: bytes) -> dict:
     return response.json()
 
 
+def send_preview_pdf(client: TestClient, url: str, pdf: bytes = PREVIEW_PDF):
+    return client.post(
+        url,
+        files={"pdf": ("preview.pdf", pdf, "application/pdf")},
+    )
+
+
 def test_payroll_template_includes_employee_code_and_upload_matches_whatsapp_by_code(payroll_client):
     client, session_factory = payroll_client
     first_id = add_employee(session_factory, code="EMP-001")
@@ -189,9 +198,7 @@ def test_payroll_send_revalidates_link_after_upload_and_logs_blocked_attempt(pay
 
     send_text = AsyncMock(return_value={"messages": [{"id": "should-not-send"}]})
     monkeypatch.setattr(payroll, "send_whatsapp_text", send_text)
-    response = client.post(
-        f"/payroll/{session['session_id']}/send-whatsapp/0",
-    )
+    response = send_preview_pdf(client, f"/payroll/{session['session_id']}/send-whatsapp/0")
 
     assert response.status_code == 409
     send_text.assert_not_awaited()
@@ -231,6 +238,7 @@ def test_payroll_send_uses_current_employee_identity_and_persists_text_pdf_resul
 
     sent_text = []
     sent_documents = []
+    uploaded_pdfs = []
 
     async def fake_send_text(number: str, message: str):
         sent_text.append((number, message))
@@ -242,16 +250,16 @@ def test_payroll_send_uses_current_employee_identity_and_persists_text_pdf_resul
 
     monkeypatch.setattr(payroll, "send_whatsapp_text", fake_send_text)
     monkeypatch.setattr(payroll, "send_whatsapp_raw", fake_send_raw)
-    monkeypatch.setattr(payroll, "_generate_slip_pdf_bytes", lambda *_: b"synthetic-pdf")
     monkeypatch.setattr(
         payroll,
         "upload_to_cloudinary",
-        lambda **_: "https://synthetic.example/slip.pdf",
+        lambda **kwargs: (
+            uploaded_pdfs.append(kwargs["file_bytes"])
+            or "https://synthetic.example/slip.pdf"
+        ),
     )
 
-    response = client.post(
-        f"/payroll/{session['session_id']}/send-whatsapp/0",
-    )
+    response = send_preview_pdf(client, f"/payroll/{session['session_id']}/send-whatsapp/0")
 
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "SENT"
@@ -259,6 +267,7 @@ def test_payroll_send_uses_current_employee_identity_and_persists_text_pdf_resul
     assert sent_text[0][0] == "628100000002"
     assert "TOTAL DITERIMA" in sent_text[0][1]
     assert sent_documents[0]["to"] == "628100000002"
+    assert uploaded_pdfs == [PREVIEW_PDF]
     with session_factory() as db:
         delivery = db.query(models.PayrollWhatsAppDelivery).one()
         assert delivery.employee_id == first_id
@@ -296,16 +305,13 @@ def test_payroll_text_provider_exception_is_recorded_as_partial_delivery(
 
     monkeypatch.setattr(payroll, "send_whatsapp_text", raise_text_error)
     monkeypatch.setattr(payroll, "send_whatsapp_raw", fake_send_raw)
-    monkeypatch.setattr(payroll, "_generate_slip_pdf_bytes", lambda *_: b"synthetic-pdf")
     monkeypatch.setattr(
         payroll,
         "upload_to_cloudinary",
         lambda **_: "https://synthetic.example/slip.pdf",
     )
 
-    response = client.post(
-        f"/payroll/{session['session_id']}/send-whatsapp/0",
-    )
+    response = send_preview_pdf(client, f"/payroll/{session['session_id']}/send-whatsapp/0")
 
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "PARTIAL"
@@ -317,63 +323,39 @@ def test_payroll_text_provider_exception_is_recorded_as_partial_delivery(
         assert delivery.pdf_status == "SENT"
 
 
-def test_payroll_bulk_send_skips_unlinked_rows_and_logs_each_outcome(
+def test_payroll_send_rejects_invalid_preview_pdf_without_contacting_providers(
     payroll_client,
     monkeypatch,
 ):
     client, session_factory = payroll_client
-    linked_id = add_employee(session_factory, code="EMP-006")
-    add_employee(session_factory, code="EMP-007")
-    add_identity(session_factory, linked_id, "628100000006")
-    session = upload_payroll(client, payroll_csv(
-        {
-            "Kode Karyawan": "EMP-006",
-            "Nama": "Karyawan Sama",
-            "No. Rekening": "666",
-            "Departemen": "Operasional",
-            "Gaji Pokok": "4000000",
-        },
-        {
-            "Kode Karyawan": "EMP-007",
-            "Nama": "Karyawan Sama",
-            "No. Rekening": "777",
-            "Departemen": "Operasional",
-            "Gaji Pokok": "5000000",
-        },
-    ))
-    sent_numbers = []
+    employee_id = add_employee(session_factory, code="EMP-009")
+    add_identity(session_factory, employee_id, "628100000009")
+    session = upload_payroll(client, payroll_csv({
+        "Kode Karyawan": "EMP-009",
+        "Nama": "Karyawan Sama",
+        "No. Rekening": "999",
+        "Departemen": "Operasional",
+        "Gaji Pokok": "4000000",
+    }))
+    send_text = AsyncMock()
+    monkeypatch.setattr(payroll, "send_whatsapp_text", send_text)
 
-    async def fake_send_text(number: str, _message: str):
-        sent_numbers.append(number)
-        return {"messages": [{"id": "bulk-text"}]}
-
-    async def fake_send_raw(_payload: dict):
-        return {"messages": [{"id": "bulk-pdf"}]}
-
-    monkeypatch.setattr(payroll, "send_whatsapp_text", fake_send_text)
-    monkeypatch.setattr(payroll, "send_whatsapp_raw", fake_send_raw)
-    monkeypatch.setattr(payroll, "_generate_slip_pdf_bytes", lambda *_: b"synthetic-pdf")
-    monkeypatch.setattr(
-        payroll,
-        "upload_to_cloudinary",
-        lambda **_: "https://synthetic.example/slip.pdf",
+    response = send_preview_pdf(
+        client,
+        f"/payroll/{session['session_id']}/send-whatsapp/0",
+        b"not-a-pdf",
     )
 
-    preview = client.get(f"/payroll/{session['session_id']}/whatsapp-recipients")
-    assert [row["status"] for row in preview.json()["recipients"]] == [
-        "ACTIVE",
-        "WHATSAPP_NOT_LINKED",
-    ]
-
-    response = client.post(f"/payroll/{session['session_id']}/send-whatsapp-all")
-
-    assert response.status_code == 200, response.text
-    assert response.json()["sent"] == 1
-    assert response.json()["skip"] == 1
-    assert response.json()["results"][1]["status"] == "SKIP"
-    assert sent_numbers == ["628100000006"]
+    assert response.status_code == 400
+    send_text.assert_not_awaited()
     with session_factory() as db:
-        deliveries = db.query(models.PayrollWhatsAppDelivery).order_by(
-            models.PayrollWhatsAppDelivery.row_index,
-        ).all()
-        assert [item.status for item in deliveries] == ["SENT", "SKIPPED"]
+        assert db.query(models.PayrollWhatsAppDelivery).count() == 0
+
+
+def test_legacy_bulk_send_is_disabled_to_require_preview_rendered_pdfs(payroll_client):
+    client, _ = payroll_client
+
+    response = client.post("/payroll/session/send-whatsapp-all")
+
+    assert response.status_code == 409
+    assert "pratinjau" in response.json()["detail"]
