@@ -163,6 +163,7 @@ async function mockApi(
     historyForPhl?: boolean;
     expiringContract?: boolean;
     processResult?: boolean;
+    payroll?: boolean;
   } = {},
 ) {
   const leave = pendingLeave();
@@ -209,6 +210,7 @@ async function mockApi(
     periode: null;
     upload_batch_id: number;
   } | null = null;
+  let payrollHistory: Record<string, unknown>[] = [];
 
   await page.route("**/*", async (route) => {
     const request = route.request();
@@ -248,6 +250,134 @@ async function mockApi(
     }
     if (path === "/profiles") {
       await fulfillJson(route, [profile]);
+      return;
+    }
+    if (path === "/payroll/upload" && method === "POST" && options.payroll) {
+      await fulfillJson(route, {
+        session_id: "synthetic-payroll-session",
+        periode: "Okt-26",
+        rows: [
+          {
+            "Kode Karyawan": "EMP-QA-101",
+            Nama: "Karyawan Tertaut",
+            "No. Rekening": "000111",
+            Departemen: "Operasional",
+            "Gaji Pokok": 4000000,
+            "Potongan Hari": 0,
+            "Potongan Nominal": 0,
+            "Uang Makan": 0,
+            "Hari Kerja": 20,
+            Lembur: 0,
+            Tunjangan: 0,
+            "Potongan Denda/SO": 0,
+            "Potongan Telat": 0,
+            "Potongan BPJS": 0,
+            "Sub Total": 4000000,
+            "Potongan Lain": 0,
+            "Kasbon Bulan Ini": 0,
+            "Sisa Kasbon": 0,
+            THP: 4000000,
+            _wa_available: true,
+            _wa_status: "ACTIVE",
+          },
+          {
+            "Kode Karyawan": "EMP-QA-102",
+            Nama: "Karyawan Belum Tertaut",
+            "No. Rekening": "000222",
+            Departemen: "Operasional",
+            "Gaji Pokok": 3500000,
+            "Potongan Hari": 0,
+            "Potongan Nominal": 0,
+            "Uang Makan": 0,
+            "Hari Kerja": 20,
+            Lembur: 0,
+            Tunjangan: 0,
+            "Potongan Denda/SO": 0,
+            "Potongan Telat": 0,
+            "Potongan BPJS": 0,
+            "Sub Total": 3500000,
+            "Potongan Lain": 0,
+            "Kasbon Bulan Ini": 0,
+            "Sisa Kasbon": 0,
+            THP: 3500000,
+            _wa_available: false,
+            _wa_status: "WHATSAPP_NOT_LINKED",
+          },
+        ],
+        kpis: { total_thp: 7500000, total_potongan: 0, total_kasbon_aktif: 0 },
+      });
+      return;
+    }
+    if (options.payroll && path === "/payroll/synthetic-payroll-session/whatsapp-recipients") {
+      await fulfillJson(route, {
+        periode: "Okt-26",
+        recipients: [
+          {
+            row_index: 0,
+            employee_id: 101,
+            employee_code: "EMP-QA-101",
+            nama: "Karyawan Tertaut",
+            wa_number: "628100000101",
+            status: "ACTIVE",
+          },
+          {
+            row_index: 1,
+            employee_id: 102,
+            employee_code: "EMP-QA-102",
+            nama: "Karyawan Belum Tertaut",
+            wa_number: null,
+            status: "WHATSAPP_NOT_LINKED",
+          },
+        ],
+      });
+      return;
+    }
+    if (options.payroll && path === "/payroll/synthetic-payroll-session/send-history") {
+      await fulfillJson(route, payrollHistory);
+      return;
+    }
+    if (
+      options.payroll &&
+      path === "/payroll/synthetic-payroll-session/send-whatsapp-all" &&
+      method === "POST"
+    ) {
+      payrollHistory = [{
+        id: 501,
+        row_index: 0,
+        employee_id: 101,
+        employee_code: "EMP-QA-101",
+        nama: "Karyawan Tertaut",
+        periode: "Okt-26",
+        wa_number: "628100000101",
+        status: "SENT",
+        text_status: "SENT",
+        pdf_status: "SENT",
+        created_at: "2026-10-13T08:00:00",
+        completed_at: "2026-10-13T08:00:01",
+      }];
+      await fulfillJson(route, {
+        total: 2,
+        sent: 1,
+        skip: 1,
+        failed: 0,
+        partial: 0,
+        results: [
+          {
+            row_index: 0,
+            nama: "Karyawan Tertaut",
+            wa_number: "628100000101",
+            status: "SENT",
+            delivery_id: 501,
+          },
+          {
+            row_index: 1,
+            nama: "Karyawan Belum Tertaut",
+            status: "SKIP",
+            reason: "WHATSAPP_NOT_LINKED",
+            delivery_id: 502,
+          },
+        ],
+      });
       return;
     }
     if (path === "/rules") {
@@ -512,6 +642,8 @@ test("HR dapat login dan membuka dashboard", async ({ page }) => {
   await mockApi(page);
   await page.goto("/login");
 
+  await expect(page.getByRole("heading", { name: "Kelola absensi dan data karyawan." })).toBeVisible();
+  await expect(page.getByText("Laporan 14 sheet · Aturan kerja per divisi")).toBeVisible();
   await page.getByPlaceholder("nama@perusahaan.com").fill("qa@example.com");
   await page.locator('input[type="password"]').fill("synthetic-password");
   await page.getByRole("button", { name: "Masuk ke Dashboard" }).click();
@@ -758,4 +890,31 @@ test("bonus dan potongan lain memperbarui Total Bersih pada baris dan KPI", asyn
   await expect(page.getByText("Rp 1.125", { exact: true })).toHaveCount(2);
   await expect(employeeRow.locator('input[type="number"]').nth(0)).toHaveValue("250");
   await expect(employeeRow.locator('input[type="number"]').nth(1)).toHaveValue("125");
+});
+
+test("payroll meninjau penerima WhatsApp dan melaporkan hasil parsial pengiriman", async ({ page }) => {
+  await mockApi(page, { payroll: true });
+  await installHrMasterSession(page);
+  await page.goto("/proses-slip-gaji");
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "payroll-sintetis.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("Kode Karyawan,Nama,Gaji Pokok\nEMP-QA-101,Karyawan Tertaut,4000000"),
+  });
+  await page.getByRole("button", { name: "Proses Slip Gaji Sekarang" }).click();
+  await expect(page.getByRole("heading", { name: "Pemrosesan Payroll & Slip Gaji Interaktif" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Kirim No WA Karyawan" }).click();
+  await expect(page.getByText("628100000101")).toBeVisible();
+  await expect(page.getByRole("cell", { name: "WhatsApp belum tertaut", exact: true })).toBeVisible();
+  await expect(page.locator(".fixed.inset-0").getByText("EMP-QA-101", { exact: true })).toBeVisible();
+  await expect(page.locator(".fixed.inset-0").getByText("EMP-QA-102", { exact: true })).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Mulai Kirim Sekarang" }).click();
+  await expect(page.getByText("Hasil Pengiriman Blast:")).toBeVisible();
+  await expect(page.getByText("Pengiriman selesai: 1 lengkap, 0 sebagian, 1 dilewati, 0 gagal.")).toBeVisible();
+  await page.getByText("Riwayat percobaan pengiriman (1)").click();
+  await expect(page.getByText(/Karyawan Tertaut · EMP-QA-101 · 628100000101/)).toBeVisible();
 });

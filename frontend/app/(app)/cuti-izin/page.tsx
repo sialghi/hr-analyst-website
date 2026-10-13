@@ -307,19 +307,19 @@ export default function CutiIzinPage() {
         if (selectedUserQuota.is_eligible === false) {
           if (selectedUserQuota.eligible_from && new Date(selectedUserQuota.eligible_from) > new Date(formTglMulai)) {
             alert(
-              `⚠️ Pengajuan Cuti Ditolak:\n` +
+              `Pengajuan Cuti Ditolak:\n` +
               `Karyawan ${formNama} belum memiliki hak cuti tahunan (belum 1 tahun masa kerja).\n` +
               `Hak cuti baru aktif mulai tanggal ${selectedUserQuota.eligible_from}.`
             );
             return;
           } else if (selectedUserQuota.error) {
-            alert(`⚠️ Pengajuan Cuti Ditolak:\n${selectedUserQuota.error}`);
+            alert(`Pengajuan Cuti Ditolak:\n${selectedUserQuota.error}`);
             return;
           }
         }
         if (selectedUserQuota.remaining <= 0) {
           alert(
-            `⚠️ Pengajuan Cuti Ditolak:\n` +
+            `Pengajuan Cuti Ditolak:\n` +
             `Sisa saldo cuti tahunan ${formNama} untuk tahun ini sudah habis ` +
             `(sisa: ${selectedUserQuota.remaining} hari).`
           );
@@ -969,11 +969,11 @@ export default function CutiIzinPage() {
                             </span>
                           ) : isCritical ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                              ⚡ Sisa {item.remaining_days.toFixed(1)}h
+                              Sisa {item.remaining_days.toFixed(1)}h
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              ✅ Sisa {item.remaining_days.toFixed(1)}h
+                              Sisa {item.remaining_days.toFixed(1)}h
                             </span>
                           )}
                         </td>
@@ -1598,7 +1598,7 @@ export default function CutiIzinPage() {
                   if (parent && !parent.querySelector(".img-error-msg")) {
                     const msg = document.createElement("div");
                     msg.className = "img-error-msg text-center text-slate-400 text-sm py-12 px-6";
-                    msg.innerHTML = "⚠️ Gagal memuat gambar.<br/><small>Coba klik tombol <strong>Buka</strong> di atas untuk melihat file langsung.</small>";
+                    msg.innerHTML = "Gagal memuat gambar.<br/><small>Coba klik tombol <strong>Buka</strong> di atas untuk melihat file langsung.</small>";
                     parent.appendChild(msg);
                   }
                 }}

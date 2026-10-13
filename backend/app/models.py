@@ -3,7 +3,7 @@ import datetime
 import enum
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, Float, Date, DateTime, ForeignKey, JSON, Enum,
+    Column, Integer, String, Boolean, Float, Date, DateTime, ForeignKey, JSON, Enum, Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -228,6 +228,27 @@ class WhatsAppIdentity(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     employee = relationship("Employee")
+
+
+class PayrollWhatsAppDelivery(Base):
+    """Audit hasil setiap percobaan pengiriman slip payroll via WhatsApp."""
+    __tablename__ = "payroll_whatsapp_deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    payroll_session_id = Column(String(32), nullable=False, index=True)
+    row_index = Column(Integer, nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True)
+    employee_code = Column(String, nullable=True)
+    employee_name = Column(String, nullable=False)
+    payroll_period = Column(String, nullable=False, index=True)
+    recipient_phone = Column(String, nullable=True)
+    requested_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    status = Column(String, nullable=False, index=True)
+    text_status = Column(String, nullable=True)
+    pdf_status = Column(String, nullable=True)
+    error_detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
 
 
 class WhatsAppAuditLog(Base):

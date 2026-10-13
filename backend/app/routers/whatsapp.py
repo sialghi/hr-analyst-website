@@ -120,25 +120,25 @@ async def require_whatsapp_login(to_number: str, db: Session) -> Optional[models
         return employee
     await send_whatsapp_text(
         to_number,
-        "🔐 Nomor WhatsApp ini belum login.\n\n"
+        "Nomor WhatsApp ini belum login.\n\n"
         "Ketik *login* untuk menghubungkan nomor ini dengan NIK Anda."
     )
     return None
 
 IZIN_KATEGORI_MAP = {
-    "1": ("SAKIT", "🏥 Sakit / SKD (Full Day)"),
-    "2": ("IZIN_TELAT", "⏰ Izin Datang Terlambat"),
-    "3": ("IZIN_PULANG_CEPAT", "🏃 Izin Pulang Lebih Awal"),
-    "4": ("LAINNYA", "📝 Izin Lainnya"),
+    "1": ("SAKIT", "Sakit / SKD (Full Day)"),
+    "2": ("IZIN_TELAT", "Izin Datang Terlambat"),
+    "3": ("IZIN_PULANG_CEPAT", "Izin Pulang Lebih Awal"),
+    "4": ("LAINNYA", "Izin Lainnya"),
 }
 
 KATEGORI_NAME_MAP = {
-    "CUTI_TAHUNAN": "🏖️ Cuti Tahunan",
-    "SAKIT": "🏥 Sakit (SKD)",
-    "IZIN_TELAT": "⏰ Izin Datang Terlambat",
-    "IZIN_PULANG_CEPAT": "🏃 Izin Pulang Lebih Awal",
-    "LAINNYA": "📝 Izin Lainnya",
-    "WORK_FROM_LOCATION": "📍 Absensi Jarak Jauh",
+    "CUTI_TAHUNAN": "Cuti Tahunan",
+    "SAKIT": "Sakit (SKD)",
+    "IZIN_TELAT": "Izin Datang Terlambat",
+    "IZIN_PULANG_CEPAT": "Izin Pulang Lebih Awal",
+    "LAINNYA": "Izin Lainnya",
+    "WORK_FROM_LOCATION": "Absensi Jarak Jauh",
 }
 
 
@@ -429,38 +429,35 @@ async def send_whatsapp_leave_status_notification(
         else f"{tanggal_mulai.strftime('%d %b %Y')} s/d {tanggal_selesai.strftime('%d %b %Y')}"
     )
 
-    jam_info = f"⏰ *Jam Izin:* {jam_izin}\n" if jam_izin else ""
-    catatan_info = f"💬 *Catatan HR:* _{catatan_hr}_\n" if catatan_hr else ""
+    jam_info = f"*Jam Izin:* {jam_izin}\n" if jam_izin else ""
+    catatan_info = f"*Catatan HR:* _{catatan_hr}_\n" if catatan_hr else ""
     verifikator = approved_by or "HR Master"
 
     if status.upper() == "APPROVED":
         msg = (
-            f"🎉 *KABAR BAIK! Pengajuan Disetujui*\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
+            f"*Pengajuan Disetujui*\n\n"
             f"Halo *{nama}*, pengajuan cuti/izin Anda telah *DISETUJUI* oleh HR Master melalui Website HR.\n\n"
-            f"🆔 *ID Pengajuan:* `#{leave_id}`\n"
-            f"📋 *Kategori:* {kat_name}\n"
-            f"📅 *Periode:* {periode}\n"
+            f"*ID Pengajuan:* `#{leave_id}`\n"
+            f"*Kategori:* {kat_name}\n"
+            f"*Periode:* {periode}\n"
             f"{jam_info}"
-            f"📝 *Alasan:* {alasan or '-'}\n"
-            f"👤 *Disetujui oleh:* {verifikator}\n"
+            f"*Alasan:* {alasan or '-'}\n"
+            f"*Disetujui oleh:* {verifikator}\n"
             f"{catatan_info}"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"✅ *Status absensi Anda akan otomatis disesuaikan oleh sistem pipeline HR.*"
+            f"\n*Status absensi Anda akan otomatis disesuaikan oleh sistem HR.*"
         )
     elif status.upper() == "REJECTED":
         msg = (
-            f"⚠️ *PEMBERITAHUAN: Pengajuan Ditolak*\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
+            f"*Pengajuan Ditolak*\n\n"
             f"Halo *{nama}*, mohon maaf pengajuan cuti/izin Anda *DITOLAK* oleh HR Master melalui Website HR.\n\n"
-            f"🆔 *ID Pengajuan:* `#{leave_id}`\n"
-            f"📋 *Kategori:* {kat_name}\n"
-            f"📅 *Periode:* {periode}\n"
+            f"*ID Pengajuan:* `#{leave_id}`\n"
+            f"*Kategori:* {kat_name}\n"
+            f"*Periode:* {periode}\n"
             f"{jam_info}"
-            f"📝 *Alasan:* {alasan or '-'}\n"
-            f"👤 *Diverifikasi oleh:* {verifikator}\n"
+            f"*Alasan:* {alasan or '-'}\n"
+            f"*Diverifikasi oleh:* {verifikator}\n"
             f"{catatan_info}"
-            f"━━━━━━━━━━━━━━━━━━\n"
+            f"\n"
             f"Silakan hubungi HR jika membutuhkan informasi atau koordinasi lebih lanjut."
         )
     else:
@@ -478,9 +475,9 @@ async def send_welcome_menu(to_number: str, login_success: bool = False):
     """Menampilkan pesan selamat datang dan pilihan menu utama bot."""
     body_text = (
         (
-            "✅ *Login berhasil.* Nomor WhatsApp ini sudah terhubung ke data karyawan Anda.\n\n"
+            "*Login berhasil.* Nomor WhatsApp ini sudah terhubung ke data karyawan Anda.\n\n"
             if login_success
-            else "👋 *Selamat datang di WhatsApp Bot HR Absensi & Cuti!*\n\n"
+            else "*WhatsApp HR Absensi & Cuti*\n\n"
         )
         + "Silakan pilih layanan yang Anda butuhkan. Anda juga dapat mengetik "
         + "*cuti*, *izin*, *absen luar*, *status*, atau *profil*.\n\n"
@@ -525,13 +522,13 @@ async def send_welcome_menu(to_number: str, login_success: bool = False):
         body_text=body_text,
         button_label="Pilih Menu",
         sections=sections,
-        header_text="HR BOT ASSISTANT",
+        header_text="HR Absensi & Cuti",
     )
 
 
 async def send_help_guide(to_number: str):
     guide_text = (
-        "📘 *Panduan HR WhatsApp*\n\n"
+        "*Panduan HR WhatsApp*\n\n"
         "Gunakan menu untuk memilih:\n"
         "• Cuti atau Izin\n"
         "• Absen Luar\n"
@@ -660,12 +657,12 @@ async def prompt_pilih_cabang(to_number: str, db: Session, is_wfl: bool = False,
         for cb_name in cabang_list:
             rows.append({
                 "id": f"{prefix}{cb_name}",
-                "title": f"🏢 {cb_name}"[:24],
+                "title": cb_name[:24],
                 "description": f"Cabang {cb_name}"[:72],
             })
         rows.append({
             "id": f"{prefix}MANUAL",
-            "title": "✏️ Ketik Nama Manual",
+            "title": "Ketik Nama Manual",
             "description": "Ketik nama lengkap karyawan manual",
         })
         sections = [{"title": "Daftar Cabang", "rows": rows}]
@@ -694,24 +691,24 @@ async def prompt_pilih_cabang(to_number: str, db: Session, is_wfl: bool = False,
     for cb_name in page_cabs:
         rows.append({
             "id": f"{prefix}{cb_name}",
-            "title": f"🏢 {cb_name}"[:24],
+            "title": cb_name[:24],
             "description": f"Cabang {cb_name}"[:72],
         })
     if page < total_pages:
         rows.append({
             "id": f"{prefix}PAGE_{page + 1}",
-            "title": f"▶️ Hal {page + 1} ({total_cab - end_idx} Lainnya)",
+            "title": f"Hal {page + 1} ({total_cab - end_idx} lainnya)",
             "description": "Lihat cabang di halaman berikutnya",
         })
     if page > 1:
         rows.append({
             "id": f"{prefix}PAGE_{page - 1}",
-            "title": f"◀️ Kembali ke Hal {page - 1}",
+            "title": f"Kembali ke Hal {page - 1}",
             "description": "Lihat cabang di halaman sebelumnya",
         })
     rows.append({
         "id": f"{prefix}MANUAL",
-        "title": "✏️ Ketik Nama Manual",
+        "title": "Ketik Nama Manual",
         "description": "Ketik nama lengkap karyawan manual",
     })
     sections = [{"title": f"Daftar Cabang (Hal {page})", "rows": rows[:10]}]
@@ -750,19 +747,19 @@ async def prompt_pilih_karyawan(to_number: str, cabang: str, db: Session, is_wfl
     total_emps = len(emps)
     if total_emps <= 9:
         body = (
-            f"🏢 Cabang: *{cabang}* ({total_emps} Karyawan)\n\n"
+            f"Cabang: *{cabang}* ({total_emps} karyawan)\n\n"
             f"Silakan pilih *Nama Karyawan* dari daftar berikut, atau ketik nama Anda langsung:"
         )
         rows = []
         for emp in emps:
             rows.append({
                 "id": f"{prefix}{emp.id}",
-                "title": f"👤 {emp.nama}"[:24],
+                "title": emp.nama[:24],
                 "description": f"{cabang} - ID Mesin: {emp.id_mesin or '-'}"[:72],
             })
         rows.append({
             "id": f"{prefix}MANUAL",
-            "title": "✏️ Ketik Nama Manual",
+            "title": "Ketik Nama Manual",
             "description": "Ketik nama manual jika nama tidak tercantum",
         })
         sections = [{"title": f"Karyawan {cabang}", "rows": rows}]
@@ -784,8 +781,8 @@ async def prompt_pilih_karyawan(to_number: str, cabang: str, db: Session, is_wfl
     page_emps = emps[start_idx:end_idx]
 
     body = (
-        f"🏢 Cabang: *{cabang}* ({total_emps} Karyawan)\n"
-        f"📄 Halaman *{page} dari {total_pages}* (Urutan {start_idx + 1}-{min(end_idx, total_emps)})\n\n"
+        f"Cabang: *{cabang}* ({total_emps} karyawan)\n"
+        f"Halaman *{page} dari {total_pages}* (Urutan {start_idx + 1}-{min(end_idx, total_emps)})\n\n"
         f"Silakan pilih dari menu tombol di bawah, ATAU Anda bisa langsung *ketik nama* Anda (contoh: *Yustari* atau *Zainudin*):"
     )
 
@@ -793,24 +790,24 @@ async def prompt_pilih_karyawan(to_number: str, cabang: str, db: Session, is_wfl
     for emp in page_emps:
         rows.append({
             "id": f"{prefix}{emp.id}",
-            "title": f"👤 {emp.nama}"[:24],
+            "title": emp.nama[:24],
             "description": f"{cabang} - ID Mesin: {emp.id_mesin or '-'}"[:72],
         })
     if page < total_pages:
         rows.append({
             "id": f"{prefix}PAGE_{page + 1}",
-            "title": f"▶️ Hal {page + 1} ({total_emps - end_idx} Lainnya)",
+            "title": f"Hal {page + 1} ({total_emps - end_idx} lainnya)",
             "description": f"Lihat karyawan halaman {page + 1}",
         })
     if page > 1:
         rows.append({
             "id": f"{prefix}PAGE_{page - 1}",
-            "title": f"◀️ Kembali ke Hal {page - 1}",
+            "title": f"Kembali ke Hal {page - 1}",
             "description": f"Lihat karyawan halaman {page - 1}",
         })
     rows.append({
         "id": f"{prefix}MANUAL",
-        "title": "✏️ Ketik Nama Manual",
+        "title": "Ketik Nama Manual",
         "description": "Ketik nama manual jika nama tidak tercantum",
     })
 
@@ -834,8 +831,8 @@ async def check_quota_and_prompt_date(to_number: str, nama: str, db: Session, is
         user_states[to_number]["step"] = "wfl_input_tgl"
         await send_whatsapp_text(
             to_number,
-            f"👤 Karyawan: *{nama}*\n"
-            f"🏢 Cabang: *{user_states[to_number]['data'].get('cabang', '-') }*\n\n"
+            f"Karyawan: *{nama}*\n"
+            f"Cabang: *{user_states[to_number]['data'].get('cabang', '-') }*\n\n"
             f"Silakan masukkan *Tanggal Bertugas Jarak Jauh*:\n"
             f"Format: `YYYY-MM-DD` atau `DD-MM-YYYY`\n"
             f"_(Contoh: `2026-10-05` atau ketik `hari ini` / `besok`)_:"
@@ -847,7 +844,7 @@ async def check_quota_and_prompt_date(to_number: str, nama: str, db: Session, is
     user_states[to_number]["data"]["quota_stats"] = stats
 
     quota_msg = (
-        f"📊 *Informasi Kuota Cuti Tahunan ({stats['year']}):*\n"
+        f"*Informasi Kuota Cuti Tahunan ({stats['year']}):*\n"
         f"• Total Jatah: *{int(stats['total_quota'])} Hari*\n"
         f"• Terpakai: *{int(stats['used_days'])} Hari*\n"
         f"• Sisa Jatah: *{int(stats['remaining_days'])} Hari*\n\n"
@@ -868,9 +865,9 @@ async def check_quota_and_prompt_date(to_number: str, nama: str, db: Session, is
             tgl_jan_str = f"01 Januari {tgl_berhak.year + 1}" if tgl_berhak else "-"
             await send_whatsapp_text(
                 to_number,
-                f"⛔ *MAAF: BELUM MEMILIKI HAK CUTI TAHUNAN*\n\n"
+                f"*Belum Memiliki Hak Cuti Tahunan*\n\n"
                 f"Halo *{nama}*, Anda belum berhak mengajukan Cuti Tahunan.\n\n"
-                f"📌 *Ketentuan Cuti Tahunan:*\n"
+                f"*Ketentuan Cuti Tahunan:*\n"
                 f"• Hak cuti pertama baru dapat diajukan setelah *1 tahun masa kerja* "
                 f"(mulai *{tgl_ann_str}*).\n"
                 f"• Jatah cuti saat anniversary adalah *kuota proporsional* (bukan 12 hari penuh).\n"
@@ -883,7 +880,7 @@ async def check_quota_and_prompt_date(to_number: str, nama: str, db: Session, is
             user_states.pop(to_number, None)
             await send_whatsapp_text(
                 to_number,
-                f"⛔ *MAAF: JATAH CUTI TAHUNAN HABIS*\n\n"
+                f"*Jatah Cuti Tahunan Habis*\n\n"
                 f"Halo *{nama}*, kuota Cuti Tahunan Anda untuk tahun *{stats['year']}* sudah habis "
                 f"(Telah digunakan: *{int(stats['used_days'])}/{int(stats['total_quota'])} Hari*).\n\n"
                 f"Pengajuan cuti tahunan tidak dapat dilanjutkan. "
@@ -894,7 +891,7 @@ async def check_quota_and_prompt_date(to_number: str, nama: str, db: Session, is
     user_states[to_number]["step"] = "input_tgl_mulai"
     await send_whatsapp_text(
         to_number,
-        f"👤 Karyawan dipilih: *{nama}*\n\n"
+        f"Karyawan dipilih: *{nama}*\n\n"
         f"{quota_msg}"
         f"Langkah berikutnya: Masukkan *Tanggal Mulai*\n"
         f"Format: `YYYY-MM-DD` atau `DD-MM-YYYY`\n"
@@ -921,34 +918,33 @@ async def send_confirmation_card(to_number: str, is_wfl: bool = False):
         else f"{tgl_mulai.strftime('%d %b %Y')} s/d {tgl_selesai.strftime('%d %b %Y')}"
     )
 
-    cabang_line = f"🏢 *Cabang/Lokasi:* {cabang}\n" if cabang else ""
-    jam_line = f"⏰ *Jam Izin:* {jam_izin}\n" if jam_izin else ""
+    cabang_line = f"*Cabang/Lokasi:* {cabang}\n" if cabang else ""
+    jam_line = f"*Jam Izin:* {jam_izin}\n" if jam_izin else ""
     if kategori == "SAKIT" and data.get("foto_bukti"):
         is_pdf = data.get("foto_bukti", "").lower().endswith(".pdf")
         dok_label = "Dokumen PDF" if is_pdf else "Foto/Gambar"
-        foto_line = f"📄 *Surat Dokter (SKD):* 🟢 Terlampir ({dok_label})\n"
+        foto_line = f"*Surat Dokter (SKD):* Terlampir ({dok_label})\n"
     elif data.get("foto_bukti"):
-        foto_line = "📸 *Foto Bukti:* 🟢 Terlampir (Foto Bukti Diterima)\n"
+        foto_line = "*Foto Bukti:* Terlampir\n"
     else:
         foto_line = ""
 
     summary = (
-        f"📋 *RINGKASAN PENGAJUAN*\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"👤 *Nama:* {nama}\n"
-        f"📋 *Kategori:* {kat_name}\n"
+        f"*Ringkasan Pengajuan*\n\n"
+        f"*Nama:* {nama}\n"
+        f"*Kategori:* {kat_name}\n"
         f"{cabang_line}"
-        f"📅 *Periode:* {periode}\n"
+        f"*Periode:* {periode}\n"
         f"{jam_line}"
-        f"📝 *Alasan:* {alasan}\n"
+        f"*Alasan:* {alasan}\n"
         f"{foto_line}"
-        f"━━━━━━━━━━━━━━━━━━\n"
+        f"\n"
         f"Apakah data pengajuan di atas sudah benar dan siap dikirim ke HR?"
     )
 
     buttons = [
-        {"id": "confirm_submit", "title": "✅ Ya, Kirim"},
-        {"id": "cancel_submit", "title": "❌ Batalkan"},
+        {"id": "confirm_submit", "title": "Ya, Kirim"},
+        {"id": "cancel_submit", "title": "Batalkan"},
     ]
 
     user_states[to_number]["step"] = "konfirmasi"
@@ -1000,7 +996,7 @@ async def process_whatsapp_incoming(
         user_states[from_number] = make_user_state("login_waiting_nik")
         await send_whatsapp_text(
             from_number,
-            "🔐 *Login Chatbot HR*\n\n"
+            "*Login WhatsApp HR*\n\n"
             "Silakan ketik NIK Anda lengkap 16 digit.\n"
             "Jangan kirim NIK milik orang lain."
         )
@@ -1017,15 +1013,15 @@ async def process_whatsapp_incoming(
             _audit_whatsapp(db, phone_number, "LOGOUT", identity.employee_id)
             db.commit()
             user_states.pop(from_number, None)
-            await send_whatsapp_text(from_number, "✅ Nomor WhatsApp berhasil logout. Ketik *login* untuk masuk kembali.")
+            await send_whatsapp_text(from_number, "Nomor WhatsApp berhasil logout. Ketik *login* untuk masuk kembali.")
         else:
-            await send_whatsapp_text(from_number, "ℹ️ Nomor WhatsApp ini belum memiliki login aktif.")
+            await send_whatsapp_text(from_number, "Nomor WhatsApp ini belum memiliki login aktif.")
         return
 
     if lower_text in ("reset", "/reset"):
         await send_whatsapp_text(
             from_number,
-            "🔒 Perubahan atau pemindahan NIK tidak dapat dilakukan lewat chatbot.\n"
+            "Perubahan atau pemindahan NIK tidak dapat dilakukan lewat chatbot.\n"
             "Silakan hubungi HR Master untuk proses reset linking nomor WhatsApp."
         )
         return
@@ -1040,7 +1036,7 @@ async def process_whatsapp_incoming(
         user_states.pop(from_number, None)
         await send_whatsapp_text(
             from_number,
-            "🔐 Akses chatbot terkunci karena nomor ini belum login.\n\n"
+            "Akses chatbot terkunci karena nomor ini belum login.\n\n"
             "Ketik *login* terlebih dahulu untuk menghubungkan nomor WhatsApp dengan NIK Anda."
         )
         return
@@ -1059,9 +1055,9 @@ async def process_whatsapp_incoming(
     if action_key == "cancel_submit" or lower_text in ("/batal", "batal", "cancel"):
         if from_number in user_states:
             user_states.pop(from_number, None)
-            await send_whatsapp_text(from_number, "❌ Pengisian formulir telah dibatalkan.")
+            await send_whatsapp_text(from_number, "Pengisian formulir telah dibatalkan.")
         else:
-            await send_whatsapp_text(from_number, "ℹ️ Tidak ada formulir yang sedang berjalan. Pilih *Cuti* atau *Izin* untuk pengajuan baru.")
+            await send_whatsapp_text(from_number, "Tidak ada formulir yang sedang berjalan. Pilih *Cuti* atau *Izin* untuk pengajuan baru.")
         return
 
     if action_key == "menu_status" or lower_text in ("/status", "status", "cek status"):
@@ -1083,13 +1079,13 @@ async def process_whatsapp_incoming(
             )
             return
 
-        lines = ["📊 *Riwayat 5 Pengajuan Terakhir Anda:*\n━━━━━━━━━━━━━━━━━━"]
+        lines = ["*Riwayat 5 Pengajuan Terakhir Anda:*"]
         for idx, lv in enumerate(leaves, 1):
             kat_name = KATEGORI_NAME_MAP.get(lv.kategori, lv.kategori)
             status_badge = (
-                "⏳ PENDING"
+                "PENDING"
                 if lv.status == "PENDING"
-                else ("✅ DISETUJUI" if lv.status == "APPROVED" else "❌ DITOLAK")
+                else ("DISETUJUI" if lv.status == "APPROVED" else "DITOLAK")
             )
             is_same = lv.tanggal_mulai == lv.tanggal_selesai
             periode = (
@@ -1100,11 +1096,11 @@ async def process_whatsapp_incoming(
             jam_str = f" ({lv.jam_izin})" if lv.jam_izin else ""
             lines.append(
                 f"{idx}. `#{lv.id}` *{kat_name}*\n"
-                f"   📅 {periode}{jam_str}\n"
+                f"   Periode: {periode}{jam_str}\n"
                 f"   Status: *{status_badge}*\n"
                 f"   Alasan: _{lv.alasan or '-'}_"
             )
-        lines.append("━━━━━━━━━━━━━━━━━━\n_Persetujuan dilakukan oleh HR Master melalui Website HR._")
+        lines.append("_Persetujuan dilakukan oleh HR Master melalui Website HR._")
         await send_whatsapp_text(from_number, "\n\n".join(lines))
         return
 
@@ -1114,8 +1110,7 @@ async def process_whatsapp_incoming(
             return
         await send_whatsapp_text(
             from_number,
-            "👤 *Profil Karyawan*\n"
-            "━━━━━━━━━━━━━━━━━━\n"
+            "*Profil Karyawan*\n"
             f"Nama: *{employee.nama}*\n"
             f"Cabang: *{employee.cabang or '-'}*\n"
             f"Kepegawaian: *{employee.employment_status or '-'}*",
@@ -1192,7 +1187,7 @@ async def process_whatsapp_incoming(
             user_states.pop(from_number, None)
             await send_whatsapp_text(
                 from_number,
-                "❌ Data login tidak dapat diverifikasi.\n"
+                "Data login tidak dapat diverifikasi.\n"
                 "Pastikan NIK benar dan hubungi HR jika nomor Anda sudah pernah terhubung."
             )
             return
@@ -1203,7 +1198,7 @@ async def process_whatsapp_incoming(
         )
         await send_whatsapp_text(
             from_number,
-            f"⚠️ *Konfirmasi Kepemilikan NIK*\n\n"
+            f"*Konfirmasi Kepemilikan NIK*\n\n"
             f"Anda akan menghubungkan nomor ini dengan NIK yang berakhiran *{nik[-4:]}*.\n"
             "Pastikan NIK tersebut benar-benar milik Anda. Jangan gunakan NIK orang lain.\n\n"
             "Jika Anda yakin dan sadar, ketik persis:\n"
@@ -1230,15 +1225,17 @@ async def process_whatsapp_incoming(
         ).first()
         if conflict and (not identity or conflict.id != identity.id):
             user_states.pop(from_number, None)
-            await send_whatsapp_text(from_number, "❌ NIK tersebut sudah terhubung ke nomor WhatsApp lain. Hubungi HR Master untuk reset.")
+            await send_whatsapp_text(from_number, "NIK tersebut sudah terhubung ke nomor WhatsApp lain. Hubungi HR Master untuk reset.")
             return
         if identity and identity.status == "ACTIVE" and identity.employee_id != employee_id:
             user_states.pop(from_number, None)
-            await send_whatsapp_text(from_number, "❌ Nomor ini sudah terhubung ke NIK lain. Perubahan hanya dapat dilakukan oleh HR Master.")
+            await send_whatsapp_text(from_number, "Nomor ini sudah terhubung ke NIK lain. Perubahan hanya dapat dilakukan oleh HR Master.")
             return
         if not identity:
             identity = models.WhatsAppIdentity(phone_number=phone_number, employee_id=employee_id)
             db.add(identity)
+        else:
+            identity.employee_id = employee_id
         identity.status = "ACTIVE"
         identity.verified_at = datetime.datetime.utcnow()
         identity.last_seen_at = datetime.datetime.utcnow()
@@ -1460,9 +1457,9 @@ async def process_whatsapp_incoming(
             user_states[from_number]["step"] = "sakit_upload_surat"
             await send_whatsapp_text(
                 from_number,
-                "📄 *Langkah Wajib: Unggah Surat Keterangan Sakit (SKD)*\n\n"
+                "*Langkah Wajib: Unggah Surat Keterangan Sakit (SKD)*\n\n"
                 "Silakan kirimkan berkas *Surat Dokter / Surat Keterangan Sakit* Anda.\n\n"
-                "📌 *Ketentuan Berkas:*\n"
+                "*Ketentuan Berkas:*\n"
                 "• Format: Foto/Gambar (JPEG, PNG, WEBP, HEIC) atau Dokumen PDF\n"
                 "• Ukuran maksimal: *10 MB*\n\n"
                 "_(Kirim langsung berkas berupa foto atau dokumen PDF. Ketik *Batal* jika ingin membatalkan)_"
@@ -1476,7 +1473,7 @@ async def process_whatsapp_incoming(
     if step == "sakit_upload_surat":
         await send_whatsapp_text(
             from_number,
-            "📄 Anda belum melampirkan berkas Surat Keterangan Sakit.\n\n"
+            "Anda belum melampirkan berkas Surat Keterangan Sakit.\n\n"
             "Silakan kirimkan berkas berupa *Foto (JPEG/PNG/WEBP/HEIC)* atau *Dokumen PDF* surat dokter Anda (maks. 10 MB).\n\n"
             "_(Ketik *Batal* jika ingin membatalkan pengajuan)_"
         )
@@ -1581,7 +1578,7 @@ async def process_whatsapp_incoming(
         user_states[from_number]["step"] = "wfl_upload_foto"
         await send_whatsapp_text(
             from_number,
-            "📸 *Langkah Terakhir: Foto Bukti Absensi*\n\n"
+            "*Langkah Terakhir: Foto Bukti Absensi*\n\n"
             "Silakan kirimkan *foto bukti* kehadiran Anda di lokasi tugas.\n"
             "_(Format yang diterima: JPEG, PNG, WEBP, HEIC)_\n\n"
             "Foto akan tersimpan di sistem HR untuk keperluan verifikasi."
@@ -1595,7 +1592,7 @@ async def process_whatsapp_incoming(
     if step == "wfl_upload_foto":
         await send_whatsapp_text(
             from_number,
-            "📸 Anda belum mengirimkan foto.\n\n"
+            "Anda belum mengirimkan foto.\n\n"
             "Silakan kirim *foto / gambar* sebagai bukti absensi Anda di lokasi tugas.\n"
             "_(Ketik *Batal* jika ingin membatalkan pengajuan)_"
         )
@@ -1647,7 +1644,7 @@ async def process_whatsapp_incoming(
                 kat_name = KATEGORI_NAME_MAP.get(overlap.kategori, overlap.kategori)
                 await send_whatsapp_text(
                     from_number,
-                    f"⛔ *PENGAJUAN DITOLAK SISTEM: TANGGAL BENTROK*\n\n"
+                    f"*Pengajuan Ditolak: Tanggal Bentrok*\n\n"
                     f"Halo *{nama}*, Anda sudah memiliki pengajuan aktif pada tanggal tersebut:\n"
                     f"• ID: `#{overlap.id}` ({kat_name})\n"
                     f"• Periode: {tgl_str}\n"
@@ -1674,9 +1671,9 @@ async def process_whatsapp_incoming(
                 tgl_jan_str = f"01 Januari {tgl_berhak.year + 1}" if tgl_berhak else "-"
                 await send_whatsapp_text(
                     from_number,
-                    f"⛔ *PENGAJUAN DITOLAK SISTEM*\n\n"
+                    f"*Pengajuan Ditolak Sistem*\n\n"
                     f"Halo *{nama}*, Anda belum berhak mengajukan Cuti Tahunan.\n\n"
-                    f"📌 *Ketentuan Cuti Tahunan:*\n"
+                    f"*Ketentuan Cuti Tahunan:*\n"
                     f"• Hak cuti pertama dapat diajukan setelah *1 tahun masa kerja* "
                     f"(mulai *{tgl_ann_str}*).\n"
                     f"• Jatah cuti saat anniversary adalah *kuota proporsional* (bukan 12 hari penuh).\n"
@@ -1687,7 +1684,7 @@ async def process_whatsapp_incoming(
                 user_states.pop(from_number, None)
                 await send_whatsapp_text(
                     from_number,
-                    f"⛔ *PENGAJUAN DITOLAK SISTEM*\n\n"
+                    f"*Pengajuan Ditolak Sistem*\n\n"
                     f"Jatah Cuti Tahunan untuk *{nama}* tahun {tgl_mulai.year} sudah habis ({int(stats['used_days'])}/{int(stats['total_quota'])} Hari terpakai)."
                 )
                 return
@@ -1695,7 +1692,7 @@ async def process_whatsapp_incoming(
                 user_states.pop(from_number, None)
                 await send_whatsapp_text(
                     from_number,
-                    f"⛔ *PENGAJUAN DITOLAK SISTEM*\n\n"
+                    f"*Pengajuan Ditolak Sistem*\n\n"
                     f"Jumlah hari cuti yang Anda ajukan (*{requested_days} Hari*) melebihi sisa jatah Cuti Tahunan Anda (*{int(stats['remaining_days'])} Hari*)."
                 )
                 return
@@ -1724,13 +1721,11 @@ async def process_whatsapp_incoming(
         # Kirim bukti pengajuan berhasil
         kat_label = KATEGORI_NAME_MAP.get(kategori, kategori)
         success_msg = (
-            f"✅ *PENGAJUAN BERHASIL DIKIRIM!*\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🆔 *ID Pengajuan:* `#{leave.id}`\n"
-            f"👤 *Nama:* {nama}\n"
-            f"📋 *Kategori:* {kat_label}\n"
-            f"⏳ *Status:* PENDING\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
+            f"*Pengajuan Berhasil Dikirim*\n\n"
+            f"*ID Pengajuan:* `#{leave.id}`\n"
+            f"*Nama:* {nama}\n"
+            f"*Kategori:* {kat_label}\n"
+            f"*Status:* PENDING\n\n"
             f"Pengajuan Anda telah tercatat di sistem Website HR Analyst.\n"
             f"Mohon menunggu persetujuan resmi dari HR Master melalui Website HR.\n\n"
             f"Kabar persetujuan akan otomatis dikirimkan ke nomor WhatsApp Anda."
@@ -1830,7 +1825,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                         if not (is_image or is_pdf):
                             await send_whatsapp_text(
                                 from_number,
-                                "⚠️ Format berkas tidak didukung.\n"
+                                "Format berkas tidak didukung.\n"
                                 "Mohon kirimkan Surat Keterangan Sakit berupa *Foto (JPEG, PNG, WEBP, HEIC)* atau *Dokumen PDF* (maks. 10 MB)."
                             )
                             continue
@@ -1841,7 +1836,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                             size_mb = int(file_size) / (1024 * 1024)
                             await send_whatsapp_text(
                                 from_number,
-                                f"⚠️ Ukuran berkas terlalu besar ({size_mb:.1f} MB).\n"
+                                f"Ukuran berkas terlalu besar ({size_mb:.1f} MB).\n"
                                 f"Maksimal ukuran file surat dokter adalah *10 MB*. Silakan kirimkan file yang lebih kecil."
                             )
                             continue
@@ -1853,7 +1848,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                         if saved_path == "EXCEEDED_SIZE":
                             await send_whatsapp_text(
                                 from_number,
-                                "⚠️ Ukuran berkas melebihi batas maksimal 10 MB.\n"
+                                "Ukuran berkas melebihi batas maksimal 10 MB.\n"
                                 "Silakan kompres berkas Anda dan kirimkan kembali di bawah 10 MB."
                             )
                         elif saved_path:
@@ -1863,7 +1858,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                         else:
                             await send_whatsapp_text(
                                 from_number,
-                                "⚠️ Gagal mengunduh/menyimpan surat sakit dari WhatsApp. Silakan coba kirim ulang berkas Anda."
+                                "Gagal mengunduh/menyimpan surat sakit dari WhatsApp. Silakan coba kirim ulang berkas Anda."
                             )
 
                     # 2. KASUS: UNGGAH FOTO ABSENSI JARAK JAUH (WFL)
@@ -1878,7 +1873,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                             if saved_path == "EXCEEDED_SIZE":
                                 await send_whatsapp_text(
                                     from_number,
-                                    "⚠️ Ukuran foto melebihi batas maksimal 10 MB. Silakan kirim foto dengan ukuran lebih kecil."
+                                    "Ukuran foto melebihi batas maksimal 10 MB. Silakan kirim foto dengan ukuran lebih kecil."
                                 )
                             elif saved_path:
                                 user_states[from_number]["data"]["foto_bukti"] = saved_path
@@ -1887,12 +1882,12 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                             else:
                                 await send_whatsapp_text(
                                     from_number,
-                                    "⚠️ Gagal mengunduh/menyimpan foto dari WhatsApp. Silakan coba kirim ulang foto Anda."
+                                    "Gagal mengunduh/menyimpan foto dari WhatsApp. Silakan coba kirim ulang foto Anda."
                                 )
                         else:
                             await send_whatsapp_text(
                                 from_number,
-                                "⚠️ Berkas yang dikirim bukan format gambar (JPEG, PNG, WEBP, HEIC).\n"
+                                "Berkas yang dikirim bukan format gambar (JPEG, PNG, WEBP, HEIC).\n"
                                 "Silakan kirimkan berkas berupa *foto/gambar* bukti kehadiran Anda."
                             )
 
@@ -1900,7 +1895,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                     else:
                         await send_whatsapp_text(
                             from_number,
-                            "ℹ️ Foto / dokumen hanya diterima saat proses pengajuan Surat Sakit atau Absensi Jarak Jauh.\n"
+                            "Foto / dokumen hanya diterima saat proses pengajuan Surat Sakit atau Absensi Jarak Jauh.\n"
                             "Pilih *Cuti*, *Izin*, atau *Absen Luar* untuk memulai pengajuan baru."
                         )
                     continue

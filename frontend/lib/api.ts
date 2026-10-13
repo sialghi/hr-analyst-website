@@ -2,6 +2,32 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:800
 
 export type Role = "hr_master" | "hr_staff";
 
+export interface PayrollWhatsAppRecipient {
+  row_index: number;
+  employee_id: number | null;
+  employee_code: string;
+  nama: string;
+  wa_number: string | null;
+  status: string;
+}
+
+export interface PayrollWhatsAppDelivery {
+  id: number;
+  row_index: number;
+  employee_id: number | null;
+  employee_code: string | null;
+  nama: string;
+  periode: string;
+  wa_number: string | null;
+  status: string;
+  text_status: string | null;
+  pdf_status: string | null;
+  error_detail: string | null;
+  requested_by_user_id: number | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem("hr_token");
@@ -440,6 +466,7 @@ export const api = {
 
 
 
+
   async chatWithAI(
     fileId: string,
     message: string,
@@ -452,7 +479,70 @@ export const api = {
     const data = await res.json();
     return data.reply as string;
   },
+
+  // ── Payroll / Slip Gaji ──────────────────────────────────────────────────
+
+  async downloadPayrollTemplate(format: "xlsx" | "csv" = "xlsx"): Promise<Blob> {
+    const res = await request(`/payroll/template?format=${format}`);
+    return res.blob();
+  },
+
+  async uploadPayroll(file: File, periode: string): Promise<any> {
+    const form = new FormData();
+    form.append("file", file);
+    const qs = periode ? `?periode=${encodeURIComponent(periode)}` : "";
+    const res = await request(`/payroll/upload${qs}`, { method: "POST", body: form });
+    return res.json();
+  },
+
+  async patchPayrollRow(sessionId: string, rowIndex: number, payload: Record<string, any>): Promise<any> {
+    const res = await request(`/payroll/${sessionId}/row/${rowIndex}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  },
+
+  async exportPayrollExcel(sessionId: string, periode: string) {
+    const res = await request(`/payroll/${sessionId}/export-excel`);
+    const blob = await res.blob();
+    triggerBlobDownload(blob, `Rekap_SlipGaji_${periode}.xlsx`);
+  },
+
+  async downloadSlipPdf(sessionId: string, rowIndex: number, nama: string, periode: string) {
+    const res = await request(`/payroll/${sessionId}/slip-pdf/${rowIndex}`);
+    const blob = await res.blob();
+    const safeName = nama.replace(/[^\w\-]/g, "_");
+    triggerBlobDownload(blob, `SlipGaji_${safeName}_${periode}.pdf`);
+  },
+
+  async sendSlipWhatsApp(sessionId: string, rowIndex: number): Promise<any> {
+    const res = await request(`/payroll/${sessionId}/send-whatsapp/${rowIndex}`, {
+      method: "POST",
+    });
+    return res.json();
+  },
+
+  async sendSlipWhatsAppAll(sessionId: string): Promise<any> {
+    const res = await request(`/payroll/${sessionId}/send-whatsapp-all`, {
+      method: "POST",
+    });
+    return res.json();
+  },
+
+  async getPayrollWhatsAppRecipients(
+    sessionId: string
+  ): Promise<{ periode: string; recipients: PayrollWhatsAppRecipient[] }> {
+    const res = await request(`/payroll/${sessionId}/whatsapp-recipients`);
+    return res.json();
+  },
+
+  async getPayrollWhatsAppHistory(sessionId: string): Promise<PayrollWhatsAppDelivery[]> {
+    const res = await request(`/payroll/${sessionId}/send-history`);
+    return res.json();
+  },
 };
+
 
 
 export function triggerBlobDownload(blob: Blob, filename: string) {

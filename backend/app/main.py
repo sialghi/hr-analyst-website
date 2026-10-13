@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .database import Base, engine, SessionLocal
-from .routers import auth, profiles, rules, employees, holidays, process, chat, leaves, whatsapp
+from .routers import auth, profiles, rules, employees, holidays, process, chat, leaves, whatsapp, payroll
 
 # Keep SQLite developer/test setup compatible; PostgreSQL schema changes run via Alembic.
 if engine.dialect.name == "sqlite":
@@ -63,6 +63,7 @@ app.include_router(leaves.router)
 app.include_router(process.router)
 app.include_router(chat.router)
 app.include_router(whatsapp.router)
+app.include_router(payroll.router)
 
 # Serve uploaded foto bukti absensi jarak jauh via /uploads/...
 _uploads_dir = Path(__file__).resolve().parent.parent / "uploads"

@@ -557,6 +557,7 @@ class TestContractManagement(unittest.TestCase):
                 for _, message in sent
                 if isinstance(message, str) and "Panduan HR WhatsApp" in message
             )
+            self.assertTrue(guide_message.startswith("*Panduan HR WhatsApp*"))
             self.assertIn("Cuti atau Izin", guide_message)
             self.assertIn("Absen Luar", guide_message)
             self.assertIn("Status pengajuan", guide_message)
@@ -569,12 +570,96 @@ class TestContractManagement(unittest.TestCase):
                 [row["id"] for row in login_menu["sections"][0]["rows"]],
                 ["menu_cuti", "menu_izin", "menu_wfl", "menu_status", "menu_profile"],
             )
+            self.assertEqual(
+                [row["title"] for row in login_menu["sections"][0]["rows"]],
+                ["Cuti", "Izin", "Absen Luar", "Status", "Profil"],
+            )
             self.assertIn("Login berhasil", login_menu["body_text"])
 
             sent.clear()
             asyncio.run(whatsapp.process_whatsapp_incoming("08123456789", "login", None, db))
             self.assertIn("Panduan HR WhatsApp", sent[-2][1])
             self.assertIsInstance(sent[-1][1], dict)
+        finally:
+            whatsapp.send_whatsapp_text = original_send
+            whatsapp.send_whatsapp_list = original_send_list
+            whatsapp.user_states.pop("08123456789", None)
+            db.close()
+
+    def test_whatsapp_login_rebinds_hr_revoked_phone_to_new_employee_nik(self):
+        db = TestingSessionLocal()
+        previous_employee = Employee(
+            nama="Karyawan Sebelumnya",
+            nik="3201010101010081",
+            profile_code="OFFICE",
+            active=True,
+        )
+        new_employee = Employee(
+            nama="Karyawan Pengganti",
+            nik="3201010101010082",
+            profile_code="OFFICE",
+            active=True,
+        )
+        db.add_all([previous_employee, new_employee])
+        db.flush()
+        identity = whatsapp.models.WhatsAppIdentity(
+            phone_number="628123456789",
+            employee_id=previous_employee.id,
+            status="REVOKED",
+        )
+        db.add(identity)
+        db.commit()
+        identity_id = identity.id
+        previous_employee_id = previous_employee.id
+        new_employee_id = new_employee.id
+        sent = []
+
+        async def fake_send(to_number, message):
+            sent.append((to_number, message))
+            return {"mocked": True}
+
+        async def fake_send_list(**kwargs):
+            sent.append((kwargs["to_number"], kwargs))
+            return {"mocked": True}
+
+        original_send = whatsapp.send_whatsapp_text
+        original_send_list = whatsapp.send_whatsapp_list
+        whatsapp.send_whatsapp_text = fake_send
+        whatsapp.send_whatsapp_list = fake_send_list
+        whatsapp.user_states.pop("08123456789", None)
+        try:
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "login", None, db
+            ))
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "3201010101010082", None, db
+            ))
+            self.assertEqual(
+                whatsapp.user_states["08123456789"]["step"],
+                "login_confirmation",
+            )
+            asyncio.run(whatsapp.process_whatsapp_incoming(
+                "08123456789", "yakin dan sadar", None, db
+            ))
+
+            db.refresh(identity)
+            self.assertEqual(identity.id, identity_id)
+            self.assertNotEqual(previous_employee_id, new_employee_id)
+            self.assertEqual(identity.employee_id, new_employee_id)
+            self.assertEqual(identity.status, "ACTIVE")
+            success_audit = db.query(whatsapp.models.WhatsAppAuditLog).filter_by(
+                phone_number="628123456789",
+                event_type="LOGIN_SUCCESS",
+            ).one()
+            self.assertEqual(success_audit.employee_id, new_employee_id)
+            self.assertTrue(any(
+                isinstance(message, str) and "Panduan HR WhatsApp" in message
+                for _, message in sent
+            ))
+            self.assertTrue(any(
+                isinstance(message, dict) and "Login berhasil" in message["body_text"]
+                for _, message in sent
+            ))
         finally:
             whatsapp.send_whatsapp_text = original_send
             whatsapp.send_whatsapp_list = original_send_list

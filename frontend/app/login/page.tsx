@@ -49,23 +49,16 @@ export default function LoginPage() {
         </div>
 
         <div className="max-w-lg">
-          <h1 className="text-4xl font-extrabold leading-tight tracking-tight text-white mb-4">
-            Satu tempat untuk aturan jam kerja, lembur, dan uang makan seluruh divisi.
+          <h1 className="text-4xl font-bold leading-tight tracking-tight text-white mb-4">
+            Kelola absensi dan data karyawan.
           </h1>
           <p className="text-sm text-slate-400 leading-relaxed">
-            Atur aturan jam baku per divisi, master karyawan, dan hari libur nasional. Laporan 14 sheet interaktif dan ekspor Excel akurat siap digunakan setiap bulan.
+            Atur jadwal kerja per divisi, kelola cuti dan kontrak, lalu proses laporan absensi untuk diekspor ke Excel.
           </p>
 
-          <div className="mt-8 grid grid-cols-2 gap-3 text-xs text-slate-300">
-            <div className="p-3 rounded-lg bg-slate-800/80 border border-slate-700/80">
-              <span className="font-semibold text-white block mb-0.5">14 Sheet Interaktif</span>
-              <span className="text-slate-400">Kalkulasi presisi sesuai aturan</span>
-            </div>
-            <div className="p-3 rounded-lg bg-slate-800/80 border border-slate-700/80">
-              <span className="font-semibold text-white block mb-0.5">Aturan Dinamis</span>
-              <span className="text-slate-400">Konfigurasi baku per divisi</span>
-            </div>
-          </div>
+          <p className="mt-7 text-xs leading-relaxed text-slate-400">
+            Laporan 14 sheet · Aturan kerja per divisi
+          </p>
         </div>
 
         <div className="text-xs text-slate-500">
