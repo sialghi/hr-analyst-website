@@ -4,7 +4,7 @@ import enum
 
 from sqlalchemy import (
     Column, Integer, String, Boolean, Float, Date, DateTime, ForeignKey, JSON, Enum, Text, LargeBinary,
-    UniqueConstraint,
+    CheckConstraint, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -94,7 +94,7 @@ class Employee(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nama = Column(String, nullable=False, index=True)
-    employee_code = Column(String, nullable=True, unique=True, index=True)
+    new_employee_id = Column("employee_code", String, nullable=True, unique=True, index=True)
     nik = Column(String, nullable=True, unique=True, index=True)  # NIK KTP 16 digit
     id_mesin = Column(String, nullable=True)  # ID di mesin absensi, opsional
     profile_code = Column(String, ForeignKey("profiles.code"), nullable=False)
@@ -106,6 +106,8 @@ class Employee(Base):
     bpjs_tk = Column(Integer, nullable=True, default=0)
     active = Column(Boolean, default=True)
     profile_needs_review = Column(Boolean, nullable=False, default=False)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+    deleted_previous_active = Column(Boolean, nullable=True)
 
     # ── Status Kepegawaian & Data Kontrak ────────────────────────────────────
     # employment_status: "PKWTT" (karyawan tetap), "PKWT" (karyawan kontrak), atau "PHL" (pekerja harian lapangan)
@@ -140,12 +142,21 @@ class Employee(Base):
     )
 
 
+class EmployeeIdSequence(Base):
+    """Global high-water mark for allocating employee ID serials."""
+    __tablename__ = "employee_id_sequences"
+
+    id = Column(Integer, primary_key=True, default=1)
+    next_serial = Column(Integer, nullable=False, default=1)
+    __table_args__ = (CheckConstraint("id = 1", name="ck_employee_id_sequences_singleton"),)
+
+
 class EmployeeImportCandidate(Base):
     """Karyawan baru hasil impor Master yang menunggu penentuan profil/status oleh HR."""
     __tablename__ = "employee_import_candidates"
 
     id = Column(Integer, primary_key=True, index=True)
-    employee_code = Column(String, nullable=False, unique=True, index=True)
+    new_employee_id = Column("employee_code", String, nullable=False, unique=True, index=True)
     nama = Column(String, nullable=False)
     nik = Column(String, nullable=True)
     join_date = Column(Date, nullable=True)
@@ -238,7 +249,7 @@ class PayrollWhatsAppDelivery(Base):
     payroll_session_id = Column(String(32), nullable=False, index=True)
     row_index = Column(Integer, nullable=False)
     employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True)
-    employee_code = Column(String, nullable=True)
+    new_employee_id = Column("employee_code", String, nullable=True, index=True)
     employee_name = Column(String, nullable=False)
     payroll_period = Column(String, nullable=False, index=True)
     recipient_phone = Column(String, nullable=True)
@@ -466,7 +477,7 @@ class AttendanceRecapRecord(Base):
     source_file_hash = Column(String, nullable=False, index=True)
     source_row = Column(Integer, nullable=False)
     employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True, index=True)
-    employee_code = Column(String, nullable=True, index=True)
+    new_employee_id = Column("employee_code", String, nullable=True, index=True)
     source_nik = Column(String, nullable=True)
     source_cabang = Column(String, nullable=True)
     source_nama = Column(String, nullable=True)

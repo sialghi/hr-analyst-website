@@ -3,9 +3,21 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schemas, auth
+from ..branches import BRANCH_CODES
 from ..database import get_db
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
+
+
+def _validated_profile_branches(branches, allowed_legacy=()):
+    normalized = [" ".join(branch.split()) for branch in (branches or []) if branch and branch.strip()]
+    invalid = sorted(set(normalized) - set(BRANCH_CODES) - set(allowed_legacy))
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cabang profil harus berasal dari daftar sembilan cabang: {', '.join(invalid)}.",
+        )
+    return list(dict.fromkeys(normalized))
 
 
 def _profile_to_out(p: models.Profile) -> schemas.ProfileOut:
@@ -43,9 +55,10 @@ def create_profile(
     existing = db.query(models.Profile).filter(models.Profile.code == payload.code).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"Kode profil '{payload.code}' sudah dipakai.")
+    profile_branches = _validated_profile_branches(payload.cabang)
 
     p = models.Profile(
-        code=payload.code, nama=payload.nama, cabang=payload.cabang, hari_kerja=payload.hari_kerja,
+        code=payload.code, nama=payload.nama, cabang=profile_branches, hari_kerja=payload.hari_kerja,
         jam_masuk=payload.jam_masuk, jam_keluar=payload.jam_keluar, patokan_lembur=payload.patokan_lembur,
         ikut_telat=payload.ikut_telat, ikut_lembur=payload.ikut_lembur,
         ikut_kuota_hari_kerja=payload.ikut_kuota_hari_kerja, hari_kandidat_kuota=payload.hari_kandidat_kuota,
@@ -70,8 +83,12 @@ def update_profile(
     if not p:
         raise HTTPException(status_code=404, detail="Profil tidak ditemukan.")
 
+    profile_branches = _validated_profile_branches(
+        payload.cabang,
+        allowed_legacy=p.cabang or [],
+    )
     p.nama = payload.nama
-    p.cabang = payload.cabang
+    p.cabang = profile_branches
     p.hari_kerja = payload.hari_kerja
     p.jam_masuk = payload.jam_masuk
     p.jam_keluar = payload.jam_keluar

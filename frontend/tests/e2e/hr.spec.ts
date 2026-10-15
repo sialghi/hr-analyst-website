@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 interface BrowserEmployee {
   id: number;
-  employee_code: string;
+  new_employee_id: string;
   nik: string;
   nama: string;
   profile_code: string;
@@ -48,7 +48,7 @@ interface BrowserEmployee {
 const employees: BrowserEmployee[] = [
   {
     id: 1,
-    employee_code: "EMP-QA-001",
+    new_employee_id: "EMP-QA-001",
     nik: "3200000000000001",
     nama: "Andi Contoh",
     profile_code: "OFFICE",
@@ -71,7 +71,7 @@ const employees: BrowserEmployee[] = [
   },
   {
     id: 2,
-    employee_code: "EMP-QA-002",
+    new_employee_id: "EMP-QA-002",
     nik: "3200000000000002",
     nama: "Siti Contoh",
     profile_code: "OFFICE",
@@ -94,7 +94,7 @@ const employees: BrowserEmployee[] = [
   },
   {
     id: 3,
-    employee_code: "EMP-QA-003",
+    new_employee_id: "EMP-QA-003",
     nik: "3200000000000003",
     nama: "Budi PHL",
     profile_code: "OFFICE",
@@ -262,7 +262,7 @@ async function mockApi(
         periode: "Okt-26",
         rows: [
           {
-            "Kode Karyawan": "EMP-QA-101",
+            "ID Karyawan": "EMP-QA-101",
             Nama: "Karyawan Tertaut",
             "No. Rekening": "000111",
             Departemen: "Operasional",
@@ -285,7 +285,7 @@ async function mockApi(
             _wa_status: "ACTIVE",
           },
           {
-            "Kode Karyawan": "EMP-QA-102",
+            "ID Karyawan": "EMP-QA-102",
             Nama: "Karyawan Belum Tertaut",
             "No. Rekening": "000222",
             Departemen: "Operasional",
@@ -319,7 +319,7 @@ async function mockApi(
           {
             row_index: 0,
             employee_id: 101,
-            employee_code: "EMP-QA-101",
+            new_employee_id: "EMP-QA-101",
             nama: "Karyawan Tertaut",
             wa_number: "628100000101",
             status: "ACTIVE",
@@ -327,7 +327,7 @@ async function mockApi(
           {
             row_index: 1,
             employee_id: 102,
-            employee_code: "EMP-QA-102",
+            new_employee_id: "EMP-QA-102",
             nama: "Karyawan Belum Tertaut",
             wa_number: null,
             status: "WHATSAPP_NOT_LINKED",
@@ -359,7 +359,7 @@ async function mockApi(
         id: 501,
         row_index: 0,
         employee_id: 101,
-        employee_code: "EMP-QA-101",
+        new_employee_id: "EMP-QA-101",
         nama: "Karyawan Tertaut",
         periode: "Okt-26",
         wa_number: "628100000101",
@@ -667,13 +667,13 @@ test("HR melihat pesan saat login ditolak", async ({ page }) => {
   await expect(page).toHaveURL(/\/login$/);
 });
 
-test("pencarian karyawan menemukan Kode Karyawan dan NIK", async ({ page }) => {
+test("pencarian karyawan menemukan ID Karyawan dan NIK", async ({ page }) => {
   await mockApi(page);
   await installHrMasterSession(page);
   await page.goto("/karyawan");
 
   const search = page.getByRole("textbox", {
-    name: "Cari nama, Kode Karyawan, atau NIK",
+    name: "Cari nama, ID Karyawan, atau NIK",
   });
   await expect(
     page.getByRole("heading", { name: "Karyawan", exact: true }),
@@ -900,7 +900,7 @@ test("payroll meninjau penerima WhatsApp dan melaporkan hasil parsial pengiriman
   await page.locator('input[type="file"]').setInputFiles({
     name: "payroll-sintetis.csv",
     mimeType: "text/csv",
-    buffer: Buffer.from("Kode Karyawan,Nama,Gaji Pokok\nEMP-QA-101,Karyawan Tertaut,4000000"),
+    buffer: Buffer.from("ID Karyawan,Nama,Gaji Pokok\nEMP-QA-101,Karyawan Tertaut,4000000"),
   });
   await page.getByRole("button", { name: "Proses Slip Gaji Sekarang" }).click();
   await expect(page.getByRole("heading", { name: "Pemrosesan Payroll & Slip Gaji Interaktif" })).toBeVisible();

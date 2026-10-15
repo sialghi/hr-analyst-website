@@ -78,6 +78,7 @@ class TestContractManagement(unittest.TestCase):
         payload = {
             "nama": "Budi Kontrak Invalid",
             "profile_code": "OFFICE",
+            "cabang": "Cab. Bandung",
             "employment_status": "PKWT",
             "join_date": "2026-01-01",
             "contract_start_date": "2026-10-01",
@@ -97,6 +98,7 @@ class TestContractManagement(unittest.TestCase):
         res1 = client.post("/employees", json={
             "nama": "Siti PKWT H-5",
             "profile_code": "OFFICE",
+            "cabang": "Cab. Bandung",
             "employment_status": "PKWT",
             "join_date": "2025-01-01",
             "contract_start_date": t1_start.isoformat(),
@@ -110,6 +112,7 @@ class TestContractManagement(unittest.TestCase):
         client.post("/employees", json={
             "nama": "Andi PKWT Aman",
             "profile_code": "OFFICE",
+            "cabang": "Cab. Bandung",
             "employment_status": "PKWT",
             "join_date": "2026-01-01",
             "contract_start_date": t2_start.isoformat(),
@@ -136,6 +139,7 @@ class TestContractManagement(unittest.TestCase):
         res = client.post("/employees", json={
             "nama": "Reno Promosi",
             "profile_code": "OFFICE",
+            "cabang": "Cab. Bandung",
             "employment_status": "PKWT",
             "join_date": "2026-01-01",
             "contract_start_date": t_start.isoformat(),
@@ -163,7 +167,7 @@ class TestContractManagement(unittest.TestCase):
     def test_phl_to_pkwt_records_phl_period_and_active_contract(self):
         db = TestingSessionLocal()
         employee = Employee(
-            employee_code="EMP-PHL-TO-PKWT",
+            new_employee_id="EMP-PHL-TO-PKWT",
             nama="Rina PHL ke PKWT",
             profile_code="OFFICE",
             employment_status="PHL",
@@ -209,9 +213,9 @@ class TestContractManagement(unittest.TestCase):
         self.assertEqual(len(saved.phl_to_pkwt_transitions), 1)
         db.close()
 
-    def create_phl_transition_employee(self, employee_code="EMP-HISTORY-EDIT"):
+    def create_phl_transition_employee(self, new_employee_id="EMP-HISTORY-EDIT"):
         employee = Employee(
-            employee_code=employee_code,
+            new_employee_id=new_employee_id,
             nama="Karyawan Histori",
             profile_code="OFFICE",
             employment_status="PHL",
@@ -300,7 +304,7 @@ class TestContractManagement(unittest.TestCase):
         self.assertEqual(invalid.status_code, 400)
 
         foreign_employee = Employee(
-            employee_code="EMP-HISTORY-OTHER",
+            new_employee_id="EMP-HISTORY-OTHER",
             nama="Karyawan Lain",
             profile_code="OFFICE",
         )
@@ -346,7 +350,7 @@ class TestContractManagement(unittest.TestCase):
     def test_invalid_phl_to_pkwt_transition_does_not_change_employee_or_create_history(self):
         db = TestingSessionLocal()
         employee = Employee(
-            employee_code="EMP-PHL-INVALID",
+            new_employee_id="EMP-PHL-INVALID",
             nama="Budi PHL",
             profile_code="OFFICE",
             employment_status="PHL",
@@ -394,6 +398,7 @@ class TestContractManagement(unittest.TestCase):
         res = client.post("/employees", json={
             "nama": "Dewi Perpanjangan",
             "profile_code": "OFFICE",
+            "cabang": "Cab. Bandung",
             "employment_status": "PKWT",
             "join_date": "2025-10-01",
             "contract_start_date": t1_start.isoformat(),
@@ -426,7 +431,7 @@ class TestContractManagement(unittest.TestCase):
 
     def test_6_master_workbook_dry_run_and_apply(self):
         employee = Employee(
-            employee_code="EMP-MASTER-001",
+            new_employee_id="EMP-MASTER-001",
             nama="Rina Cabang",
             profile_code="OFFICE",
             employment_status="PKWTT",
@@ -441,7 +446,7 @@ class TestContractManagement(unittest.TestCase):
         sheet = workbook.active
         sheet.title = "Pembaruan Master"
         sheet.append([
-            "Kode Karyawan",
+            "ID Karyawan",
             "Nama Karyawan",
             "NIK",
             "Cabang",
@@ -473,7 +478,7 @@ class TestContractManagement(unittest.TestCase):
         self.assertEqual(dry_run.json()["total_updated"], 1)
 
         db = TestingSessionLocal()
-        unchanged = db.query(Employee).filter(Employee.employee_code == "EMP-MASTER-001").one()
+        unchanged = db.query(Employee).filter(Employee.new_employee_id == "EMP-MASTER-001").one()
         self.assertIsNone(unchanged.cabang)
         self.assertIsNone(unchanged.nik)
         self.assertEqual(unchanged.employment_status, "PKWTT")
@@ -488,7 +493,7 @@ class TestContractManagement(unittest.TestCase):
         self.assertFalse(applied.json()["dry_run"])
 
         db = TestingSessionLocal()
-        updated = db.query(Employee).filter(Employee.employee_code == "EMP-MASTER-001").one()
+        updated = db.query(Employee).filter(Employee.new_employee_id == "EMP-MASTER-001").one()
         self.assertEqual(updated.cabang, "Cab. Bandung")
         self.assertEqual(updated.nik, "3201010101010001")
         self.assertEqual(updated.join_date, datetime.date(2024, 1, 15))
@@ -515,6 +520,7 @@ class TestContractManagement(unittest.TestCase):
     def test_8_whatsapp_login_links_phone_to_nik_after_confirmation(self):
         db = TestingSessionLocal()
         employee = Employee(
+            new_employee_id="JIP-010001",
             nama="Karyawan WhatsApp",
             nik="3201010101010001",
             profile_code="OFFICE",
@@ -590,12 +596,14 @@ class TestContractManagement(unittest.TestCase):
     def test_whatsapp_login_rebinds_hr_revoked_phone_to_new_employee_nik(self):
         db = TestingSessionLocal()
         previous_employee = Employee(
+            new_employee_id="JIP-010001",
             nama="Karyawan Sebelumnya",
             nik="3201010101010081",
             profile_code="OFFICE",
             active=True,
         )
         new_employee = Employee(
+            new_employee_id="JIP-010002",
             nama="Karyawan Pengganti",
             nik="3201010101010082",
             profile_code="OFFICE",
@@ -669,7 +677,12 @@ class TestContractManagement(unittest.TestCase):
 
     def test_whatsapp_panduan_commands_resend_guide_without_clearing_form_state(self):
         db = TestingSessionLocal()
-        employee = Employee(nama="Panduan WhatsApp", profile_code="OFFICE", active=True)
+        employee = Employee(
+            new_employee_id="JIP-010001",
+            nama="Panduan WhatsApp",
+            profile_code="OFFICE",
+            active=True,
+        )
         db.add(employee)
         db.flush()
         db.add(whatsapp.models.WhatsAppIdentity(
@@ -714,6 +727,7 @@ class TestContractManagement(unittest.TestCase):
     def test_whatsapp_profile_shows_only_linked_employee_fields_without_nik(self):
         db = TestingSessionLocal()
         employee = Employee(
+            new_employee_id="JIP-010001",
             nama="Profil WhatsApp",
             nik="3201010101010099",
             profile_code="OFFICE",
@@ -761,6 +775,7 @@ class TestContractManagement(unittest.TestCase):
     def test_whatsapp_cuti_and_izin_menu_routes_to_separate_categories(self):
         db = TestingSessionLocal()
         employee = Employee(
+            new_employee_id="JIP-010001",
             nama="Menu WhatsApp",
             profile_code="OFFICE",
             active=True,
@@ -889,14 +904,14 @@ class TestContractManagement(unittest.TestCase):
         db = TestingSessionLocal()
         first = Employee(
             nama="Karyawan Link Satu",
-            employee_code="JIP-10001",
+            new_employee_id="JIP-10001",
             nik="3201010101010002",
             profile_code="OFFICE",
             active=True,
         )
         second = Employee(
             nama="Karyawan Link Dua",
-            employee_code="JIP-10002",
+            new_employee_id="JIP-10002",
             nik="3201010101010003",
             profile_code="OFFICE",
             active=False,
@@ -930,7 +945,7 @@ class TestContractManagement(unittest.TestCase):
 
         move_res = client.patch(
             f"/employees/whatsapp-identities/{identity_id}/move",
-            json={"employee_code": "JIP-10002", "reason": "Nomor dikonfirmasi HR sebagai milik karyawan kedua"},
+            json={"new_employee_id": "JIP-10002", "reason": "Nomor dikonfirmasi HR sebagai milik karyawan kedua"},
         )
         self.assertEqual(move_res.status_code, 409)
 
@@ -943,14 +958,14 @@ class TestContractManagement(unittest.TestCase):
 
         move_res = client.patch(
             f"/employees/whatsapp-identities/{identity_id}/move",
-            json={"employee_code": "JIP-10002", "reason": "Nomor dikonfirmasi HR sebagai milik karyawan kedua"},
+            json={"new_employee_id": "JIP-10002", "reason": "Nomor dikonfirmasi HR sebagai milik karyawan kedua"},
         )
         self.assertEqual(move_res.status_code, 200)
         self.assertEqual(move_res.json()["employee_id"], second_id)
-        self.assertEqual(move_res.json()["employee_code"], "JIP-10002")
+        self.assertEqual(move_res.json()["new_employee_id"], "JIP-10002")
         self.assertEqual(client.patch(
             f"/employees/whatsapp-identities/{identity_id}/move",
-            json={"employee_code": "JIP-UNKNOWN", "reason": "Kode tidak terdaftar"},
+            json={"new_employee_id": "JIP-UNKNOWN", "reason": "Kode tidak terdaftar"},
         ).status_code, 404)
         self.assertEqual(client.patch(
             f"/employees/whatsapp-identities/{identity_id}/move",
@@ -1015,6 +1030,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
     def test_master_dry_run_commit_and_review_new_employee(self):
         db = TestingSessionLocal()
         employee = Employee(
+            new_employee_id="JIP-010001",
             nama="Old Employee",
             nik="3201010101010001",
             profile_code="OFFICE",
@@ -1046,7 +1062,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
 
         db = TestingSessionLocal()
         unchanged = db.query(Employee).filter(Employee.id == employee_id).one()
-        self.assertIsNone(unchanged.employee_code)
+        self.assertEqual(unchanged.new_employee_id, "JIP-010001")
         self.assertEqual(unchanged.cabang, "OLD BRANCH")
         self.assertEqual(db.query(EmployeeImportCandidate).count(), 0)
         db.close()
@@ -1061,7 +1077,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
 
         db = TestingSessionLocal()
         updated = db.query(Employee).filter(Employee.id == employee_id).one()
-        self.assertEqual(updated.employee_code, "JIP-010001")
+        self.assertEqual(updated.new_employee_id, "JIP-010001")
         self.assertEqual(updated.nama, "Current Employee")
         self.assertEqual(updated.cabang, "Gudang A")
         self.assertTrue(updated.active)
@@ -1069,7 +1085,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         self.assertEqual(updated.employment_status, "PKWT")
         self.assertEqual(db.query(LeaveRequest).one().nama, "Current Employee")
         candidate = db.query(EmployeeImportCandidate).filter(
-            EmployeeImportCandidate.employee_code == "JIP-010002"
+            EmployeeImportCandidate.new_employee_id == "JIP-010002"
         ).one()
         candidate_id = candidate.id
         self.assertEqual(candidate.status, "PENDING")
@@ -1081,7 +1097,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         )
         self.assertEqual(approved.status_code, 200)
         self.assertTrue(approved.json()["active"])
-        self.assertEqual(approved.json()["employee_code"], "JIP-010002")
+        self.assertEqual(approved.json()["new_employee_id"], "JIP-010002")
         self.assertEqual(approved.json()["payroll_status"], "Harian")
 
         updated = client.put(
@@ -1096,12 +1112,41 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
             },
         )
         self.assertEqual(updated.status_code, 200)
-        self.assertEqual(updated.json()["employee_code"], "JIP-010001")
+        self.assertEqual(updated.json()["new_employee_id"], "JIP-010001")
         db = TestingSessionLocal()
         preserved = db.query(Employee).filter(Employee.id == employee_id).one()
         self.assertEqual(preserved.jabatan, "Admin")
         self.assertEqual(preserved.payroll_status, "Bulanan")
         db.close()
+
+    def test_master_import_rejects_serial_reserved_by_another_branch(self):
+        db = TestingSessionLocal()
+        db.add(Employee(
+            new_employee_id="JIP-020180",
+            nama="Karyawan Cabang Lain",
+            profile_code="OFFICE",
+            cabang="Gudang C",
+        ))
+        db.commit()
+        db.close()
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Master ID"
+        sheet.append(["ID Karyawan", "Nama", "Lokasi Kerja"])
+        sheet.append(["JIP-010180", "Karyawan Baru", "Gudang A"])
+        response = client.post(
+            "/employees/import/master?dry_run=true",
+            files=self._upload(workbook, "duplicate_serial_master.xlsx"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["total_new_pending_review"], 0)
+        self.assertEqual(response.json()["total_conflicts"], 1)
+        self.assertIn(
+            "Nomor urut",
+            response.json()["detail"]["conflicts"][0]["reason"],
+        )
 
     def test_current_employee_template_uses_hr_fields_without_pay_or_contract_end_columns(self):
         response = client.get("/employees/template")
@@ -1109,7 +1154,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         workbook = load_workbook(io.BytesIO(response.content), data_only=True)
         self.assertEqual(workbook.sheetnames, ["Data Karyawan", "Referensi", "Petunjuk"])
         headers = [cell.value for cell in workbook["Data Karyawan"][1]]
-        self.assertIn("Kode Karyawan", headers)
+        self.assertIn("ID Karyawan", headers)
         self.assertIn("Kode Profil", headers)
         self.assertIn("Status Kepegawaian", headers)
         self.assertNotIn("Gaji Pokok", headers)
@@ -1122,7 +1167,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         sheet = workbook.active
         sheet.title = "Data Karyawan"
         sheet.append([
-            "Kode Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
+            "ID Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
             "Status Kepegawaian", "Tanggal Masuk", "Status Aktif", "Jabatan", "ID Mesin Absensi",
         ])
         sheet.append([
@@ -1137,7 +1182,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         self.assertEqual(response.json()["inserted"], 1)
         self.assertEqual(response.json()["contract_required"], ["EMP-TEST-001"])
         db = TestingSessionLocal()
-        employee = db.query(Employee).filter(Employee.employee_code == "EMP-TEST-001").one()
+        employee = db.query(Employee).filter(Employee.new_employee_id == "EMP-TEST-001").one()
         self.assertEqual(employee.nik, "9999999999999999")
         self.assertEqual(employee.employment_status, "PKWT")
         self.assertFalse(employee.active)
@@ -1155,10 +1200,42 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         )
         self.assertEqual(rejected.status_code, 400)
 
-    def test_master_update_matches_by_employee_code_and_does_not_touch_contract_history(self):
+    def test_employee_import_rejects_serial_reserved_in_another_branch(self):
+        db = TestingSessionLocal()
+        db.add(Employee(
+            new_employee_id="JIP-020180",
+            nama="Karyawan Cabang Lain",
+            profile_code="OFFICE",
+            cabang="Gudang C",
+        ))
+        db.commit()
+        db.close()
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Data Karyawan"
+        sheet.append([
+            "ID Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
+            "Status Kepegawaian", "Tanggal Masuk",
+        ])
+        sheet.append([
+            "JIP-010180", "Karyawan Baru", "9999999999999999", "Gudang A",
+            "OFFICE", "PKWTT", datetime.date(2026, 1, 1),
+        ])
+        response = client.post(
+            "/employees/import",
+            files=self._upload(workbook, "duplicate_serial.xlsx"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["inserted"], 0)
+        self.assertEqual(response.json()["skipped"], 1)
+        self.assertIn("Nomor urut", response.json()["errors"][0]["reason"])
+
+    def test_master_update_matches_by_new_employee_id_and_does_not_touch_contract_history(self):
         db = TestingSessionLocal()
         employee = Employee(
-            employee_code="EMP-UPDATE-001",
+            new_employee_id="EMP-UPDATE-001",
             nama="Pegawai Uji",
             nik="9999999999999998",
             profile_code="OFFICE",
@@ -1175,7 +1252,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         sheet = workbook.active
         sheet.title = "Pembaruan Master"
         sheet.append([
-            "Kode Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
+            "ID Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
             "Status Kepegawaian", "Tanggal Masuk", "Status Aktif", "Jabatan", "ID Mesin Absensi",
         ])
         sheet.append([
@@ -1190,7 +1267,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         self.assertEqual(response.json()["total_updated"], 1)
         self.assertEqual(response.json()["detail"]["contract_required"], ["EMP-UPDATE-001"])
         db = TestingSessionLocal()
-        updated = db.query(Employee).filter(Employee.employee_code == "EMP-UPDATE-001").one()
+        updated = db.query(Employee).filter(Employee.new_employee_id == "EMP-UPDATE-001").one()
         self.assertEqual(updated.nik, "9999999999999997")
         self.assertEqual(updated.cabang, "Cabang Baru")
         self.assertEqual(updated.employment_status, "PKWT")
@@ -1201,7 +1278,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
     def test_phl_leave_requests_are_blocked_without_changing_history(self):
         db = TestingSessionLocal()
         employee = Employee(
-            employee_code="EMP-PHL-001",
+            new_employee_id="EMP-PHL-001",
             nama="Karyawan PHL Uji",
             profile_code="OFFICE",
             employment_status="PHL",
@@ -1247,7 +1324,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
     def test_phl_whatsapp_cuti_and_izin_are_blocked(self):
         db = TestingSessionLocal()
         employee = Employee(
-            employee_code="EMP-PHL-WA",
+            new_employee_id="EMP-PHL-WA",
             nama="PHL WhatsApp",
             profile_code="OFFICE",
             employment_status="PHL",
@@ -1285,7 +1362,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
     def test_phl_attendance_review_only_allows_unpaid_leave(self):
         db = TestingSessionLocal()
         employee = Employee(
-            employee_code="EMP-PHL-REVIEW",
+            new_employee_id="EMP-PHL-REVIEW",
             nama="PHL Review",
             profile_code="OFFICE",
             employment_status="PHL",
@@ -1327,7 +1404,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
     def test_recap_import_quarantines_missing_ids_and_is_idempotent(self):
         db = TestingSessionLocal()
         db.add(Employee(
-            employee_code="JIP-020001",
+            new_employee_id="JIP-020001",
             nama="Recap Employee",
             nik="3201010101010003",
             profile_code="OFFICE",
@@ -1379,18 +1456,77 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         self.assertEqual(db.query(LeaveBalanceLedger).filter(LeaveBalanceLedger.entry_type == "USED").count(), 2)
         db.close()
 
+    def test_employee_create_allocates_branch_code_and_rejects_unknown_branch(self):
+        created_employee_id = None
+        for branch, expected_code in (
+            ("Gudang C", "JIP-020001"),
+            ("Gudang C", "JIP-020002"),
+            ("Setup", "JIP-060003"),
+        ):
+            response = client.post(
+                "/employees",
+                json={
+                    "nama": f"Karyawan {expected_code}",
+                    "profile_code": "OFFICE",
+                    "cabang": branch,
+                    "join_date": "2026-01-01",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["new_employee_id"], expected_code)
+            if created_employee_id is None:
+                created_employee_id = response.json()["id"]
+
+        invalid = client.post(
+            "/employees",
+            json={
+                "nama": "Cabang Tidak Terdaftar",
+                "profile_code": "OFFICE",
+                "cabang": "Cabang Lama",
+                "join_date": "2026-01-01",
+            },
+        )
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn("sembilan cabang", invalid.json()["detail"])
+
+        duplicate_serial = client.post(
+            "/employees",
+            json={
+                "nama": "Suffix Lintas Cabang Duplikat",
+                "new_employee_id": "JIP-010003",
+                "profile_code": "OFFICE",
+                "cabang": "Gudang A",
+                "join_date": "2026-01-01",
+            },
+        )
+        self.assertEqual(duplicate_serial.status_code, 409)
+        self.assertIn("Nomor urut", duplicate_serial.json()["detail"])
+
+        branch_move = client.put(
+            f"/employees/{created_employee_id}",
+            json={
+                "nama": "Karyawan JIP-020001",
+                "profile_code": "OFFICE",
+                "employment_status": "PKWTT",
+                "join_date": "2026-01-01",
+                "cabang": "Setup",
+            },
+        )
+        self.assertEqual(branch_move.status_code, 400)
+        self.assertIn("migrasi terverifikasi", branch_move.json()["detail"])
+
     def test_missing_employee_deactivation_requires_explicit_apply_and_never_deletes(self):
         db = TestingSessionLocal()
         db.add_all([
             Employee(
-                employee_code="JIP-010001",
+                new_employee_id="JIP-010001",
                 nama="Current Employee",
                 nik="3201010101010001",
                 profile_code="OFFICE",
                 active=True,
             ),
             Employee(
-                employee_code="JIP-OLD0001",
+                new_employee_id="JIP-OLD0001",
                 nama="Former Employee",
                 nik="3201010101010009",
                 profile_code="OFFICE",
@@ -1398,7 +1534,7 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
             ),
         ])
         db.commit()
-        former_id = db.query(Employee).filter(Employee.employee_code == "JIP-OLD0001").one().id
+        former_id = db.query(Employee).filter(Employee.new_employee_id == "JIP-OLD0001").one().id
         db.close()
 
         preview = client.post(
@@ -1419,8 +1555,54 @@ class TestEmployeeWorkbookImports(unittest.TestCase):
         db = TestingSessionLocal()
         former = db.query(Employee).filter(Employee.id == former_id).one()
         self.assertFalse(former.active)
-        self.assertEqual(former.employee_code, "JIP-OLD0001")
+        self.assertEqual(former.new_employee_id, "JIP-OLD0001")
         db.close()
+
+    def test_employee_delete_archives_and_restore_preserves_id_and_status(self):
+        db = TestingSessionLocal()
+        employee = Employee(
+            new_employee_id="JIP-010001",
+            nama="Recoverable Employee",
+            profile_code="OFFICE",
+            cabang="Gudang A",
+            active=True,
+        )
+        db.add(employee)
+        db.commit()
+        employee_id = employee.id
+        db.close()
+
+        deleted = client.delete(f"/employees/{employee_id}")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json()["new_employee_id"], "JIP-010001")
+        self.assertEqual(
+            [row["id"] for row in client.get("/employees").json()],
+            [],
+        )
+        archived = client.get("/employees/deleted")
+        self.assertEqual(archived.status_code, 200)
+        self.assertEqual(archived.json()[0]["new_employee_id"], "JIP-010001")
+        self.assertFalse(archived.json()[0]["active"])
+
+        duplicate = client.post(
+            "/employees",
+            json={
+                "nama": "Different Employee",
+                "new_employee_id": "JIP-020001",
+                "profile_code": "OFFICE",
+                "cabang": "Gudang C",
+                "join_date": "2026-01-01",
+            },
+        )
+        self.assertEqual(duplicate.status_code, 409)
+
+        restored = client.post(f"/employees/{employee_id}/restore")
+        self.assertEqual(restored.status_code, 200)
+        visible = client.get("/employees")
+        self.assertEqual(visible.status_code, 200)
+        self.assertEqual(visible.json()[0]["new_employee_id"], "JIP-010001")
+        self.assertTrue(visible.json()[0]["active"])
+        self.assertEqual(client.get("/employees/deleted").json(), [])
 
 
 if __name__ == "__main__":

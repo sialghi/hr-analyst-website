@@ -77,7 +77,7 @@ def add_employee(
             db.add(models.Profile(code="OFFICE", nama="Office"))
             db.commit()
         employee = models.Employee(
-            employee_code=code,
+            new_employee_id=code,
             nama=name,
             profile_code="OFFICE",
             active=active,
@@ -101,8 +101,8 @@ def add_identity(session_factory: sessionmaker, employee_id: int, phone: str) ->
         return identity.id
 
 
-def payroll_csv(*rows: dict[str, str], include_code: bool = True) -> bytes:
-    fields = ["Kode Karyawan"] if include_code else []
+def payroll_csv(*rows: dict[str, str], include_id: bool = True) -> bytes:
+    fields = ["ID Karyawan"] if include_id else []
     fields += ["Nama", "No. Rekening", "Departemen", "Gaji Pokok"]
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=fields)
@@ -136,7 +136,7 @@ def send_preview_pdf(client: TestClient, url: str, pdf: bytes = PREVIEW_PDF):
     )
 
 
-def test_payroll_template_includes_employee_code_and_upload_matches_whatsapp_by_code(payroll_client):
+def test_payroll_template_includes_new_employee_id_and_upload_matches_whatsapp_by_id(payroll_client):
     client, session_factory = payroll_client
     first_id = add_employee(session_factory, code="EMP-001")
     second_id = add_employee(session_factory, code="EMP-002")
@@ -144,18 +144,18 @@ def test_payroll_template_includes_employee_code_and_upload_matches_whatsapp_by_
 
     template = client.get("/payroll/template?format=csv")
     assert template.status_code == 200
-    assert template.text.lstrip("\ufeff").splitlines()[0].startswith("Kode Karyawan,")
+    assert template.text.lstrip("\ufeff").splitlines()[0].startswith("ID Karyawan,")
 
     session = upload_payroll(client, payroll_csv(
         {
-            "Kode Karyawan": "EMP-001",
+            "ID Karyawan": "EMP-001",
             "Nama": "Karyawan Sama",
             "No. Rekening": "111",
             "Departemen": "Operasional",
             "Gaji Pokok": "4000000",
         },
         {
-            "Kode Karyawan": " emp-002 ",
+            "ID Karyawan": " emp-002 ",
             "Nama": "Karyawan Sama",
             "No. Rekening": "222",
             "Departemen": "Operasional",
@@ -172,7 +172,7 @@ def test_payroll_template_includes_employee_code_and_upload_matches_whatsapp_by_
     assert second["_wa_number"] == "628123456789"
 
 
-def test_payroll_upload_without_code_still_previews_but_cannot_be_sent(payroll_client):
+def test_payroll_upload_without_id_still_previews_but_cannot_be_sent(payroll_client):
     client, _ = payroll_client
     session = upload_payroll(client, payroll_csv(
         {
@@ -181,13 +181,13 @@ def test_payroll_upload_without_code_still_previews_but_cannot_be_sent(payroll_c
             "Departemen": "Operasional",
             "Gaji Pokok": "4000000",
         },
-        include_code=False,
+        include_id=False,
     ))
 
     row = session["rows"][0]
     assert row["_employee_id"] is None
     assert row["_wa_available"] is False
-    assert row["_wa_status"] == "MISSING_EMPLOYEE_CODE"
+    assert row["_wa_status"] == "MISSING_NEW_EMPLOYEE_ID"
 
 
 def test_payroll_send_revalidates_link_after_upload_and_logs_blocked_attempt(payroll_client, monkeypatch):
@@ -195,7 +195,7 @@ def test_payroll_send_revalidates_link_after_upload_and_logs_blocked_attempt(pay
     employee_id = add_employee(session_factory, code="EMP-003")
     identity_id = add_identity(session_factory, employee_id, "628111222333")
     session = upload_payroll(client, payroll_csv({
-        "Kode Karyawan": "EMP-003",
+        "ID Karyawan": "EMP-003",
         "Nama": "Karyawan Sama",
         "No. Rekening": "333",
         "Departemen": "Operasional",
@@ -229,7 +229,7 @@ def test_payroll_send_uses_current_employee_identity_and_persists_text_pdf_resul
     second_id = add_employee(session_factory, code="EMP-005")
     identity_id = add_identity(session_factory, first_id, "628100000001")
     session = upload_payroll(client, payroll_csv({
-        "Kode Karyawan": "EMP-004",
+        "ID Karyawan": "EMP-004",
         "Nama": "Karyawan Sama",
         "No. Rekening": "444",
         "Departemen": "Operasional",
@@ -300,7 +300,7 @@ def test_payroll_text_provider_exception_is_recorded_as_partial_delivery(
     employee_id = add_employee(session_factory, code="EMP-008")
     add_identity(session_factory, employee_id, "628100000008")
     session = upload_payroll(client, payroll_csv({
-        "Kode Karyawan": "EMP-008",
+        "ID Karyawan": "EMP-008",
         "Nama": "Karyawan Sama",
         "No. Rekening": "888",
         "Departemen": "Operasional",
@@ -341,7 +341,7 @@ def test_payroll_send_rejects_invalid_preview_pdf_without_contacting_providers(
     employee_id = add_employee(session_factory, code="EMP-009")
     add_identity(session_factory, employee_id, "628100000009")
     session = upload_payroll(client, payroll_csv({
-        "Kode Karyawan": "EMP-009",
+        "ID Karyawan": "EMP-009",
         "Nama": "Karyawan Sama",
         "No. Rekening": "999",
         "Departemen": "Operasional",
@@ -375,7 +375,7 @@ def test_archive_all_saves_final_pdfs_and_replaces_same_period(payroll_client):
     client, session_factory = payroll_client
     employee_id = add_employee(session_factory, code="EMP-ARCHIVE", name="Karyawan Arsip")
     session = upload_payroll(client, payroll_csv({
-        "Kode Karyawan": "EMP-ARCHIVE",
+        "ID Karyawan": "EMP-ARCHIVE",
         "Nama": "Karyawan Arsip",
         "No. Rekening": "1234567890",
         "Departemen": "QA",
@@ -410,7 +410,7 @@ def test_archive_all_saves_final_pdfs_and_replaces_same_period(payroll_client):
 def test_archive_all_rejects_unmatched_payroll_rows_without_partial_save(payroll_client):
     client, session_factory = payroll_client
     session = upload_payroll(client, payroll_csv({
-        "Kode Karyawan": "EMP-MISSING",
+        "ID Karyawan": "EMP-MISSING",
         "Nama": "Tidak Dikenal",
         "No. Rekening": "1234567890",
         "Departemen": "QA",

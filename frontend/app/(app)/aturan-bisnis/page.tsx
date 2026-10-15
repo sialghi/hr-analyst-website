@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, isHrMaster, ApiError } from "@/lib/api";
+import { BRANCH_NAMES } from "@/lib/branches";
 import { PageHeader, Button, Card, Field, inputCls, inputStyle, Banner } from "@/components/ui";
 
 const HARI = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"];
@@ -202,12 +203,23 @@ function ProfileForm({
           </Field>
         </div>
 
-        <Field label="Cabang (pisahkan dengan koma, kosongkan jika tidak terikat cabang tertentu)">
-          <input
-            className={inputCls} style={inputStyle}
-            value={form.cabang.join(", ")}
-            onChange={(e) => setForm({ ...form, cabang: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-          />
+        <Field label="Cabang Profil" hint="Pilih satu atau beberapa cabang. Kosongkan pilihan jika profil tidak dibatasi cabang.">
+          <select
+            className={inputCls}
+            style={inputStyle}
+            multiple
+            size={5}
+            value={form.cabang}
+            onChange={(e) => setForm({
+              ...form,
+              cabang: Array.from(e.target.selectedOptions, (option) => option.value),
+            })}
+          >
+            {BRANCH_NAMES.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+            {form.cabang
+              .filter((branch) => !BRANCH_NAMES.some((allowed) => allowed === branch))
+              .map((branch) => <option key={branch} value={branch}>{branch} (data lama)</option>)}
+          </select>
         </Field>
 
         <Field label="Hari Kerja">

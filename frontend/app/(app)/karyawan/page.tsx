@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { api, isHrMaster, triggerBlobDownload } from "@/lib/api";
+import { BRANCH_NAMES } from "@/lib/branches";
 import { PageHeader, Card, Field, Button, Banner, inputCls, inputStyle } from "@/components/ui";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -39,7 +40,8 @@ interface ContractReminderStatus {
 interface Employee {
   id: number;
   nama: string;
-  employee_code: string | null;
+  new_employee_id: string | null;
+  deleted_at?: string | null;
   nik: string | null;
   id_mesin: string | null;
   profile_code: string;
@@ -116,14 +118,14 @@ interface MasterUpdateResult {
   total_invalid_join_date: number;
   total_contract_required: number;
   detail: {
-    updated: { nama: string; employee_code: string; fields: string }[];
-    skipped: { row: number; employee_code?: string; reason?: string }[];
+    updated: { nama: string; new_employee_id: string; fields: string }[];
+    skipped: { row: number; new_employee_id?: string; reason?: string }[];
     not_found: string[];
-    nik_conflict: { employee_code: string; nik: string; konflik_dengan: string }[];
-    invalid_nik: { employee_code: string; nik_raw: string }[];
-    invalid_status: { employee_code: string; status: string }[];
-    invalid_profile: { employee_code: string; profile_code: string }[];
-    invalid_join_date: { employee_code: string; value: string }[];
+    nik_conflict: { new_employee_id: string; nik: string; konflik_dengan: string }[];
+    invalid_nik: { new_employee_id: string; nik_raw: string }[];
+    invalid_status: { new_employee_id: string; status: string }[];
+    invalid_profile: { new_employee_id: string; profile_code: string }[];
+    invalid_join_date: { new_employee_id: string; value: string }[];
     contract_required: string[];
   };
 }
@@ -144,6 +146,7 @@ const normalizeEmploymentStatus = (status?: string | null) => {
 
 const BLANK_FORM = {
   nama: "",
+  new_employee_id: "",
   nik: "",
   id_mesin: "",
   profile_code: "",
@@ -172,6 +175,7 @@ function empToForm(emp: Employee) {
   const activeContract = emp.contracts?.find((c) => c.status === "ACTIVE") ?? emp.contracts?.[0];
   return {
     nama: emp.nama,
+    new_employee_id: emp.new_employee_id || "",
     nik: emp.nik || "",
     id_mesin: emp.id_mesin || "",
     profile_code: emp.profile_code,
@@ -201,6 +205,7 @@ function formToPayload(form: typeof BLANK_FORM) {
   const isPKWT = normalizedStatus === "PKWT";
   return {
     nama: form.nama,
+    new_employee_id: form.new_employee_id.trim() || null,
     nik: form.nik || null,
     id_mesin: form.id_mesin || null,
     profile_code: form.profile_code,
@@ -322,6 +327,7 @@ export default function KaryawanPage() {
   const [master, setMaster] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeesLoaded, setEmployeesLoaded] = useState(false);
+  const [showDeletedEmployees, setShowDeletedEmployees] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [globalRules, setGlobalRules] = useState<any>(null);
   const [filter, setFilter] = useState("");
@@ -378,7 +384,7 @@ export default function KaryawanPage() {
   }, []);
 
   function load() {
-    api.getEmployees()
+    (showDeletedEmployees ? api.getDeletedEmployees() : api.getEmployees())
       .then((data) => {
         setEmployees(data);
         setEmployeesLoaded(true);
@@ -399,15 +405,14 @@ export default function KaryawanPage() {
         .catch((e) => setWhatsappError(e.message));
     }
   }
-  useEffect(load, [master]);
+  useEffect(load, [master, showDeletedEmployees]);
 
   const profileName = (code: string) => profiles.find((p) => p.code === code)?.nama || code;
   const activeProfile = profiles.find((p) => p.code === form.profile_code);
   const editingEmployee = editingId ? employees.find((emp) => emp.id === editingId) : undefined;
-  const branchOptions = Array.from(new Set([
-    ...profiles.flatMap((profile) => profile.cabang || []),
-    ...employees.map((employee) => employee.cabang || ""),
-  ].map((branch) => branch.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  const legacyBranch = editingEmployee?.cabang && !BRANCH_NAMES.some((branch) => branch === editingEmployee.cabang)
+    ? editingEmployee.cabang
+    : null;
 
   function startCreate() {
     if (profiles.length === 0) {
@@ -436,30 +441,30 @@ export default function KaryawanPage() {
 
   async function moveWhatsAppIdentity(identity: WhatsAppIdentity) {
     const candidates = employees
-      .filter((employee) => employee.id !== identity.employee_id && employee.employee_code)
+      .filter((employee) => employee.id !== identity.employee_id && employee.new_employee_id)
       .map((employee) =>
-        `${employee.employee_code}: ${employee.nama}${employee.active ? "" : " (Nonaktif)"}`
+        `${employee.new_employee_id}: ${employee.nama}${employee.active ? "" : " (Nonaktif)"}`
       )
       .join("\n");
     if (!candidates) {
-      setWhatsappError("Tidak ada karyawan lain dengan Kode Karyawan untuk tujuan linking.");
+      setWhatsappError("Tidak ada karyawan lain dengan ID Karyawan untuk tujuan linking.");
       return;
     }
-    const employeeCodeInput = window.prompt(`Masukkan Kode Karyawan tujuan:\n\n${candidates}`);
-    if (!employeeCodeInput) return;
+    const employeeIdInput = window.prompt(`Masukkan ID Karyawan tujuan:\n\n${candidates}`);
+    if (!employeeIdInput) return;
     const target = employees.find(
       (employee) =>
         employee.id !== identity.employee_id &&
-        employee.employee_code?.toLocaleLowerCase() === employeeCodeInput.trim().toLocaleLowerCase()
+        employee.new_employee_id?.toLocaleLowerCase() === employeeIdInput.trim().toLocaleLowerCase()
     );
-    if (!target?.employee_code) {
-      setWhatsappError("Kode Karyawan tujuan tidak ditemukan.");
+    if (!target?.new_employee_id) {
+      setWhatsappError("ID Karyawan tujuan tidak ditemukan.");
       return;
     }
     const reason = window.prompt("Alasan pemindahan linking (wajib):");
     if (!reason?.trim()) return;
     try {
-      const updated = await api.moveWhatsAppIdentity(identity.id, target.employee_code, reason.trim());
+      const updated = await api.moveWhatsAppIdentity(identity.id, target.new_employee_id, reason.trim());
       setWhatsappIdentities((items) =>
         items.map((item) => item.id === identity.id ? {
           ...item,
@@ -739,9 +744,19 @@ export default function KaryawanPage() {
   }
 
   async function handleDelete(id: number, nama: string) {
-    if (!confirm(`Hapus karyawan "${nama}" dari master?`)) return;
+    if (!confirm(`Arsipkan karyawan "${nama}"? Data dapat dipulihkan dari arsip terhapus.`)) return;
     try {
       await api.deleteEmployee(id);
+      load();
+    } catch (err: any) {
+      alert(err.message);
+    }
+  }
+
+  async function handleRestoreEmployee(employee: Employee) {
+    if (!confirm(`Pulihkan ${employee.new_employee_id} — ${employee.nama}?`)) return;
+    try {
+      await api.restoreEmployee(employee.id);
       load();
     } catch (err: any) {
       alert(err.message);
@@ -850,7 +865,7 @@ export default function KaryawanPage() {
     const search = filter.trim().toLocaleLowerCase();
     if (search && ![
       employee.nama,
-      employee.employee_code,
+      employee.new_employee_id,
       employee.nik,
     ].some((value) => value?.toLocaleLowerCase().includes(search))) return false;
     if (filterStatus === "ACTIVE" && !employee.active) return false;
@@ -920,7 +935,21 @@ export default function KaryawanPage() {
               >
                 Import Excel/CSV
               </Button>
-              <Button onClick={startCreate}>+ Tambah Karyawan</Button>
+              {master && (
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setShowDeletedEmployees((value) => !value);
+                    setFilter("");
+                    setFilterStatus("ALL");
+                    setFilterProfile("ALL");
+                    setFilterEmploymentStatus("ALL");
+                  }}
+                >
+                  {showDeletedEmployees ? "Kembali ke karyawan" : "Arsip terhapus"}
+                </Button>
+              )}
+              {!showDeletedEmployees && <Button onClick={startCreate}>+ Tambah Karyawan</Button>}
             </div>
           )
         }
@@ -1132,7 +1161,7 @@ export default function KaryawanPage() {
                 masterUpdatePreview.total_contract_required > 0) && (
                 <div className="text-xs space-y-1" style={{ color: "var(--clay)" }}>
                   <strong>Perhatian sebelum menerapkan:</strong>
-                  {masterUpdatePreview.total_not_found > 0 && <div>• Ada Kode Karyawan yang tidak ditemukan.</div>}
+                  {masterUpdatePreview.total_not_found > 0 && <div>• Ada ID Karyawan yang tidak ditemukan.</div>}
                   {masterUpdatePreview.total_nik_conflict > 0 && <div>• Ada NIK yang sudah digunakan karyawan lain.</div>}
                   {masterUpdatePreview.total_invalid_status > 0 && <div>• Ada status kepegawaian yang tidak valid.</div>}
                   {masterUpdatePreview.total_invalid_profile > 0 && <div>• Ada Kode Profil yang tidak ditemukan.</div>}
@@ -1164,8 +1193,8 @@ export default function KaryawanPage() {
 
       <div className="flex flex-wrap items-center gap-2">
         <input
-          placeholder="Cari nama, Kode Karyawan, atau NIK..."
-          aria-label="Cari nama, Kode Karyawan, atau NIK"
+          placeholder="Cari nama, ID Karyawan, atau NIK..."
+          aria-label="Cari nama, ID Karyawan, atau NIK"
           className={inputCls}
           style={{ ...inputStyle, maxWidth: 320 }}
           value={filter}
@@ -1240,14 +1269,14 @@ export default function KaryawanPage() {
               className="border-b text-left"
               style={{ borderColor: "var(--line)", color: "var(--text-muted)" }}
             >
-              <th className="px-4 py-3 font-medium">Kode Karyawan</th>
+              <th className="px-4 py-3 font-medium">ID Karyawan</th>
               <th className="px-4 py-3 font-medium">Nama</th>
               <th className="px-4 py-3 font-medium">Profil / Divisi</th>
               <th className="px-4 py-3 font-medium">Cabang</th>
               <th className="px-4 py-3 font-medium">BPJS Kes.</th>
               <th className="px-4 py-3 font-medium">BPJS TK</th>
               <th className="px-4 py-3 font-medium">Kepegawaian</th>
-              <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium">{showDeletedEmployees ? "Dihapus pada" : "Status"}</th>
               {master && (
                 <th className="px-4 py-3 font-medium text-right">Aksi</th>
               )}
@@ -1261,7 +1290,7 @@ export default function KaryawanPage() {
                 style={{ borderColor: "var(--line)" }}
               >
                 <td className="px-4 py-3 font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-                  {emp.employee_code || "—"}
+                  {emp.new_employee_id || "—"}
                 </td>
                 <td className="px-4 py-3 font-medium" style={{ color: "var(--ink)" }}>
                   {emp.nama}
@@ -1360,7 +1389,11 @@ export default function KaryawanPage() {
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <span
+                  {showDeletedEmployees ? (
+                    <span className="text-xs" style={{ color: "var(--text-muted)" }}>
+                      {emp.deleted_at ? new Date(emp.deleted_at).toLocaleString("id-ID") : "—"}
+                    </span>
+                  ) : <span
                     className="px-2.5 py-0.5 rounded text-xs font-medium border"
                     style={{
                       background: emp.active ? "var(--moss-bg)" : "var(--clay-bg)",
@@ -1369,24 +1402,36 @@ export default function KaryawanPage() {
                     }}
                   >
                     {emp.active ? "Aktif" : "Nonaktif"}
-                  </span>
+                  </span>}
                 </td>
                 {master && (
                   <td className="px-4 py-3 text-right space-x-3">
-                    <button
-                      onClick={() => startEdit(emp)}
-                      className="text-xs underline"
-                      style={{ color: "var(--ink)" }}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => handleDelete(emp.id, emp.nama)}
-                      className="text-xs underline"
-                      style={{ color: "var(--clay)" }}
-                    >
-                      Hapus
-                    </button>
+                    {showDeletedEmployees ? (
+                      <button
+                        onClick={() => handleRestoreEmployee(emp)}
+                        className="text-xs underline"
+                        style={{ color: "var(--ink)" }}
+                      >
+                        Pulihkan
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => startEdit(emp)}
+                          className="text-xs underline"
+                          style={{ color: "var(--ink)" }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDelete(emp.id, emp.nama)}
+                          className="text-xs underline"
+                          style={{ color: "var(--clay)" }}
+                        >
+                          Arsipkan
+                        </button>
+                      </>
+                    )}
                   </td>
                 )}
               </tr>
@@ -1524,6 +1569,24 @@ export default function KaryawanPage() {
                     />
                   </Field>
 
+                  {!editingId && (
+                    <Field
+                      label="ID Karyawan (opsional)"
+                      hint="Kosongkan untuk nomor otomatis. Isi ID lama hanya untuk memulihkan karyawan yang sama; cabang dan nomor harus sesuai."
+                    >
+                      <input
+                        className={inputCls}
+                        style={inputStyle}
+                        placeholder="Contoh: JIP-010182"
+                        value={form.new_employee_id}
+                        onChange={(e) => setForm({
+                          ...form,
+                          new_employee_id: e.target.value.toUpperCase(),
+                        })}
+                      />
+                    </Field>
+                  )}
+
                   <Field label="NIK (16 digit KTP, opsional)">
                     <input
                       className={inputCls}
@@ -1562,15 +1625,23 @@ export default function KaryawanPage() {
                         onChange={(e) => setForm({ ...form, id_mesin: e.target.value })}
                       />
                     </Field>
-                    <Field label="Cabang (opsional)" hint="Pilihan mencakup cabang Profil dan nilai lama pada data karyawan.">
+                    <Field
+                      label="Cabang"
+                      hint={editingEmployee?.new_employee_id
+                        ? "Perubahan cabang mengubah prefix ID dan memerlukan migrasi terverifikasi HR."
+                        : "Kode karyawan baru dibuat otomatis sesuai cabang."}
+                    >
                       <select
                         className={inputCls}
                         style={inputStyle}
                         value={form.cabang}
                         onChange={(e) => setForm({ ...form, cabang: e.target.value })}
+                        disabled={Boolean(editingEmployee?.new_employee_id)}
+                        required
                       >
                         <option value="">Pilih cabang...</option>
-                        {branchOptions.map((branch) => (
+                        {legacyBranch && <option value={legacyBranch}>{legacyBranch} (data lama)</option>}
+                        {BRANCH_NAMES.map((branch) => (
                           <option key={branch} value={branch}>{branch}</option>
                         ))}
                       </select>
@@ -2196,7 +2267,7 @@ export default function KaryawanPage() {
                   Import Master Karyawan
                 </h3>
                 <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-                  Unggah template terbaru (.xlsx/.xlsm atau CSV) untuk menambahkan atau memperbarui karyawan berdasarkan Kode Karyawan.
+                  Unggah template terbaru (.xlsx/.xlsm atau CSV) untuk menambahkan atau memperbarui karyawan berdasarkan ID Karyawan.
                 </p>
               </div>
               <button
@@ -2265,7 +2336,7 @@ export default function KaryawanPage() {
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-x-3 gap-y-1" style={{ color: "var(--text-muted)" }}>
-                <div>• <strong>Kode Karyawan</strong>: Kunci pencocokan wajib</div>
+                <div>• <strong>ID Karyawan</strong>: Kunci pencocokan wajib</div>
                 <div>• <strong>Nama, Cabang</strong>: Identitas dan lokasi kerja</div>
                 <div>• <strong>Kode Profil</strong>: Kode dari menu Profil/Divisi</div>
                 <div>• <strong>Status Kepegawaian</strong>: PKWTT, PKWT, atau PHL</div>

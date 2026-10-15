@@ -10,6 +10,18 @@ from app.database import Base
 from migrate_local_to_postgres import replace_data, run
 
 
+def test_employee_id_python_fields_map_to_employee_code_database_columns():
+    for model in (
+        models.Employee,
+        models.EmployeeImportCandidate,
+        models.PayrollWhatsAppDelivery,
+        models.AttendanceRecapRecord,
+    ):
+        columns = set(model.__table__.columns.keys())
+        assert "employee_code" in columns
+        assert "new_employee_id" not in columns
+
+
 def _engine():
     engine = create_engine(
         "sqlite://",
@@ -42,7 +54,7 @@ def _seed_source(engine):
 
         employee = models.Employee(
             nama="Test Employee",
-            employee_code="JIP-TEST",
+            new_employee_id="JIP-TEST",
             profile_code=profile.code,
             cabang="Jakarta",
         )
@@ -64,7 +76,7 @@ def _seed_source(engine):
             models.EmployeeAdjustment(nama="Test Employee", bonus_lain=10),
             models.AbsenManual(nama="Test Employee", tahun=2026, bulan=1, jumlah=1),
             models.EmployeeImportCandidate(
-                employee_code="JIP-NEXT",
+                new_employee_id="JIP-NEXT",
                 nama="Candidate",
                 cabang="Jakarta",
                 source_row=2,
@@ -106,7 +118,7 @@ def _seed_source(engine):
                 source_file_hash="source-hash",
                 source_row=1,
                 employee_id=employee.id,
-                employee_code="JIP-TEST",
+                new_employee_id="JIP-TEST",
                 source_payload={"source": "test"},
                 reconciliation_status="MATCHED",
             ),
@@ -139,7 +151,11 @@ def test_replacement_copies_all_mapped_tables_and_archives_legacy_columns():
         old_profile = models.Profile(code="OLD", nama="Old profile")
         db.add(old_profile)
         db.flush()
-        db.add(models.Employee(nama="Old employee", profile_code=old_profile.code))
+        db.add(models.Employee(
+            nama="Old employee",
+            new_employee_id="JIP-OLD0001",
+            profile_code=old_profile.code,
+        ))
         db.commit()
 
     try:
@@ -176,7 +192,11 @@ def test_failed_transfer_transaction_leaves_existing_target_data_unchanged():
     with Session(target_engine) as db:
         db.add(models.Profile(code="OLD", nama="Old profile"))
         db.flush()
-        db.add(models.Employee(nama="Old employee", profile_code="OLD"))
+        db.add(models.Employee(
+            nama="Old employee",
+            new_employee_id="JIP-OLD0001",
+            profile_code="OLD",
+        ))
         db.commit()
 
     try:

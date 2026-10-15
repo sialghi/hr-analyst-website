@@ -8,6 +8,8 @@ from collections import Counter
 
 import openpyxl
 
+from .branches import branch_code_for, employee_id_serial, validate_new_employee_id
+
 
 def normalize_text(value) -> str:
     return " ".join(str(value or "").split()).casefold()
@@ -73,7 +75,7 @@ def _parse_active(value):
 def parse_employee_workbook(content, filename):
     """Parse the current employee import format; legacy layouts are intentionally rejected."""
     aliases = {
-        "employee_code": ("kode karyawan", "id karyawan", "employee code"),
+        "new_employee_id": ("new employee id", "id karyawan", "id karyawan baru"),
         "nama": ("nama karyawan", "nama", "employee name"),
         "nik": ("nik", "nik ktp"),
         "cabang": ("cabang", "lokasi kerja"),
@@ -116,7 +118,7 @@ def parse_employee_workbook(content, filename):
                     for index, value in enumerate(values)
                     if value is not None
                 }
-                if all(name in headers for name in ("kode karyawan", "nama karyawan", "kode profil", "status kepegawaian")):
+                if all(name in headers for name in ("id karyawan", "nama karyawan", "kode profil", "status kepegawaian")):
                     sheet, header_row, normalized_headers = candidate, row_number, headers
                     break
             if sheet:
@@ -137,10 +139,10 @@ def parse_employee_workbook(content, filename):
             if candidate in normalized_headers:
                 column_indexes[field] = normalized_headers[candidate]
                 break
-    for required in ("employee_code", "nama", "cabang", "profile_code", "employment_status"):
+    for required in ("new_employee_id", "nama", "cabang", "profile_code", "employment_status"):
         if required not in column_indexes:
             label = {
-                "employee_code": "Kode Karyawan",
+                "new_employee_id": "ID Karyawan",
                 "nama": "Nama Karyawan",
                 "cabang": "Cabang",
                 "profile_code": "Kode Profil",
@@ -162,8 +164,8 @@ def parse_employee_workbook(content, filename):
             index = column_indexes.get(field)
             return values[index] if index is not None and index < len(values) else None
 
-        code_raw = value_for("employee_code")
-        code = "" if _is_blank(code_raw) else str(code_raw).strip()
+        code_raw = value_for("new_employee_id")
+        code = "" if _is_blank(code_raw) else str(code_raw).strip().upper()
         name_raw = value_for("nama")
         name = "" if _is_blank(name_raw) else " ".join(str(name_raw).split())
         branch_raw = value_for("cabang")
@@ -176,7 +178,7 @@ def parse_employee_workbook(content, filename):
             employment_status = "PKWTT"
         row_errors = []
         if not code or not name or not branch or not profile_code:
-            row_errors.append("Kode Karyawan, Nama Karyawan, Cabang, dan Kode Profil wajib diisi.")
+            row_errors.append("ID Karyawan, Nama Karyawan, Cabang, dan Kode Profil wajib diisi.")
         if employment_status not in ("PKWTT", "PKWT", "PHL"):
             row_errors.append("Status Kepegawaian harus PKWTT, PKWT, atau PHL.")
 
@@ -194,11 +196,11 @@ def parse_employee_workbook(content, filename):
         ):
             row_errors.append("Status Aktif harus Aktif atau Nonaktif.")
         if row_errors:
-            errors.append({"row": row_number, "employee_code": code or None, "reason": " ".join(row_errors)})
+            errors.append({"row": row_number, "new_employee_id": code or None, "reason": " ".join(row_errors)})
             continue
         parsed_rows.append({
             "source_row": row_number,
-            "employee_code": code,
+            "new_employee_id": code,
             "nama": name,
             "nik": nik,
             "cabang": branch,
@@ -211,18 +213,26 @@ def parse_employee_workbook(content, filename):
             "id_mesin": None if _is_blank(value_for("id_mesin")) else str(value_for("id_mesin")).strip(),
         })
 
-    code_counts = Counter(row["employee_code"] for row in parsed_rows)
+    code_counts = Counter(row["new_employee_id"] for row in parsed_rows)
+    serial_counts = Counter(
+        serial
+        for row in parsed_rows
+        if (serial := employee_id_serial(row["new_employee_id"])) is not None
+    )
     nik_counts = Counter(row["nik"] for row in parsed_rows if row["nik"])
     for row in parsed_rows:
         reasons = []
-        if code_counts[row["employee_code"]] > 1:
-            reasons.append("Kode Karyawan duplikat di file.")
+        if code_counts[row["new_employee_id"]] > 1:
+            reasons.append("ID Karyawan duplikat di file.")
+        serial = employee_id_serial(row["new_employee_id"])
+        if serial is not None and serial_counts[serial] > 1:
+            reasons.append("Nomor urut ID Karyawan harus unik lintas cabang di file.")
         if row["nik"] and nik_counts[row["nik"]] > 1:
             reasons.append("NIK duplikat di file.")
         if reasons:
             errors.append({
                 "row": row["source_row"],
-                "employee_code": row["employee_code"],
+                "new_employee_id": row["new_employee_id"],
                 "reason": " ".join(reasons),
             })
     error_rows = {error["row"] for error in errors}
@@ -280,7 +290,7 @@ def parse_master_workbook(content):
         preferred_sheet="Master ID",
     )
     aliases = {
-        "employee_code": ("id karyawan",),
+        "new_employee_id": ("id karyawan",),
         "nama": ("nama",),
         "nik": ("nik",),
         "join_date": ("tanggal join", "tanggal masuk"),
@@ -308,11 +318,25 @@ def parse_master_workbook(content):
             index = column_indexes.get(field)
             return values[index] if index is not None and index < len(values) else None
 
-        employee_code = "" if _is_blank(value_for("employee_code")) else str(value_for("employee_code")).strip()
+        new_employee_id = "" if _is_blank(value_for("new_employee_id")) else str(value_for("new_employee_id")).strip()
         nama = "" if _is_blank(value_for("nama")) else " ".join(str(value_for("nama")).split())
         cabang = "" if _is_blank(value_for("cabang")) else " ".join(str(value_for("cabang")).split())
-        if not employee_code or not nama or not cabang:
-            conflicts.append({"row": row_number, "employee_code": employee_code or None, "reason": "ID Karyawan, Nama, dan Lokasi Kerja wajib diisi."})
+        if not new_employee_id or not nama or not cabang:
+            conflicts.append({"row": row_number, "new_employee_id": new_employee_id or None, "reason": "ID Karyawan, Nama, dan Lokasi Kerja wajib diisi."})
+            continue
+        if not branch_code_for(cabang):
+            conflicts.append({
+                "row": row_number,
+                "new_employee_id": new_employee_id,
+                "reason": f"Cabang '{cabang}' tidak termasuk daftar sembilan cabang yang diizinkan.",
+            })
+            continue
+        if not validate_new_employee_id(new_employee_id, cabang):
+            conflicts.append({
+                "row": row_number,
+                "new_employee_id": new_employee_id,
+                "reason": "Awalan ID Karyawan tidak sesuai dengan kode cabang.",
+            })
             continue
 
         nik = clean_nik(value_for("nik"))
@@ -330,11 +354,11 @@ def parse_master_workbook(content):
         if payroll_status and payroll_status not in ("Bulanan", "Harian"):
             row_errors.append("Status harus Bulanan atau Harian.")
         if row_errors:
-            conflicts.append({"row": row_number, "employee_code": employee_code, "reason": " ".join(row_errors)})
+            conflicts.append({"row": row_number, "new_employee_id": new_employee_id, "reason": " ".join(row_errors)})
             continue
         parsed_rows.append({
             "source_row": row_number,
-            "employee_code": employee_code,
+            "new_employee_id": new_employee_id,
             "nama": nama,
             "nik": nik,
             "join_date": join_date,
@@ -344,14 +368,22 @@ def parse_master_workbook(content):
             "payroll_status": payroll_status,
         })
 
-    code_counts = Counter(row["employee_code"] for row in parsed_rows)
+    code_counts = Counter(row["new_employee_id"] for row in parsed_rows)
+    serial_counts = Counter(
+        serial
+        for row in parsed_rows
+        if (serial := employee_id_serial(row["new_employee_id"])) is not None
+    )
     nik_counts = Counter(row["nik"] for row in parsed_rows if row["nik"])
     name_counts = Counter(normalize_text(row["nama"]) for row in parsed_rows)
     valid_rows = []
     for row in parsed_rows:
         reasons = []
-        if code_counts[row["employee_code"]] > 1:
+        if code_counts[row["new_employee_id"]] > 1:
             reasons.append("ID Karyawan duplikat di workbook.")
+        serial = employee_id_serial(row["new_employee_id"])
+        if serial is not None and serial_counts[serial] > 1:
+            reasons.append("Nomor urut ID Karyawan harus unik lintas cabang di workbook.")
         if row["nik"] and nik_counts[row["nik"]] > 1:
             reasons.append("NIK duplikat di workbook.")
         if name_counts[normalize_text(row["nama"])] > 1:
@@ -359,7 +391,7 @@ def parse_master_workbook(content):
         if reasons:
             conflicts.append({
                 "row": row["source_row"],
-                "employee_code": row["employee_code"],
+                "new_employee_id": row["new_employee_id"],
                 "reason": " ".join(reasons),
             })
         else:
@@ -375,7 +407,7 @@ def parse_recap_workbook(content):
         preferred_sheet="Rekap Kehadiran",
     )
     aliases = {
-        "employee_code": "id",
+        "new_employee_id": "id",
         "nik": "nik",
         "cabang": "cabang",
         "nama": "nama",
@@ -406,7 +438,7 @@ def parse_recap_workbook(content):
             index = column_indexes.get(field)
             return values[index] if index is not None and index < len(values) else None
 
-        employee_code = "" if _is_blank(value_for("employee_code")) else str(value_for("employee_code")).strip()
+        new_employee_id = "" if _is_blank(value_for("new_employee_id")) else str(value_for("new_employee_id")).strip()
         nama = "" if _is_blank(value_for("nama")) else " ".join(str(value_for("nama")).split())
         mark = "" if _is_blank(value_for("mark")) else " ".join(str(value_for("mark")).split()).upper()
         date_value = parse_date(value_for("tanggal"))
@@ -418,7 +450,7 @@ def parse_recap_workbook(content):
                 for index, header in enumerate(source_headers)
                 if header is not None
             ],
-            "employee_code": employee_code or None,
+            "new_employee_id": new_employee_id or None,
             "nik": None if nik is False else nik,
             "cabang": " ".join(str(value_for("cabang") or "").split()),
             "nama": nama,
@@ -434,7 +466,7 @@ def parse_recap_workbook(content):
         if date_value is False or date_value is None:
             row_errors.append("Tanggal tidak valid.")
         if row_errors:
-            conflicts.append({"row": row_number, "employee_code": employee_code or None, "reason": " ".join(row_errors)})
+            conflicts.append({"row": row_number, "new_employee_id": new_employee_id or None, "reason": " ".join(row_errors)})
         else:
             rows.append(row)
     return rows, conflicts

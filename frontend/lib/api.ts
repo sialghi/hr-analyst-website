@@ -5,7 +5,7 @@ export type Role = "hr_master" | "hr_staff";
 export interface PayrollWhatsAppRecipient {
   row_index: number;
   employee_id: number | null;
-  employee_code: string;
+  new_employee_id: string;
   nama: string;
   wa_number: string | null;
   status: string;
@@ -15,7 +15,8 @@ export interface PayrollWhatsAppDelivery {
   id: number;
   row_index: number;
   employee_id: number | null;
-  employee_code: string | null;
+  new_employee_id: string | null;
+  legacy_employee_code: string | null;
   nama: string;
   periode: string;
   wa_number: string | null;
@@ -194,6 +195,16 @@ export const api = {
     return res.json();
   },
 
+  async getDeletedEmployees() {
+    const res = await request("/employees/deleted");
+    return res.json();
+  },
+
+  async restoreEmployee(id: number) {
+    const res = await request(`/employees/${id}/restore`, { method: "POST" });
+    return res.json();
+  },
+
   async createEmployee(payload: any) {
     const res = await request("/employees", { method: "POST", body: JSON.stringify(payload) });
     return res.json();
@@ -228,10 +239,10 @@ export const api = {
     return res.json();
   },
 
-  async moveWhatsAppIdentity(id: number, employeeCode: string, reason: string) {
+  async moveWhatsAppIdentity(id: number, newEmployeeId: string, reason: string) {
     const res = await request(`/employees/whatsapp-identities/${id}/move`, {
       method: "PATCH",
-      body: JSON.stringify({ employee_code: employeeCode, reason }),
+      body: JSON.stringify({ new_employee_id: newEmployeeId, reason }),
     });
     return res.json();
   },

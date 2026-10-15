@@ -11,7 +11,7 @@ Dokumen ini merangkum perilaku sistem yang terlihat pada implementasi backend da
 ## Master karyawan dan kontrak
 
 - Status kepegawaian yang dikenali: `PKWTT`, `PKWT`, dan `PHL`. Status aktif/nonaktif adalah atribut terpisah.
-- `employee_code` adalah kode bisnis yang digunakan untuk pencocokan pada proses impor master terbaru. NIK harus 16 digit jika disediakan dan tidak boleh dipakai oleh lebih dari satu karyawan.
+- `employee_code` adalah satu-satunya kolom fisik ID bisnis aktif dan key untuk pencocokan impor master. API/UI menyebut nilainya `new_employee_id`. Empat digit suffix pada ID `JIP-CCNNNN` berurutan unik global lintas cabang dan kandidat impor. NIK harus 16 digit jika disediakan dan tidak boleh dipakai oleh lebih dari satu karyawan.
 - Template impor master tidak memuat gaji atau tanggal akhir kontrak. Data kontrak PKWT dicatat melalui form/fitur kontrak, bukan dibuat dari tanggal yang tidak tersedia di workbook.
 - Karyawan PKWT yang belum memiliki kontrak berstatus `ACTIVE` disimpan nonaktif pada alur impor yang menerapkan validasi kontrak. HR harus melengkapi kontrak melalui aplikasi sebelum mengaktifkannya.
 - Kontrak menyimpan nomor urut, tanggal mulai/akhir, status, dan keterangan. Histori kontrak yang sudah ada dipertahankan; perpanjangan/pengangkatan PKWTT tidak menghapus kontrak terdahulu.

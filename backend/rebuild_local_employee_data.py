@@ -78,7 +78,7 @@ def _file_hash(content: bytes) -> str:
 
 
 def _master_indexes(master_rows: list[dict]) -> tuple[dict, dict, dict]:
-    by_code = {row["employee_code"]: row for row in master_rows}
+    by_code = {row["new_employee_id"]: row for row in master_rows}
     by_nik: dict[str, list[dict]] = collections.defaultdict(list)
     by_name: dict[str, list[dict]] = collections.defaultdict(list)
     for row in master_rows:
@@ -96,8 +96,8 @@ def reconcile_recap_rows(master_rows: list[dict], recap_rows: list[dict]) -> lis
         master = None
         status = ""
         warning_parts = []
-        if row["employee_code"]:
-            master = by_code.get(row["employee_code"])
+        if row["new_employee_id"]:
+            master = by_code.get(row["new_employee_id"])
             status = "MATCHED_BY_JIP" if master else "UNRESOLVED_JIP_ID"
         else:
             nik_matches = by_nik.get(row["nik"], []) if row["nik"] else []
@@ -134,7 +134,7 @@ def _legacy_employees(connection: sqlite3.Connection) -> list[dict]:
     if not required.issubset(columns):
         raise ValueError(f"Kolom inti tabel employees tidak lengkap: {sorted(required - columns)}")
     optional = (
-        "employee_code",
+        "new_employee_id",
         "nik",
         "active",
         "employment_status",
@@ -161,11 +161,11 @@ def _find_legacy_matches(master_rows: list[dict], legacy_rows: list[dict]) -> di
     for row in master_rows:
         nik_matches = by_nik.get(row["nik"], []) if row["nik"] else []
         if len(nik_matches) == 1:
-            matches[row["employee_code"]] = nik_matches[0]
+            matches[row["new_employee_id"]] = nik_matches[0]
             continue
         name_matches = by_name.get(normalize_text(row["nama"]), [])
         if len(name_matches) == 1:
-            matches[row["employee_code"]] = name_matches[0]
+            matches[row["new_employee_id"]] = name_matches[0]
     return matches
 
 
@@ -235,7 +235,7 @@ def _read_workbooks() -> tuple[list[dict], list[dict], str, str]:
         )
     if not master_rows or not recap_rows:
         raise ValueError("Workbook kosong; reset dibatalkan.")
-    if len({row["employee_code"] for row in master_rows}) != len(master_rows):
+    if len({row["new_employee_id"] for row in master_rows}) != len(master_rows):
         raise ValueError("ID JIP duplikat di Master; reset dibatalkan.")
     return master_rows, recap_rows, _file_hash(master_bytes), _file_hash(recap_bytes)
 
@@ -372,7 +372,7 @@ def rebuild_database(
         employee_by_code = {}
         review_codes = set()
         for row in master_rows:
-            legacy = legacy_by_code.get(row["employee_code"])
+            legacy = legacy_by_code.get(row["new_employee_id"])
             old = old_by_id.get(legacy["id"]) if legacy else None
             payroll_status = row["payroll_status"]
             employment_status = EMPLOYMENT_STATUS_MAP.get(payroll_status)
@@ -388,10 +388,10 @@ def rebuild_database(
                 or (old and not old_profile_valid)
             )
             if needs_review:
-                review_codes.add(row["employee_code"])
+                review_codes.add(row["new_employee_id"])
 
             employee = Employee(
-                employee_code=row["employee_code"],
+                new_employee_id=row["new_employee_id"],
                 nama=row["nama"],
                 nik=row["nik"],
                 profile_code=profile_code,
@@ -405,7 +405,7 @@ def rebuild_database(
                 join_date=row["join_date"],
             )
             db.add(employee)
-            employee_by_code[row["employee_code"]] = employee
+            employee_by_code[row["new_employee_id"]] = employee
         db.flush()
 
         quota_result = run_leave_quota_jobs(db, target_date=effective_date, commit=False)
@@ -413,7 +413,7 @@ def rebuild_database(
             raise RuntimeError("Gagal membangun kuota cuti: " + "; ".join(quota_result["errors"]))
 
         if review_codes:
-            db.query(Employee).filter(Employee.employee_code.in_(review_codes)).update(
+            db.query(Employee).filter(Employee.new_employee_id.in_(review_codes)).update(
                 {Employee.active: False},
                 synchronize_session=False,
             )
@@ -423,19 +423,19 @@ def rebuild_database(
         for item in reconciled:
             source = item["source"]
             master = item["master"]
-            linked_employee = employee_by_code.get(master["employee_code"]) if master else None
+            linked_employee = employee_by_code.get(master["new_employee_id"]) if master else None
             raw_records.append(AttendanceRecapRecord(
                 source_key=f"{recap_hash}:{source['source_row']}",
                 source_file_hash=recap_hash,
                 source_row=source["source_row"],
                 employee_id=linked_employee.id if linked_employee else None,
-                employee_code=source["employee_code"],
+                new_employee_id=source["new_employee_id"],
                 source_nik=source["nik"],
                 source_cabang=source["cabang"] or None,
                 source_nama=source["nama"] or None,
                 source_payroll_status=source["payroll_status"],
                 source_payload=source.get("source_values") or {
-                    "employee_code": source["employee_code"],
+                    "new_employee_id": source["new_employee_id"],
                     "nik": source["nik"],
                     "cabang": source["cabang"],
                     "nama": source["nama"],
@@ -545,7 +545,7 @@ def _verify_result(
         expected_payloads = {
             row["source_row"]: row.get("source_values")
             or {
-                "employee_code": row["employee_code"],
+                "new_employee_id": row["new_employee_id"],
                 "nik": row["nik"],
                 "cabang": row["cabang"],
                 "nama": row["nama"],
@@ -558,7 +558,7 @@ def _verify_result(
         if any(json.loads(row[2]) != expected_payloads[row[0]] for row in stored_rows):
             raise RuntimeError("Nilai asli Rekap tidak tersimpan lengkap.")
 
-        expected_by_code = {row["employee_code"]: row for row in master_rows}
+        expected_by_code = {row["new_employee_id"]: row for row in master_rows}
         expected_review_count = (
             len(master_rows) - len(expected_matches)
             + sum(bool(row.get("profile_needs_review")) for row in expected_matches.values())

@@ -6,6 +6,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas, auth
+from ..branches import (
+    advance_employee_id_sequence,
+    branch_code_for,
+    employee_id_serial,
+    employee_id_serial_in_use,
+    lock_employee_id_sequence,
+    next_employee_id,
+    validate_new_employee_id,
+)
 from ..database import get_db
 from ..employee_imports import normalize_text, parse_master_workbook, parse_recap_workbook
 
@@ -21,7 +30,10 @@ def _name_reference_conflict(db: Session, employee: models.Employee, new_name: s
     if old_key == new_key:
         return None
 
-    other_employees = db.query(models.Employee).filter(models.Employee.id != employee.id).all()
+    other_employees = db.query(models.Employee).filter(
+        models.Employee.id != employee.id,
+        models.Employee.deleted_at.is_(None),
+    ).all()
     if any(normalize_text(row.nama) in (old_key, new_key) for row in other_employees):
         return "Nama lama/baru dipakai karyawan lain; relasi berbasis nama perlu ditinjau."
 
@@ -39,6 +51,16 @@ def _name_reference_conflict(db: Session, employee: models.Employee, new_name: s
     if any((row.tahun, row.bulan) in target_periods for row in old_manual):
         return "Absen manual dengan nama tujuan sudah ada pada periode yang sama."
     return None
+
+
+def _validate_employee_branch(branch: Optional[str]) -> str:
+    normalized = " ".join((branch or "").split())
+    if not branch_code_for(normalized):
+        raise HTTPException(
+            status_code=400,
+            detail="Cabang wajib dipilih dari sembilan cabang yang terdaftar.",
+        )
+    return normalized
 
 
 def _rename_employee_name_references(db: Session, old_name: str, new_name: str) -> None:
@@ -59,7 +81,7 @@ def _rename_employee_name_references(db: Session, old_name: str, new_name: str) 
 def _candidate_dict(candidate: models.EmployeeImportCandidate) -> dict:
     return {
         "id": candidate.id,
-        "employee_code": candidate.employee_code,
+        "new_employee_id": candidate.new_employee_id,
         "nama": candidate.nama,
         "nik": candidate.nik,
         "join_date": candidate.join_date,
@@ -90,46 +112,47 @@ async def import_employee_master(
     if not rows and not conflicts:
         raise HTTPException(status_code=400, detail="Workbook Master tidak berisi data karyawan.")
 
-    employees = db.query(models.Employee).all()
+    sequence = lock_employee_id_sequence(db) if not dry_run else None
+    employees = db.query(models.Employee).filter(models.Employee.deleted_at.is_(None)).all()
     by_code = {}
     by_nik = {}
     by_name = {}
     for employee in employees:
-        if employee.employee_code:
-            by_code.setdefault(employee.employee_code, []).append(employee)
+        if employee.new_employee_id:
+            by_code.setdefault(employee.new_employee_id, []).append(employee)
         if employee.nik:
             by_nik.setdefault(employee.nik, []).append(employee)
         by_name.setdefault(normalize_text(employee.nama), []).append(employee)
 
-    present_codes = {row["employee_code"] for row in rows}
+    present_codes = {row["new_employee_id"] for row in rows}
     present_codes.update(
-        conflict["employee_code"]
+        conflict["new_employee_id"]
         for conflict in conflicts
-        if conflict.get("employee_code")
+        if conflict.get("new_employee_id")
     )
     plans = []
     matched_employee_ids = set()
     for row in rows:
-        code = row["employee_code"]
+        code = row["new_employee_id"]
         employee = None
         matched_by = None
         code_matches = by_code.get(code, [])
         if len(code_matches) > 1:
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "ID JIP duplikat di database."})
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "ID JIP duplikat di database."})
             continue
         if code_matches:
-            employee, matched_by = code_matches[0], "employee_code"
+            employee, matched_by = code_matches[0], "new_employee_id"
         elif row["nik"]:
             nik_matches = by_nik.get(row["nik"], [])
             if len(nik_matches) > 1:
-                conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "NIK terhubung ke lebih dari satu karyawan di database."})
+                conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "NIK terhubung ke lebih dari satu karyawan di database."})
                 continue
             if nik_matches:
                 employee, matched_by = nik_matches[0], "nik"
         if employee is None:
             name_matches = by_name.get(normalize_text(row["nama"]), [])
             if len(name_matches) > 1:
-                conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Nama cocok ke lebih dari satu karyawan di database."})
+                conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "Nama cocok ke lebih dari satu karyawan di database."})
                 continue
             if name_matches:
                 employee, matched_by = name_matches[0], "nama"
@@ -138,37 +161,58 @@ async def import_employee_master(
             plans.append({"row": row, "employee": None, "matched_by": None})
             continue
         if employee.id in matched_employee_ids:
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Karyawan database sudah dicocokkan dengan baris Master lain."})
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "Karyawan database sudah dicocokkan dengan baris Master lain."})
             continue
-        if employee.employee_code and employee.employee_code != code:
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Karyawan yang cocok sudah memiliki ID JIP berbeda."})
+        if employee.new_employee_id and employee.new_employee_id != code:
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "Karyawan yang cocok sudah memiliki ID JIP berbeda."})
             continue
         if row["nik"]:
             owners = [owner for owner in by_nik.get(row["nik"], []) if owner.id != employee.id]
             if owners:
-                conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "NIK sudah dipakai karyawan lain di database."})
+                conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "NIK sudah dipakai karyawan lain di database."})
                 continue
-            if matched_by != "employee_code" and employee.nik and employee.nik != row["nik"]:
-                conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "NIK berbeda dari karyawan yang cocok; perlu verifikasi manual."})
+            if matched_by != "new_employee_id" and employee.nik and employee.nik != row["nik"]:
+                conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "NIK berbeda dari karyawan yang cocok; perlu verifikasi manual."})
                 continue
         if any(
             other.id != employee.id and normalize_text(other.nama) == normalize_text(row["nama"])
             for other in employees
         ):
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Nama kanonis sudah dipakai karyawan lain."})
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "Nama kanonis sudah dipakai karyawan lain."})
             continue
         rename_conflict = _name_reference_conflict(db, employee, row["nama"])
         if rename_conflict:
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": rename_conflict})
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": rename_conflict})
             continue
         plans.append({"row": row, "employee": employee, "matched_by": matched_by})
         matched_employee_ids.add(employee.id)
 
     candidate_by_code = {
-        candidate.employee_code: candidate
+        candidate.new_employee_id: candidate
         for candidate in db.query(models.EmployeeImportCandidate)
         .all()
     }
+    valid_plans = []
+    for plan in plans:
+        row = plan["row"]
+        employee = plan["employee"]
+        candidate = candidate_by_code.get(row["new_employee_id"])
+        if employee_id_serial_in_use(
+            db,
+            row["new_employee_id"],
+            exclude_employee_id=employee.id if employee else None,
+            exclude_candidate_id=candidate.id if candidate else None,
+        ):
+            conflicts.append({
+                "row": row["source_row"],
+                "new_employee_id": row["new_employee_id"],
+                "reason": "Nomor urut ID Karyawan sudah digunakan oleh karyawan atau kandidat lain.",
+            })
+            continue
+        valid_plans.append(plan)
+    plans = valid_plans
+    deactivation_blocked = bool(deactivate_missing and conflicts)
+
     updates = []
     new_candidates = []
     for plan in plans:
@@ -177,7 +221,7 @@ async def import_employee_master(
         if employee is None:
             new_candidates.append(row)
             continue
-        changed = ["employee_code", "cabang", "active"]
+        changed = ["new_employee_id", "cabang", "active"]
         if normalize_text(employee.nama) != normalize_text(row["nama"]):
             changed.append("nama")
         if row["nik"] and employee.nik != row["nik"]:
@@ -199,7 +243,7 @@ async def import_employee_master(
 
     removal_candidates = [
         employee for employee in employees
-        if employee.employee_code and employee.employee_code not in present_codes
+        if employee.new_employee_id and employee.new_employee_id not in present_codes
     ]
     deactivation_blocked = bool(deactivate_missing and conflicts)
     source_row_numbers = {
@@ -214,11 +258,11 @@ async def import_employee_master(
                 row = plan["row"]
                 employee = plan["employee"]
                 if employee is None:
-                    candidate = candidate_by_code.get(row["employee_code"])
+                    candidate = candidate_by_code.get(row["new_employee_id"])
                     if candidate is None:
-                        candidate = models.EmployeeImportCandidate(employee_code=row["employee_code"])
+                        candidate = models.EmployeeImportCandidate(new_employee_id=row["new_employee_id"])
                         db.add(candidate)
-                        candidate_by_code[row["employee_code"]] = candidate
+                        candidate_by_code[row["new_employee_id"]] = candidate
                     elif candidate.status != "PENDING":
                         candidate.status = "PENDING"
                         candidate.approved_employee_id = None
@@ -233,7 +277,7 @@ async def import_employee_master(
                 if normalize_text(old_name) != normalize_text(row["nama"]):
                     _rename_employee_name_references(db, old_name, row["nama"])
                     employee.nama = row["nama"]
-                employee.employee_code = row["employee_code"]
+                employee.new_employee_id = row["new_employee_id"]
                 employee.cabang = row["cabang"]
                 employee.active = True
                 if row["nik"]:
@@ -246,7 +290,7 @@ async def import_employee_master(
                     employee.jabatan = row["jabatan"]
                 if row["payroll_status"]:
                     employee.payroll_status = row["payroll_status"]
-                candidate = candidate_by_code.get(row["employee_code"])
+                candidate = candidate_by_code.get(row["new_employee_id"])
                 if candidate and candidate.status == "PENDING":
                     candidate.status = "APPROVED"
                     candidate.approved_employee_id = employee.id
@@ -254,6 +298,11 @@ async def import_employee_master(
             if deactivate_missing and not deactivation_blocked:
                 for employee in removal_candidates:
                     employee.active = False
+            advance_employee_id_sequence(
+                db,
+                sequence,
+                (employee_id_serial(plan["row"]["new_employee_id"]) for plan in plans),
+            )
             db.commit()
         except IntegrityError as exc:
             db.rollback()
@@ -277,12 +326,12 @@ async def import_employee_master(
         "detail": {
             "updated": updates,
             "new_pending_review": [
-                {"source_row": row["source_row"], "employee_code": row["employee_code"], "nama": row["nama"]}
+                {"source_row": row["source_row"], "new_employee_id": row["new_employee_id"], "nama": row["nama"]}
                 for row in new_candidates
             ],
             "conflicts": conflicts,
             "missing_from_master": [
-                {"employee_id": employee.id, "employee_code": employee.employee_code, "nama": employee.nama}
+                {"employee_id": employee.id, "new_employee_id": employee.new_employee_id, "nama": employee.nama}
                 for employee in removal_candidates
             ],
         },
@@ -297,7 +346,7 @@ def list_employee_import_candidates(
     rows = (
         db.query(models.EmployeeImportCandidate)
         .filter(models.EmployeeImportCandidate.status == "PENDING")
-        .order_by(models.EmployeeImportCandidate.employee_code)
+        .order_by(models.EmployeeImportCandidate.new_employee_id)
         .all()
     )
     return [_candidate_dict(row) for row in rows]
@@ -310,12 +359,19 @@ def approve_employee_import_candidate(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_hr_master),
 ):
+    sequence = lock_employee_id_sequence(db)
     candidate = db.query(models.EmployeeImportCandidate).filter(
         models.EmployeeImportCandidate.id == candidate_id,
         models.EmployeeImportCandidate.status == "PENDING",
     ).first()
     if not candidate:
         raise HTTPException(status_code=404, detail="Kandidat impor tidak ditemukan atau sudah diproses.")
+    candidate_branch = _validate_employee_branch(candidate.cabang)
+    if not validate_new_employee_id(candidate.new_employee_id, candidate_branch):
+        raise HTTPException(
+            status_code=400,
+            detail="ID Karyawan kandidat tidak sesuai dengan cabang. Perbaiki data Master sebelum menyetujui.",
+        )
     profile = db.query(models.Profile).filter(models.Profile.code == payload.profile_code).first()
     if not profile:
         raise HTTPException(status_code=400, detail=f"Profil '{payload.profile_code}' tidak ditemukan.")
@@ -328,8 +384,17 @@ def approve_employee_import_candidate(
         raise HTTPException(status_code=400, detail="Tanggal Join wajib dilengkapi sebelum kandidat diaktifkan.")
     if candidate.nik and db.query(models.Employee).filter(models.Employee.nik == candidate.nik).first():
         raise HTTPException(status_code=409, detail="NIK kandidat sudah dipakai karyawan lain.")
-    if db.query(models.Employee).filter(models.Employee.employee_code == candidate.employee_code).first():
+    if db.query(models.Employee).filter(models.Employee.new_employee_id == candidate.new_employee_id).first():
         raise HTTPException(status_code=409, detail="ID JIP kandidat sudah terdaftar sebagai karyawan.")
+    if employee_id_serial_in_use(
+        db,
+        candidate.new_employee_id,
+        exclude_candidate_id=candidate.id,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Nomor urut ID Karyawan kandidat sudah digunakan lintas cabang.",
+        )
 
     contract = None
     if employment_status == "PKWT":
@@ -340,11 +405,11 @@ def approve_employee_import_candidate(
         contract = (payload.contract_start_date, payload.contract_end_date)
 
     employee = models.Employee(
-        employee_code=candidate.employee_code,
+        new_employee_id=candidate.new_employee_id,
         nama=candidate.nama,
         nik=candidate.nik,
         profile_code=profile.code,
-        cabang=candidate.cabang,
+        cabang=candidate_branch,
         jabatan=candidate.jabatan,
         payroll_status=candidate.payroll_status,
         uang_makan_override=candidate.uang_makan_override,
@@ -366,6 +431,7 @@ def approve_employee_import_candidate(
         ))
     candidate.status = "APPROVED"
     candidate.approved_employee_id = employee.id
+    advance_employee_id_sequence(db, sequence, [employee_id_serial(candidate.new_employee_id)])
     db.commit()
     db.refresh(employee)
     _enrich_employee_data(employee)
@@ -388,8 +454,11 @@ async def import_clean_attendance_recap(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     employee_by_code = {
-        employee.employee_code: employee
-        for employee in db.query(models.Employee).filter(models.Employee.employee_code.isnot(None)).all()
+        employee.new_employee_id: employee
+        for employee in db.query(models.Employee).filter(
+            models.Employee.new_employee_id.isnot(None),
+            models.Employee.deleted_at.is_(None),
+        ).all()
     }
     event_categories = {
         "C": ("CUTI_TAHUNAN", 1.0),
@@ -407,22 +476,22 @@ async def import_clean_attendance_recap(
     duplicates = 0
 
     for row in rows:
-        code = row["employee_code"]
+        code = row["new_employee_id"]
         employee = employee_by_code.get(code)
         if not employee:
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "ID JIP belum terdaftar di database; sinkronkan Master dahulu."})
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "ID JIP belum terdaftar di database; sinkronkan Master dahulu."})
             continue
         if row["nik"] and employee.nik and row["nik"] != employee.nik:
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "NIK Rekap berbeda dari Master/database."})
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "NIK Rekap berbeda dari Master/database."})
             continue
         if normalize_text(row["nama"]) != normalize_text(employee.nama):
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": "Nama Rekap berbeda dari Master/database."})
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": "Nama Rekap berbeda dari Master/database."})
             continue
         if row["mark"] == "T":
             ignored_late += 1
             continue
         if row["mark"] not in event_categories:
-            conflicts.append({"row": row["source_row"], "employee_code": code, "reason": f"Kode keterangan tidak dikenal: {row['mark'] or '(kosong)'}."})
+            conflicts.append({"row": row["source_row"], "new_employee_id": code, "reason": f"Kode keterangan tidak dikenal: {row['mark'] or '(kosong)'}."})
             continue
 
         category, days = event_categories[row["mark"]]
@@ -445,7 +514,7 @@ async def import_clean_attendance_recap(
         prepared.append({
             "source_row": row["source_row"],
             "employee": employee,
-            "employee_code": code,
+            "new_employee_id": code,
             "tanggal": row["tanggal"],
             "mark": row["mark"],
             "kategori": category,
@@ -510,7 +579,7 @@ async def import_clean_attendance_recap(
             "to_import": [
                 {
                     "source_row": item["source_row"],
-                    "employee_code": item["employee_code"],
+                    "new_employee_id": item["new_employee_id"],
                     "tanggal": item["tanggal"],
                     "kategori": item["kategori"],
                     "jumlah_hari": item["jumlah_hari"],
@@ -595,19 +664,19 @@ def move_whatsapp_identity(
     current_user: models.User = Depends(auth.require_hr_master),
 ):
     """Pindahkan linking ke karyawan lain setelah verifikasi manual oleh HR."""
-    target_employee_code = str(payload.get("employee_code") or "").strip()
+    target_new_employee_id = str(payload.get("new_employee_id") or "").strip()
     reason = str(payload.get("reason") or "").strip()
-    if not target_employee_code or not reason:
-        raise HTTPException(status_code=400, detail="employee_code dan alasan pemindahan wajib diisi.")
+    if not target_new_employee_id or not reason:
+        raise HTTPException(status_code=400, detail="new_employee_id dan alasan pemindahan wajib diisi.")
 
     identity = db.query(models.WhatsAppIdentity).filter(models.WhatsAppIdentity.id == identity_id).first()
     target = db.query(models.Employee).filter(
-        models.Employee.employee_code == target_employee_code,
+        models.Employee.new_employee_id == target_new_employee_id,
     ).first()
     if not identity:
         raise HTTPException(status_code=404, detail="Linking WhatsApp tidak ditemukan.")
     if not target:
-        raise HTTPException(status_code=404, detail="Kode Karyawan tujuan tidak ditemukan.")
+        raise HTTPException(status_code=404, detail="ID Karyawan tujuan tidak ditemukan.")
 
     conflict = db.query(models.WhatsAppIdentity).filter(
         models.WhatsAppIdentity.employee_id == target.id,
@@ -637,7 +706,7 @@ def move_whatsapp_identity(
         "status": "sukses",
         "identity_id": identity.id,
         "employee_id": target.id,
-        "employee_code": target.employee_code,
+        "new_employee_id": target.new_employee_id,
         "new_status": identity.status,
     }
 
@@ -705,13 +774,29 @@ def list_employees(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.get_current_user),
 ):
-    q = db.query(models.Employee)
+    q = db.query(models.Employee).filter(models.Employee.deleted_at.is_(None))
     if profile_code:
         q = q.filter(models.Employee.profile_code == profile_code)
     if employment_status:
         q = q.filter(models.Employee.employment_status == _normalize_employment_status(employment_status))
 
     employees = q.order_by(models.Employee.nama).all()
+    for emp in employees:
+        _enrich_employee_data(emp)
+    return employees
+
+
+@router.get("/deleted", response_model=list[schemas.EmployeeOut])
+def list_deleted_employees(
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    employees = (
+        db.query(models.Employee)
+        .filter(models.Employee.deleted_at.isnot(None))
+        .order_by(models.Employee.nama)
+        .all()
+    )
     for emp in employees:
         _enrich_employee_data(emp)
     return employees
@@ -729,7 +814,11 @@ def get_expiring_contracts(
     """
     pkwt_emps = (
         db.query(models.Employee)
-        .filter(models.Employee.employment_status == "PKWT", models.Employee.active == True)
+        .filter(
+            models.Employee.employment_status == "PKWT",
+            models.Employee.active == True,
+            models.Employee.deleted_at.is_(None),
+        )
         .all()
     )
 
@@ -881,7 +970,7 @@ def download_employee_template(
     sheet = workbook.active
     sheet.title = "Data Karyawan"
     headers = [
-        "Kode Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
+        "ID Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
         "Status Kepegawaian", "Tanggal Masuk", "Status Aktif",
         "Jabatan", "ID Mesin Absensi",
     ]
@@ -932,7 +1021,7 @@ def download_employee_template(
     instructions = [
         ["PANDUAN IMPOR MASTER KARYAWAN"],
         ["Isi satu baris per karyawan pada sheet Data Karyawan."],
-        ["Kode Karyawan, Nama Karyawan, Cabang, Kode Profil, dan Status Kepegawaian wajib diisi."],
+        ["ID Karyawan, Nama Karyawan, Cabang, Kode Profil, dan Status Kepegawaian wajib diisi."],
         ["Gunakan Kode Profil persis seperti yang tercantum pada sheet Referensi."],
         ["Status Kepegawaian hanya PKWTT, PKWT, atau PHL; Status Aktif hanya Aktif atau Nonaktif."],
         ["NIK boleh kosong; jika diisi harus 16 digit dan tidak boleh digunakan karyawan lain."],
@@ -967,7 +1056,7 @@ def download_nik_import_template(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_hr_master),
 ):
-    """Download workbook untuk memperbarui data master dengan Kode Karyawan sebagai kunci."""
+    """Download workbook untuk memperbarui data master dengan ID Karyawan sebagai kunci."""
     import io
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -985,7 +1074,7 @@ def download_nik_import_template(
     sheet = workbook.active
     sheet.title = "Pembaruan Master"
     headers = [
-        "Kode Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
+        "ID Karyawan", "Nama Karyawan", "NIK", "Cabang", "Kode Profil",
         "Status Kepegawaian", "Tanggal Masuk", "Status Aktif", "Jabatan",
         "ID Mesin Absensi",
     ]
@@ -1002,7 +1091,7 @@ def download_nik_import_template(
 
     for row_index, employee in enumerate(employees, start=2):
         values = [
-            employee.employee_code or "",
+            employee.new_employee_id or "",
             employee.nama,
             employee.nik or "",
             employee.cabang or "",
@@ -1033,7 +1122,7 @@ def download_nik_import_template(
     guide = workbook.create_sheet("Petunjuk")
     for line in [
         ["PETUNJUK PEMBARUAN MASTER KARYAWAN"],
-        ["Setiap baris dicocokkan berdasarkan Kode Karyawan; jangan mengubah kolom Kode Karyawan dan Nama Karyawan."],
+        ["Setiap baris dicocokkan berdasarkan ID Karyawan; jangan mengubah kolom ID Karyawan dan Nama Karyawan."],
         ["Kolom kosong selain kunci/nama tidak akan menghapus nilai yang sudah tersimpan."],
         ["NIK harus 16 digit; Tanggal Masuk menggunakan format YYYY-MM-DD."],
         ["Kode Profil harus sama persis dengan kode pada menu Profil/Divisi."],
@@ -1066,7 +1155,7 @@ async def import_nik_from_excel(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_hr_master),
 ):
-    """Update master karyawan melalui workbook terbaru dengan Kode Karyawan sebagai kunci."""
+    """Update master karyawan melalui workbook terbaru dengan ID Karyawan sebagai kunci."""
     import io
     import openpyxl
     from ..employee_imports import clean_nik, normalize_header, parse_date
@@ -1087,7 +1176,7 @@ async def import_nik_from_excel(
         if cell.value is not None
     }
     required_headers = {
-        "kode karyawan", "nama karyawan", "nik", "cabang", "kode profil",
+        "id karyawan", "nama karyawan", "nik", "cabang", "kode profil",
         "status kepegawaian", "tanggal masuk", "status aktif",
     }
     if not required_headers.issubset(headers):
@@ -1118,12 +1207,15 @@ async def import_nik_from_excel(
     for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
         if not any(value is not None for value in values):
             continue
-        code = str(value_for(values, "kode karyawan") or "").strip()
+        code = str(value_for(values, "id karyawan") or "").strip()
         if not code:
-            results["skipped"].append({"row": row_number, "reason": "Kode Karyawan kosong."})
+            results["skipped"].append({"row": row_number, "reason": "ID Karyawan kosong."})
             continue
         rows += 1
-        emp = db.query(models.Employee).filter(models.Employee.employee_code == code).first()
+        emp = db.query(models.Employee).filter(
+            models.Employee.new_employee_id == code,
+            models.Employee.deleted_at.is_(None),
+        ).first()
         if not emp:
             results["not_found"].append(code)
             continue
@@ -1135,7 +1227,7 @@ async def import_nik_from_excel(
         if nik_raw not in (None, ""):
             nik = clean_nik(nik_raw)
             if not nik:
-                results["invalid_nik"].append({"employee_code": code, "nik_raw": str(nik_raw)})
+                results["invalid_nik"].append({"new_employee_id": code, "nik_raw": str(nik_raw)})
             else:
                 conflict = db.query(models.Employee).filter(
                     models.Employee.nik == nik,
@@ -1143,7 +1235,7 @@ async def import_nik_from_excel(
                 ).first()
                 if conflict:
                     results["nik_conflict"].append({
-                        "employee_code": code,
+                        "new_employee_id": code,
                         "nik": nik,
                         "konflik_dengan": conflict.nama,
                     })
@@ -1155,7 +1247,7 @@ async def import_nik_from_excel(
         if join_raw not in (None, ""):
             join_date = parse_date(join_raw)
             if join_date is False:
-                results["invalid_join_date"].append({"employee_code": code, "value": str(join_raw)})
+                results["invalid_join_date"].append({"new_employee_id": code, "value": str(join_raw)})
             else:
                 pending_updates["join_date"] = join_date
                 updated_fields.append("Tanggal Masuk")
@@ -1172,13 +1264,13 @@ async def import_nik_from_excel(
                 pending_updates["profile_code"] = profile_code
                 updated_fields.append("Profil")
             else:
-                results["invalid_profile"].append({"employee_code": code, "profile_code": profile_raw})
+                results["invalid_profile"].append({"new_employee_id": code, "profile_code": profile_raw})
 
         status_raw = str(value_for(values, "status kepegawaian") or "").strip()
         if status_raw:
             status = _normalize_employment_status(status_raw)
             if status not in ("PKWTT", "PKWT", "PHL"):
-                results["invalid_status"].append({"employee_code": code, "status": status_raw})
+                results["invalid_status"].append({"new_employee_id": code, "status": status_raw})
             else:
                 pending_updates["employment_status"] = status
                 updated_fields.append("Status Kepegawaian")
@@ -1190,7 +1282,7 @@ async def import_nik_from_excel(
                 "nonaktif": False, "non-aktif": False, "inactive": False, "tidak": False, "false": False, "0": False,
             }
             if active_raw not in active_values:
-                results["skipped"].append({"row": row_number, "employee_code": code, "reason": "Status Aktif tidak valid."})
+                results["skipped"].append({"row": row_number, "new_employee_id": code, "reason": "Status Aktif tidak valid."})
                 continue
             pending_updates["active"] = active_values[active_raw]
             updated_fields.append("Status Aktif")
@@ -1213,9 +1305,9 @@ async def import_nik_from_excel(
             if not dry_run:
                 for field, value in pending_updates.items():
                     setattr(emp, field, value)
-            results["updated"].append({"nama": emp.nama, "employee_code": code, "fields": ", ".join(updated_fields)})
+            results["updated"].append({"nama": emp.nama, "new_employee_id": code, "fields": ", ".join(updated_fields)})
         else:
-            results["skipped"].append({"row": row_number, "employee_code": code, "reason": "Tidak ada perubahan."})
+            results["skipped"].append({"row": row_number, "new_employee_id": code, "reason": "Tidak ada perubahan."})
 
     if dry_run:
         db.rollback()
@@ -1246,7 +1338,10 @@ def get_employee_detail(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.get_current_user),
 ):
-    emp = db.query(models.Employee).filter(models.Employee.id == employee_id).first()
+    emp = db.query(models.Employee).filter(
+        models.Employee.id == employee_id,
+        models.Employee.deleted_at.is_(None),
+    ).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan.")
     _enrich_employee_data(emp)
@@ -1260,9 +1355,33 @@ def create_employee(
     _: models.User = Depends(auth.require_hr_master),
 ):
     """HANYA HR Master yang boleh menambahkan karyawan baru ke suatu profil."""
+    branch = _validate_employee_branch(payload.cabang)
     profile = db.query(models.Profile).filter(models.Profile.code == payload.profile_code).first()
     if not profile:
         raise HTTPException(status_code=400, detail=f"Profil '{payload.profile_code}' tidak ditemukan.")
+
+    new_employee_id = payload.new_employee_id.strip().upper() if payload.new_employee_id else None
+    sequence = None
+    if new_employee_id:
+        if not branch or not validate_new_employee_id(new_employee_id, branch):
+            raise HTTPException(
+                status_code=400,
+                detail="ID Karyawan harus berformat JIP-CCNNNN dengan awalan sesuai cabang.",
+            )
+        sequence = lock_employee_id_sequence(db)
+        if employee_id_serial_in_use(db, new_employee_id):
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Nomor urut ID Karyawan sudah digunakan oleh karyawan atau kandidat lain.",
+            )
+        advance_employee_id_sequence(db, sequence, [employee_id_serial(new_employee_id)])
+    else:
+        try:
+            new_employee_id = next_employee_id(db, branch)
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     emp_status = _normalize_employment_status(payload.employment_status)
     if emp_status not in ("PKWTT", "PKWT", "PHL"):
@@ -1298,9 +1417,18 @@ def create_employee(
         "phl_period_start_date",
     })
     emp_dict["employment_status"] = emp_status
+    emp_dict["new_employee_id"] = new_employee_id
+    emp_dict["cabang"] = branch
     emp = models.Employee(**emp_dict)
     db.add(emp)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Karyawan tidak tersimpan karena ID Karyawan atau NIK sudah digunakan.",
+        ) from exc
     db.refresh(emp)
 
     if contract_data:
@@ -1327,9 +1455,36 @@ def update_employee(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_hr_master),
 ):
-    emp = db.query(models.Employee).filter(models.Employee.id == employee_id).first()
+    emp = db.query(models.Employee).filter(
+        models.Employee.id == employee_id,
+        models.Employee.deleted_at.is_(None),
+    ).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan.")
+
+    if payload.new_employee_id is not None and payload.new_employee_id != emp.new_employee_id:
+        raise HTTPException(
+            status_code=400,
+            detail="ID Karyawan adalah identitas tetap; perubahan massal harus melalui prosedur migrasi terverifikasi.",
+        )
+
+    if "cabang" in payload.model_fields_set:
+        if payload.cabang is None:
+            if emp.new_employee_id:
+                raise HTTPException(status_code=400, detail="Cabang tidak dapat dikosongkan selama karyawan memiliki ID.")
+        else:
+            branch = " ".join(payload.cabang.split())
+            if branch != emp.cabang and not branch_code_for(branch):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cabang baru harus dipilih dari sembilan cabang yang terdaftar.",
+                )
+            if branch != emp.cabang and emp.new_employee_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Pindah cabang mengubah prefix ID dan harus melalui migrasi terverifikasi.",
+                )
+            payload.cabang = branch
 
     profile = db.query(models.Profile).filter(models.Profile.code == payload.profile_code).first()
     if not profile:
@@ -1673,12 +1828,37 @@ def delete_employee(
     db: Session = Depends(get_db),
     _: models.User = Depends(auth.require_hr_master),
 ):
-    emp = db.query(models.Employee).filter(models.Employee.id == employee_id).first()
+    emp = db.query(models.Employee).filter(
+        models.Employee.id == employee_id,
+        models.Employee.deleted_at.is_(None),
+    ).first()
     if not emp:
         raise HTTPException(status_code=404, detail="Karyawan tidak ditemukan.")
-    db.delete(emp)
+    emp.deleted_previous_active = emp.active
+    emp.active = False
+    emp.deleted_at = datetime.datetime.utcnow()
     db.commit()
-    return {"status": "sukses"}
+    return {"status": "diarsipkan", "new_employee_id": emp.new_employee_id}
+
+
+@router.post("/{employee_id}/restore")
+def restore_employee(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(auth.require_hr_master),
+):
+    emp = db.query(models.Employee).filter(
+        models.Employee.id == employee_id,
+        models.Employee.deleted_at.isnot(None),
+    ).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Karyawan terhapus tidak ditemukan.")
+    if emp.deleted_previous_active is not None:
+        emp.active = emp.deleted_previous_active
+    emp.deleted_previous_active = None
+    emp.deleted_at = None
+    db.commit()
+    return {"status": "dipulihkan", "new_employee_id": emp.new_employee_id}
 
 
 @router.post("/import")
@@ -1694,20 +1874,22 @@ async def import_employees(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    sequence = lock_employee_id_sequence(db)
     profiles = {
         profile.code.strip().casefold(): profile.code
         for profile in db.query(models.Profile).all()
     }
     employees_by_code = {
-        employee.employee_code: employee
-        for employee in db.query(models.Employee).all()
-        if employee.employee_code
+        employee.new_employee_id: employee
+        for employee in db.query(models.Employee).filter(models.Employee.deleted_at.is_(None)).all()
+        if employee.new_employee_id
     }
-    employees = db.query(models.Employee).all()
+    employees = db.query(models.Employee).filter(models.Employee.deleted_at.is_(None)).all()
     inserted = 0
     updated = 0
     skipped = 0
     contract_required = []
+    imported_ids = []
     seen_niks = {
         employee.nik: employee.id
         for employee in employees
@@ -1715,21 +1897,32 @@ async def import_employees(
     }
 
     for row in rows:
-        code = row["employee_code"]
+        code = row["new_employee_id"]
         profile_code = profiles.get(row["profile_code"].casefold())
         if not profile_code:
             errors.append({
                 "row": row["source_row"],
-                "employee_code": code,
+                "new_employee_id": code,
                 "reason": f"Kode Profil '{row['profile_code']}' tidak ditemukan.",
             })
             continue
 
         employee = employees_by_code.get(code)
+        if employee_id_serial_in_use(
+            db,
+            code,
+            exclude_employee_id=employee.id if employee else None,
+        ):
+            errors.append({
+                "row": row["source_row"],
+                "new_employee_id": code,
+                "reason": "Nomor urut ID Karyawan sudah digunakan lintas cabang.",
+            })
+            continue
         if employee is None and not row["join_date"]:
             errors.append({
                 "row": row["source_row"],
-                "employee_code": code,
+                "new_employee_id": code,
                 "reason": "Tanggal Masuk wajib diisi untuk karyawan baru.",
             })
             continue
@@ -1737,7 +1930,7 @@ async def import_employees(
         if row["nik"] and row["nik"] in seen_niks and (employee is None or seen_niks[row["nik"]] != employee.id):
             errors.append({
                 "row": row["source_row"],
-                "employee_code": code,
+                "new_employee_id": code,
                 "reason": f"NIK sudah digunakan oleh karyawan lain ({row['nik']}).",
             })
             continue
@@ -1747,7 +1940,7 @@ async def import_employees(
             if conflict:
                 errors.append({
                     "row": row["source_row"],
-                    "employee_code": code,
+                    "new_employee_id": code,
                     "reason": conflict,
                 })
                 continue
@@ -1756,7 +1949,7 @@ async def import_employees(
 
         if employee is None:
             employee = models.Employee(
-                employee_code=code,
+                new_employee_id=code,
                 nama=row["nama"],
                 profile_code=profile_code,
                 cabang=row["cabang"],
@@ -1790,16 +1983,18 @@ async def import_employees(
 
         if row["nik"]:
             seen_niks[row["nik"]] = employee.id
+        imported_ids.append(employee_id_serial(code))
         active_contract = next((contract for contract in employee.contracts if contract.status == "ACTIVE"), None)
         if row["employment_status"] == "PKWT" and active_contract is None:
             employee.active = False
             contract_required.append(code)
 
     try:
+        advance_employee_id_sequence(db, sequence, imported_ids)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Impor dibatalkan karena Kode Karyawan atau NIK duplikat.") from exc
+        raise HTTPException(status_code=409, detail="Impor dibatalkan karena ID Karyawan atau NIK duplikat.") from exc
     except Exception:
         db.rollback()
         raise

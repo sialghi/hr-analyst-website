@@ -27,6 +27,7 @@ Sistem otomasi analisis absensi cerdas dan manajemen aturan bisnis SDM (Sumber D
   - [1. Database (PostgreSQL Railway / Supabase)](#1-database-postgresql-railway--supabase)
   - [2. Backend (Railway)](#2-backend-railway)
   - [3. Frontend (Vercel)](#3-frontend-vercel)
+- [Migrasi ID Karyawan Production](#migrasi-id-karyawan-production)
 - [Sinkronisasi Master Karyawan dan Rekap Kehadiran](#-sinkronisasi-master-karyawan-dan-rekap-kehadiran)
 - [Peran Pengguna & Keamanan (RBAC)](#-peran-pengguna--keamanan-rbac)
 
@@ -313,6 +314,14 @@ Seeder hanya dijalankan saat menyiapkan database baru secara manual. Jika mengik
 **Jangan arahkan skrip ke database lama atau menghapus service lama sebelum cutover disetujui.** Empat file lokal di `backend\uploads` tidak memiliki referensi `foto_bukti` di database SQLite, tetapi penyimpanan file production lama belum diverifikasi; putuskan dahulu apakah bukti lama perlu diarsipkan atau tetap tersedia. Migrasi database tidak memindahkan file uploads.
 
 ---
+
+---
+
+### Migrasi ID Karyawan Production
+
+ID karyawan aktif memakai format `JIP-CCNNNN`; prefix menunjukkan cabang, sedangkan empat digit terakhir berurutan unik secara global di semua cabang. Database menyimpan ID tersebut pada kolom `employee_code`; API/UI memakai nama field `new_employee_id`. Daftar sembilan cabang dan prosedur operasional dijelaskan di [Panduan Operasi ID Karyawan](docs/OPERASI-KODE-KARYAWAN.md).
+
+Perubahan roster dan database production adalah dua langkah terpisah. File roster lokal diabaikan Git karena berisi data karyawan; gunakan hanya pada lokasi berakses terbatas. Script backfill hanya menerima database SQLite lokal. Migrasi production belum dijalankan dan harus dilakukan operator berwenang secara bertahap dengan backup, preview pemetaan, validasi, dan persetujuan. Jangan menjalankan `alembic upgrade head` pada production sebelum backfill dan cutover disetujui.
 
 ---
 

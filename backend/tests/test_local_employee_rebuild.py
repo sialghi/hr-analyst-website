@@ -33,7 +33,7 @@ from app.employee_imports import parse_recap_workbook
 
 def _employee(code, nama, nik, cabang, payroll_status, join_date):
     return {
-        "employee_code": code,
+        "new_employee_id": code,
         "nama": nama,
         "nik": nik,
         "join_date": join_date,
@@ -44,11 +44,11 @@ def _employee(code, nama, nik, cabang, payroll_status, join_date):
     }
 
 
-def _recap(row, employee_code, nik, nama, mark, date):
+def _recap(row, new_employee_id, nik, nama, mark, date):
     return {
         "source_row": row,
         "source_values": [
-            {"header": "ID", "value": employee_code},
+            {"header": "ID", "value": new_employee_id},
             {"header": "NIK", "value": nik},
             {"header": "Cabang", "value": "Cabang sumber"},
             {"header": "Nama", "value": nama},
@@ -56,7 +56,7 @@ def _recap(row, employee_code, nik, nama, mark, date):
             {"header": "Tanggal", "value": date.isoformat()},
             {"header": "Keterangan (S/I/CS)", "value": mark},
         ],
-        "employee_code": employee_code,
+        "new_employee_id": new_employee_id,
         "nik": nik,
         "cabang": "Cabang sumber",
         "nama": nama,
@@ -100,7 +100,7 @@ def test_recap_reconciliation_trusts_jip_then_unique_nik_or_name():
         "UNRESOLVED_IDENTITY",
         "UNRESOLVED_JIP_ID",
     ]
-    assert result[0]["master"]["employee_code"] == "JIP-1"
+    assert result[0]["master"]["new_employee_id"] == "JIP-1"
     assert "Nama Rekap berbeda" in result[0]["identity_warning"]
     assert result[4]["master"] is None
 
@@ -118,7 +118,7 @@ def test_recap_parser_keeps_rows_with_blank_id_and_original_cells():
 
     assert not conflicts
     assert len(rows) == 1
-    assert rows[0]["employee_code"] is None
+    assert rows[0]["new_employee_id"] is None
     assert {"header": "ID", "value": None} in rows[0]["source_values"]
     assert {"header": "Cabang", "value": " Cabang A "} in rows[0]["source_values"]
 
@@ -146,7 +146,7 @@ def test_rebuild_is_transactional_and_preserves_configuration():
         ])
         db.flush()
         old_employee = Employee(
-            employee_code="OLD-1",
+            new_employee_id="OLD-1",
             nama="Nama Lama",
             nik="1111111111111111",
             profile_code="DRIVER",
@@ -221,7 +221,7 @@ def test_rebuild_is_transactional_and_preserves_configuration():
             datetime.date(2026, 10, 23),
         )
 
-        employees = {row.employee_code: row for row in db.query(Employee).all()}
+        employees = {row.new_employee_id: row for row in db.query(Employee).all()}
         assert set(employees) == {"JIP-1", "JIP-2"}
         assert employees["JIP-1"].profile_code == "DRIVER"
         assert employees["JIP-1"].employment_status == "PKWTT"
@@ -233,7 +233,7 @@ def test_rebuild_is_transactional_and_preserves_configuration():
         raw_records = db.query(AttendanceRecapRecord).all()
         assert len(raw_records) == 4
         assert sum(row.employee_id is None for row in raw_records) == 1
-        jip_row = next(row for row in raw_records if row.employee_code == "JIP-1")
+        jip_row = next(row for row in raw_records if row.new_employee_id == "JIP-1")
         assert jip_row.source_nama == "Nama Satu Lama"
         assert jip_row.canonical_nama == "Nama Satu"
         assert jip_row.source_cabang == "Cabang sumber"
@@ -266,7 +266,7 @@ def test_rebuild_is_transactional_and_preserves_configuration():
         assert db.query(AttendanceRecapRecord).count() == 4
         assert db.query(LeaveRequest).count() == 2
         assert db.query(LeaveBalanceLedger).filter(LeaveBalanceLedger.entry_type == "USED").count() == 2
-        assert db.query(Employee).filter(Employee.employee_code == "JIP-2").one().profile_needs_review
+        assert db.query(Employee).filter(Employee.new_employee_id == "JIP-2").one().profile_needs_review
     finally:
         db.close()
         test_engine.dispose()

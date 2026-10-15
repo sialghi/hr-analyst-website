@@ -48,6 +48,7 @@ from app.routers.leaves import delete_leave_request
 
 def make_employee(db, nama: str, join_date: datetime.date) -> Employee:
     emp = Employee(
+        new_employee_id="JIP-010001",
         nama=nama,
         profile_code="OFFICE",
         employment_status="TETAP",
@@ -303,7 +304,13 @@ class TestValidateLeaveRequest(BaseDBTestCase):
 
     def test_reject_no_join_date(self):
         """Tolak jika join_date belum diisi dan tidak ada kontrak"""
-        emp = Employee(nama="Nino", profile_code="OFFICE", employment_status="TETAP", active=True)
+        emp = Employee(
+            new_employee_id="JIP-010001",
+            nama="Nino",
+            profile_code="OFFICE",
+            employment_status="TETAP",
+            active=True,
+        )
         self.db.add(emp)
         self.db.commit()
         self.db.refresh(emp)

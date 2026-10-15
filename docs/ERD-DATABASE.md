@@ -49,6 +49,10 @@ erDiagram
         int approved_employee_id FK
         string status
     }
+    EMPLOYEE_ID_SEQUENCES {
+        int id PK
+        int next_serial
+    }
     EMPLOYMENT_CONTRACTS {
         int id PK
         int employee_id FK
@@ -196,7 +200,8 @@ erDiagram
 - `LEAVE_REQUESTS.nama`, `EMPLOYEE_ADJUSTMENTS.nama`, dan `ABSEN_MANUAL.nama` bukan foreign key ke `EMPLOYEES`; pencocokan berbasis nama pada sebagian jalur tidak menjamin integritas referensial.
 - `EMPLOYEE_IMPORT_CANDIDATES.approved_employee_id`, relasi leave pada review/ledger, relasi upload batch, dan relasi karyawan pada rekap/WhatsApp audit dapat bernilai `NULL` sesuai model.
 - `EMPLOYEE_EMPLOYMENT_TRANSITIONS` merekam periode PHL hanya pada proses transisi PHL → PKWT yang baru disimpan; tidak ada data transisi lama yang di-backfill otomatis.
-- `EMPLOYEE_CODE` pada rekap kehadiran merupakan nilai sumber untuk rekonsiliasi, bukan FK ke `EMPLOYEES.employee_code`.
+- `employee_code` adalah ID bisnis aktif di master/kandidat dan snapshot ID di tabel payroll/rekap; relasi operasional tetap menggunakan foreign key numerik `employee_id`.
+- `EMPLOYEE_ID_SEQUENCES` berisi satu baris singleton yang menyimpan high-water mark global untuk suffix `NNNN`, dipakai lintas cabang.
 - `PAYROLL_SLIP_ARCHIVES` memiliki batas unik gabungan `(employee_id, payroll_period)`; PDF disimpan sebagai BLOB dan kedaluwarsa berdasarkan `expires_at`.
 - Tabel konfigurasi global, akun, pesan webhook yang sudah diproses, hari libur, penyesuaian, absen manual, dan arsip migrasi tidak memiliki FK langsung lain pada model.
 - Field ringkas yang ditampilkan bukan daftar lengkap kolom fisik. Gunakan model SQLAlchemy dan skema database pada environment sasaran sebagai referensi lengkap.

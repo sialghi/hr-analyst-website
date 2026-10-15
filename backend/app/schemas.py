@@ -162,7 +162,7 @@ class EmployeeEmploymentTransitionOut(BaseModel):
 # ---------- Employee (master karyawan) ----------
 class EmployeeBase(BaseModel):
     nama: str
-    employee_code: Optional[str] = None
+    new_employee_id: Optional[str] = None
     nik: Optional[str] = None             # NIK KTP 16 digit
     id_mesin: Optional[str] = None
     profile_code: str
@@ -202,6 +202,7 @@ class EmployeeUpdate(EmployeeBase):
 
 class EmployeeOut(EmployeeBase):
     id: int
+    deleted_at: Optional[datetime] = None
     profile_needs_review: bool = False
     contracts: List[EmploymentContractOut] = []
     phl_to_pkwt_transitions: List[EmployeeEmploymentTransitionOut] = []

@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 
 interface PayrollRow {
-  "Kode Karyawan": string;
+  "ID Karyawan": string;
   Nama: string;
   "No. Rekening": string;
   Departemen: string;
@@ -399,7 +399,7 @@ export default function ProsesSlipGajiPage() {
         return;
       }
       const confirmed = window.confirm(
-        `Kirim slip gaji periode ${periode} kepada ${recipient.nama} (${recipient.employee_code})?\n` +
+        `Kirim slip gaji periode ${periode} kepada ${recipient.nama} (${recipient.new_employee_id})?\n` +
         `Nomor WhatsApp: ${recipient.wa_number}\n` +
         `Total diterima: Rp ${formatRupiah(selectedEmployee.THP)}`
       );
@@ -538,7 +538,7 @@ export default function ProsesSlipGajiPage() {
         if (filterDept !== "ALL" && d !== filterDept) return false;
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase();
-          const matchKode = (row["Kode Karyawan"] || "").toLowerCase().includes(q);
+          const matchKode = (row["ID Karyawan"] || "").toLowerCase().includes(q);
           const matchNama = (row.Nama || "").toLowerCase().includes(q);
           const matchNorek = (row["No. Rekening"] || "").toLowerCase().includes(q);
           const matchDept = d.toLowerCase().includes(q);
@@ -758,7 +758,7 @@ export default function ProsesSlipGajiPage() {
               </div>
               <h2 className="text-xl font-bold text-slate-900">Unggah Data Penggajian Karyawan</h2>
               <p className="text-xs text-slate-500 max-w-lg mx-auto leading-relaxed">
-                Unggah file Excel (.xlsx) atau CSV yang berisi rincian Gaji Pokok, Tunjangan, Lembur, dan Potongan. Sertakan Kode Karyawan untuk mencocokkan slip dengan linking WhatsApp yang aktif.
+                Unggah file Excel (.xlsx) atau CSV yang berisi rincian Gaji Pokok, Tunjangan, Lembur, dan Potongan. Sertakan ID Karyawan untuk mencocokkan slip dengan linking WhatsApp yang aktif.
               </p>
             </div>
 
@@ -956,7 +956,7 @@ export default function ProsesSlipGajiPage() {
                   <thead className="bg-slate-100 text-slate-700 border-b border-slate-300 sticky top-0 z-10 font-semibold shadow-xs">
                     <tr>
                       <th className="p-2.5 text-center border-r border-slate-200 w-8">#</th>
-                      <th className="p-2.5 border-r border-slate-200 min-w-[105px]">Kode Karyawan</th>
+                      <th className="p-2.5 border-r border-slate-200 min-w-[105px]">ID Karyawan</th>
                       <th className="p-2.5 border-r border-slate-200 min-w-[140px]">Nama</th>
                       <th className="p-2.5 border-r border-slate-200 min-w-[120px]">No. Rekening</th>
                       <th className="p-2.5 border-r border-slate-200 min-w-[110px]">Departemen</th>
@@ -1000,7 +1000,7 @@ export default function ProsesSlipGajiPage() {
                             />
                           </td>
                           <td className="p-2.5 border-r border-slate-200 text-slate-600 font-mono text-[11px]">
-                            {row["Kode Karyawan"] || "-"}
+                            {row["ID Karyawan"] || "-"}
                           </td>
                           <td className="p-2.5 border-r border-slate-200 font-semibold text-slate-900">
                             {row.Nama}
@@ -1238,13 +1238,13 @@ export default function ProsesSlipGajiPage() {
                     <button
                       type="button"
                       onClick={handleSendSingleWhatsApp}
-                      disabled={singleWaSending || !selectedEmployee["Kode Karyawan"]}
+                      disabled={singleWaSending || !selectedEmployee["ID Karyawan"]}
                       title={
-                        selectedEmployee["Kode Karyawan"]
+                        selectedEmployee["ID Karyawan"]
                           ? `Status saat upload: ${whatsappStatusLabel(selectedEmployee._wa_status || "")}. Link aktif akan diperiksa lagi sebelum kirim.`
-                          : "Isi Kode Karyawan pada file payroll untuk mengirim slip."
+                          : "Isi ID Karyawan pada file payroll untuk mengirim slip."
                       }
-                      className={`px-3 py-1.5 text-xs font-medium text-white rounded shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer ${selectedEmployee["Kode Karyawan"]
+                      className={`px-3 py-1.5 text-xs font-medium text-white rounded shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer ${selectedEmployee["ID Karyawan"]
                           ? "bg-[#25D366] hover:bg-[#1ebd5a]"
                           : "bg-slate-400 cursor-not-allowed opacity-60"
                         }`}
@@ -1313,9 +1313,9 @@ export default function ProsesSlipGajiPage() {
                     </div>
                     <div className="space-y-0.5 pl-6">
                       <div className="grid grid-cols-12">
-                        <span className="col-span-4">Kode Karyawan</span>
+                        <span className="col-span-4">ID Karyawan</span>
                         <span className="col-span-1">:</span>
-                        <span className="col-span-7 font-mono">{selectedEmployee["Kode Karyawan"] || "-"}</span>
+                        <span className="col-span-7 font-mono">{selectedEmployee["ID Karyawan"] || "-"}</span>
                       </div>
                       <div className="grid grid-cols-12">
                         <span className="col-span-4">Periode</span>
@@ -1517,7 +1517,7 @@ export default function ProsesSlipGajiPage() {
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              Periksa penerima yang dipasangkan dengan Kode Karyawan. Sistem mengirim rincian penghasilan sebagai teks
+              Periksa penerima yang dipasangkan dengan ID Karyawan. Sistem mengirim rincian penghasilan sebagai teks
               dan melampirkan PDF slip resmi. Status linking divalidasi ulang oleh server saat pengiriman.
             </p>
 
@@ -1551,10 +1551,10 @@ export default function ProsesSlipGajiPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {waPreview.map((recipient) => (
-                    <tr key={`${recipient.row_index}-${recipient.employee_code}`}>
+                    <tr key={`${recipient.row_index}-${recipient.new_employee_id}`}>
                       <td className="p-2">
                         <div className="font-medium text-slate-800">{recipient.nama || "-"}</div>
-                        <div className="font-mono text-[10px] text-slate-500">{recipient.employee_code || "-"}</div>
+                        <div className="font-mono text-[10px] text-slate-500">{recipient.new_employee_id || "-"}</div>
                       </td>
                       <td className="p-2 font-mono">{recipient.wa_number || "-"}</td>
                       <td className={`p-2 ${recipient.status === "ACTIVE" ? "text-emerald-700" : "text-amber-700"}`}>
@@ -1623,7 +1623,7 @@ export default function ProsesSlipGajiPage() {
                   {waHistory.slice(0, 10).map((delivery) => (
                     <div key={delivery.id} className="flex justify-between gap-3 py-2">
                       <span>
-                        {delivery.nama} · {delivery.employee_code || "-"} · {delivery.wa_number || "tanpa nomor"}
+                        {delivery.nama} · {delivery.new_employee_id || (delivery.legacy_employee_code ? `${delivery.legacy_employee_code} (ID lama tersimpan)` : "-")} · {delivery.wa_number || "tanpa nomor"}
                       </span>
                       <span className="shrink-0 font-semibold">
                         {delivery.status} (teks {delivery.text_status || "-"}, PDF {delivery.pdf_status || "-"})

@@ -47,7 +47,7 @@ def _one_year_from(value: datetime.datetime) -> datetime.datetime:
 # Kolom template (input dari HR)
 # ---------------------------------------------------------------------------
 TEMPLATE_INPUT_COLS = [
-    "Kode Karyawan",
+    "ID Karyawan",
     "Nama",
     "No. Rekening",
     "Departemen",
@@ -132,11 +132,11 @@ def _parse_payroll_file(file_bytes: bytes, filename: str) -> List[Dict[str, Any]
     # Normalise header
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Backward compatibility: jika user mengupload file dengan nama kolom versi lama, mapping otomatis
+    # Normalize accepted names for the current employee identifier only.
     alias_map = {
-        "employee_code": "Kode Karyawan",
-        "Employee Code": "Kode Karyawan",
-        "ID Karyawan": "Kode Karyawan",
+        "new_employee_id": "ID Karyawan",
+        "New Employee ID": "ID Karyawan",
+        "ID Karyawan": "ID Karyawan",
         "Dept": "Departemen",
         "GP": "Gaji Pokok",
         "Pot Hari": "Potongan Hari",
@@ -183,24 +183,25 @@ def _build_kpis(rows: List[Dict[str, Any]]) -> Dict[str, float]:
     }
 
 
-def _employee_code_key(value: Any) -> str:
+def _new_employee_id_key(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
 def _resolve_payroll_employee(db: Session, row: Dict[str, Any]) -> Dict[str, Any]:
-    employee_code = _employee_code_key(row.get("Kode Karyawan"))
+    new_employee_id = _new_employee_id_key(row.get("ID Karyawan"))
     result = {
         "employee_id": row.get("_employee_id"),
-        "employee_code": row.get("Kode Karyawan"),
+        "new_employee_id": row.get("ID Karyawan"),
         "employee_name": row.get("Nama", ""),
         "phone_number": None,
-        "status": "MISSING_EMPLOYEE_CODE" if not employee_code else "EMPLOYEE_NOT_FOUND",
+        "status": "MISSING_NEW_EMPLOYEE_ID" if not new_employee_id else "EMPLOYEE_NOT_FOUND",
     }
-    if not employee_code:
+    if not new_employee_id:
         return result
 
     matches = db.query(models.Employee).filter(
-        func.lower(func.trim(models.Employee.employee_code)) == employee_code,
+        func.lower(func.trim(models.Employee.new_employee_id)) == new_employee_id,
+        models.Employee.deleted_at.is_(None),
     ).all()
     if not matches:
         return result
@@ -255,7 +256,7 @@ def _record_payroll_delivery(
         payroll_session_id=entry["session_id"],
         row_index=row_index,
         employee_id=row.get("_employee_id"),
-        employee_code=row.get("Kode Karyawan") or None,
+        new_employee_id=row.get("ID Karyawan") or None,
         employee_name=row.get("Nama") or "(Nama tidak tersedia)",
         payroll_period=entry.get("periode", ""),
         recipient_phone=recipient_phone,
@@ -691,7 +692,7 @@ def download_payroll_template(
     ws2 = wb.create_sheet(title="Panduan Kolom")
     guide_headers = ["No", "Nama Kolom", "Tipe Data", "Wajib?", "Keterangan"]
     guide_rows = [
-        [1, "Kode Karyawan", "Teks", "Wajib untuk kirim WA", "Kode employee_code dari master karyawan; dipakai untuk mencocokkan identity WhatsApp dengan aman."],
+        [1, "ID Karyawan", "Teks", "Wajib untuk kirim WA", "ID Karyawan baru dari master; dipakai untuk mencocokkan linking WhatsApp."],
         [2, "Nama", "Teks", "Ya", "Nama lengkap karyawan sesuai master data."],
         [3, "No. Rekening", "Teks", "Ya", "Nomor rekening bank karyawan untuk transfer gaji."],
         [4, "Departemen", "Teks", "Ya", "Nama divisi/departemen karyawan."],
@@ -1006,7 +1007,7 @@ async def archive_all_payroll_slips(
     if any(_resolve_payroll_employee(db, row)["employee_id"] != row["_employee_id"] for row in rows):
         raise HTTPException(
             status_code=422,
-            detail="Pemetaan kode karyawan berubah sejak file payroll diunggah. Unggah ulang data sebelum menyimpan.",
+            detail="Pemetaan ID karyawan berubah sejak file payroll diunggah. Unggah ulang data sebelum menyimpan.",
         )
 
     existing_employee_ids = {
@@ -1109,7 +1110,7 @@ def preview_payroll_whatsapp_recipients(
         recipients.append({
             "row_index": row_index,
             "employee_id": resolved["employee_id"],
-            "employee_code": row.get("Kode Karyawan", ""),
+            "new_employee_id": row.get("ID Karyawan", ""),
             "nama": row.get("Nama", ""),
             "wa_number": resolved["phone_number"],
             "status": resolved["status"],
@@ -1133,7 +1134,8 @@ def list_payroll_whatsapp_history(
         "id": row.id,
         "row_index": row.row_index,
         "employee_id": row.employee_id,
-        "employee_code": row.employee_code,
+        "new_employee_id": row.new_employee_id,
+        "legacy_employee_code": None,
         "nama": row.employee_name,
         "periode": row.payroll_period,
         "wa_number": row.recipient_phone,
@@ -1208,7 +1210,7 @@ async def send_slip_whatsapp(
             status_code=409,
             detail=(
                 f"Pengiriman diblokir untuk {emp.get('Nama', 'karyawan ini')}: "
-                f"{resolved['status']}. Periksa Kode Karyawan dan linking WhatsApp aktif."
+                f"{resolved['status']}. Periksa ID Karyawan dan linking WhatsApp aktif."
             ),
         )
 
