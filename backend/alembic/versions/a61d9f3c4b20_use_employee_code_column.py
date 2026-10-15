@@ -33,8 +33,19 @@ def _columns(connection, table_name: str) -> set[str]:
 
 
 def _drop_employee_id_indexes(connection, table_name: str) -> None:
-    for index in sa.inspect(connection).get_indexes(table_name):
+    inspector = sa.inspect(connection)
+    constraint_names = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints(table_name)
+        if constraint.get("name")
+    }
+    for index in inspector.get_indexes(table_name):
         if set(index.get("column_names") or ()) & {"employee_code", "new_employee_id"}:
+            if (
+                index.get("duplicates_constraint")
+                or index["name"] in constraint_names
+            ):
+                continue
             op.drop_index(index["name"], table_name=table_name)
 
 
